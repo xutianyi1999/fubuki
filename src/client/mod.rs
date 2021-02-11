@@ -53,37 +53,31 @@ pub async fn start(listen_addr: SocketAddr,
     let (to_remote, mut recv_local) = mpsc::channel::<(Vec<u8>, SocketAddr)>(100);
 
     let t1 = tokio::task::spawn_blocking(move || {
-        let mut f = move || {
-            while let Some(packet) = recv_remote.blocking_recv() {
-                tun_tx.send_packet(&packet)?;
-            }
-            Result::Ok(())
-        };
-        f()
+        while let Some(packet) = recv_remote.blocking_recv() {
+            tun_tx.send_packet(&packet)?;
+        }
+        Ok(())
     });
 
     let t2 = tokio::task::spawn_blocking(move || {
-        let mut f = move || {
-            let mut buff = vec![0u8; 65536];
+        let mut buff = vec![0u8; 65536];
 
-            loop {
-                let size = tun_rx.recv_packet(&mut buff)?;
-                let slice = &buff[..size];
-                let ipv4 = Ipv4Packet::new_checked(slice).res_auto_convert()?;
+        loop {
+            let size = tun_rx.recv_packet(&mut buff)?;
+            let slice = &buff[..size];
+            let ipv4 = Ipv4Packet::new_checked(slice).res_auto_convert()?;
 
-                let dest_addr = ipv4.dst_addr();
-                let dest_addr = IpAddr::from(dest_addr.0);
+            let dest_addr = ipv4.dst_addr();
+            let dest_addr = IpAddr::from(dest_addr.0);
 
-                let op = MAPPING.get(&dest_addr);
+            let op = MAPPING.get(&dest_addr);
 
-                if let Some(node) = op {
-                    if let Some(addr) = node.source_udp_addr {
-                        to_remote.blocking_send((slice.to_vec(), addr)).res_auto_convert()?;
-                    }
+            if let Some(node) = op {
+                if let Some(addr) = node.source_udp_addr {
+                    to_remote.blocking_send((slice.to_vec(), addr)).res_auto_convert()?;
                 }
             }
-        };
-        f()
+        }
     });
 
     let udp_socket = UdpSocket::bind(listen_addr).await?;
