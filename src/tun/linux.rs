@@ -1,0 +1,46 @@
+use std::io::{Read, Write};
+use std::net::IpAddr;
+
+use tokio::io::Result;
+use tun::platform::Device;
+use tun::platform::posix::{Reader, Writer};
+
+use crate::common::res::StdResConvert;
+use crate::tun::{Rx, Tx};
+
+pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<Device> {
+    let mut config = tun::Configuration::default();
+    config.address(address)
+        .netmask(netmask);
+
+    config.platform(|config| {
+        config.packet_information(false);
+    });
+
+    tun::create(&config).res_convert(|_| String::from("Create tun failed"))
+}
+
+impl Tx for Device {
+    fn send_packet(&mut self, buff: &[u8]) -> Result<()> {
+        self.write_all(buff)
+    }
+}
+
+impl Tx for Writer {
+    fn send_packet(&mut self, buff: &[u8]) -> Result<()> {
+        self.write_all(buff)
+    }
+}
+
+impl Rx for Device {
+    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
+        self.read(buff)
+    }
+}
+
+impl Rx for Reader {
+    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
+        self.read(buff)
+    }
+}
+
