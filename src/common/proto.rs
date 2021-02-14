@@ -58,7 +58,7 @@ impl<R> MsgReader<R>
 
     pub async fn read_msg(&mut self) -> Result<Option<Msg<'_>>> {
         let rx = &mut self.rx;
-        let mut rc4 = self.rc4;
+        let rc4 = &mut self.rc4;
 
         let res = rx.read_u16().await;
 
@@ -71,7 +71,7 @@ impl<R> MsgReader<R>
         rx.read_exact(&mut data).await?;
 
         let mut out = vec![0u8; len];
-        crypto(&data, &mut out, &mut rc4)?;
+        crypto(&data, &mut out, rc4)?;
 
         let mut data = Bytes::from(out);
 
@@ -115,7 +115,7 @@ impl<W> MsgWriter<W>
 
     pub async fn write_msg(&mut self, msg: Msg<'_>) -> Result<()> {
         let tx = &mut self.tx;
-        let mut rc4 = self.rc4;
+        let rc4 = &mut self.rc4;
 
         let data = match msg {
             Register(node) => {
@@ -140,7 +140,7 @@ impl<W> MsgWriter<W>
         };
 
         let mut out = vec![0u8; data.len()];
-        crypto(&data, &mut out, &mut rc4)?;
+        crypto(&data, &mut out, rc4)?;
 
         tx.write_u16(out.len() as u16).await?;
         tx.write_all(&out).await
@@ -161,14 +161,14 @@ impl MsgSocket<'_> {
 
     pub async fn recv_msg(&mut self) -> Result<(Msg<'_>, SocketAddr)> {
         let socket = self.socket;
-        let rc4 = &mut self.rc4;
+        let mut rc4 = self.rc4;
         let buff = &mut self.buff;
         let out = &mut self.out;
 
         let (len, peer_addr) = socket.recv_from(buff).await?;
         let data = &buff[..len];
 
-        let out = crypto(data, out, rc4)?;
+        let out = crypto(data, out, &mut rc4)?;
 
         let mode = out[0];
 
@@ -188,7 +188,7 @@ impl MsgSocket<'_> {
 
     pub async fn send_msg(&mut self, msg: Msg<'_>, peer_addr: SocketAddr) -> Result<()> {
         let socket = self.socket;
-        let rc4 = &mut self.rc4;
+        let mut rc4 = self.rc4;
         let buff = &mut self.buff;
         let out = &mut self.out;
 
@@ -207,7 +207,7 @@ impl MsgSocket<'_> {
             _ => panic!("Send Message error")
         };
 
-        let slice = crypto(data, out, rc4)?;
+        let slice = crypto(data, out, &mut rc4)?;
         socket.send_to(slice, peer_addr).await?;
         Ok(())
     }
