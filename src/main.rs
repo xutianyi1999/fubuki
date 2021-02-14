@@ -27,6 +27,13 @@ pub const COMMAND_FAILED: &str = "Command failed";
 async fn main() -> Result<()> {
     logger_init()?;
 
+    if let Err(e) = process().await {
+        error!("process error -> {}", e)
+    };
+    Ok(())
+}
+
+async fn process() -> Result<()> {
     let mut args = env::args();
     args.next();
 

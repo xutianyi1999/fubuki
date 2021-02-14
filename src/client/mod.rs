@@ -44,7 +44,7 @@ pub async fn start(server_addr: SocketAddr,
     let netmask = tun_address.1;
 
     let device = create_device(tun_addr, netmask)?;
-    info!("Tun ip addr: {}", tun_addr);
+    info!("Tun adapter ip address: {}", tun_addr);
     let (mut tun_tx, mut tun_rx) = device.split();
 
     let (to_local, mut recv_remote) = mpsc::channel::<Vec<u8>>(100);
@@ -93,7 +93,7 @@ pub async fn start(server_addr: SocketAddr,
                 Ok((msg, _)) => if let Msg::Data(buff) = msg {
                     to_local.send(buff.to_owned()).await.res_auto_convert()?;
                 }
-                Err(e) => error!("u1: {}", e)
+                Err(e) => error!("Recv datagram error: {}", e)
             }
         }
     };
@@ -124,43 +124,17 @@ pub async fn start(server_addr: SocketAddr,
 
     let th = tcp_handle(server_addr, rc4, node);
     info!("Client start");
-    // tokio::select! {
-    //     res = t1 => res?,
-    //     res = t2 => res?,
-    //     res = u1 => res,
-    //     res = u2 => res,
-    //     res = h => res,
-    //     res = th => res
-    // }
 
     let res = tokio::select! {
-        res = t1 => {
-        println!("t1");
-         res?
-        }
-        res = t2 => {
-        println!("t2");
-        res?
-        }
-        res = u1 => {
-        println!("u1");
-        res
-        }
-        res = u2 => {
-        println!("u2");
-        res
-        }
-
-        res = h => {
-        println!("h");
-        res
-        }
-        res = th =>{
-         println!("th");
-         res
-        }
+        res = t1 => res?,
+        res = t2 => res?,
+        res = u1 => res,
+        res = u2 => res,
+        res = h => res,
+        res = th => res
     };
-    println!("=============");
+
+    error!("Client crashed");
     res
 }
 
@@ -170,6 +144,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
 
         let f = || async move {
             let mut stream = TcpStream::connect(server_addr).await?;
+            info!("Server connected");
             let (rx, tx) = stream.split();
 
             let mut tx = MsgWriter::new(tx, rc4);
@@ -189,7 +164,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
         };
 
         if let Err(e) = f().await {
-            error!("th: {}", e)
+            error!("Tcp handle error: {}", e)
         }
     }
 }

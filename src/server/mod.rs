@@ -100,7 +100,7 @@ async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(async move {
             if let Err(e) = tunnel(stream, rc4).await {
-                error!("{}", e)
+                error!("tunnel error -> {}", e)
             }
         });
     };
@@ -109,9 +109,9 @@ async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
 async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
     let (rx, tx) = stream.split();
-    let mut rx = BufReader::new(rx);
+    let rx = BufReader::new(rx);
 
-    let mut reader = MsgReader::new(&mut rx, rc4);
+    let mut reader = MsgReader::new(rx, rc4);
     let mut writer = MsgWriter::new(tx, rc4);
 
     let op = reader.read_msg().await?;
