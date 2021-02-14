@@ -5,7 +5,7 @@ use crypto::rc4::Rc4;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use smoltcp::wire::Ipv4Packet;
-use tokio::io::{BufReader, Result};
+use tokio::io::Result;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
@@ -147,7 +147,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
             let (rx, tx) = stream.split();
 
             let mut tx = MsgWriter::new(tx, rc4);
-            let mut rx = MsgReader::new(BufReader::new(rx), rc4);
+            let mut rx = MsgReader::new(rx, rc4);
 
             tx.write_msg(Msg::Register(node)).await?;
 
@@ -163,7 +163,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
         };
 
         if let Err(e) = f().await {
-            error!("Tcp handle error: {}", e)
+            error!("Tcp handle error -> {}", e)
         }
     }
 }

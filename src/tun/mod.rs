@@ -1,10 +1,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use simple_wintun::adapter::WintunStream;
 use tokio::io::Result;
-
-use crate::tun::windows::{Reader, Writer};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -51,6 +48,6 @@ pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<Device> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<WintunStream>, Writer, Reader>> {
+pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<simple_wintun::adapter::WintunStream>, crate::tun::windows::Writer, crate::tun::windows::Reader>> {
     windows::create_device(address, netmask)
 }

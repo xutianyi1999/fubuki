@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use crypto::rc4::Rc4;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use tokio::io::{BufReader, Error, ErrorKind, Result};
+use tokio::io::{Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -56,8 +56,7 @@ impl NatMapping {
     fn config_broadcast(&self) -> Result<()> {
         let map = self.get_all();
         let json_vec = map.to_json_vec()?;
-        (*BROADCAST).0.send(json_vec).res_auto_convert()?;
-        Ok(())
+        (*BROADCAST).0.send(json_vec).res_auto_convert()
     }
 }
 
@@ -110,7 +109,6 @@ async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
 async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
     let (rx, tx) = stream.split();
-    let rx = BufReader::new(rx);
 
     let mut reader = MsgReader::new(rx, rc4);
     let mut writer = MsgWriter::new(tx, rc4);

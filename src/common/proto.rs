@@ -7,7 +7,7 @@ use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use crypto::rc4::Rc4;
 use crypto::symmetriccipher::Encryptor;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error, ErrorKind, Result};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error, ErrorKind, Result};
 use tokio::net::UdpSocket;
 
 use crate::common::persistence::ToJson;
@@ -43,14 +43,14 @@ pub enum Msg<'a> {
 }
 
 pub struct MsgReader<R>
-    where R: AsyncBufRead
+    where R: AsyncRead
 {
     rx: R,
     rc4: Rc4,
 }
 
 impl<R> MsgReader<R>
-    where R: AsyncBufRead + Unpin
+    where R: AsyncRead + Unpin
 {
     pub fn new(rx: R, rc4: Rc4) -> Self {
         MsgReader { rx, rc4 }
@@ -83,7 +83,7 @@ impl<R> MsgReader<R>
                 let now = Utc::now().timestamp();
                 let r = now - old_time;
 
-                if (r > 10) || (r < 0) {
+                if (r > 10) || (r < -1) {
                     return Err(Error::new(ErrorKind::Other, "Message timeout"));
                 }
 
