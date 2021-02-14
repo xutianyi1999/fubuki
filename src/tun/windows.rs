@@ -48,11 +48,11 @@ pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<W
 
     let res = WintunAdapter::get_adapter(POOL_NAME, ADAPTER_NAME);
 
-    let adapter = if let Ok(adapter) = res {
-        adapter
-    } else {
-        WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?
+    if let Ok(adapter) = res {
+        adapter.delete_adapter()?;
     };
+
+    let adapter = WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?;
 
     adapter.set_ipaddr(&address.to_string(), netmask)?;
     let session = adapter.open_adapter(ADAPTER_BUFF_SIZE)?;

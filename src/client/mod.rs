@@ -93,7 +93,7 @@ pub async fn start(server_addr: SocketAddr,
                 Ok((msg, _)) => if let Msg::Data(buff) = msg {
                     to_local.send(buff.to_owned()).await.res_auto_convert()?;
                 }
-                Err(e) => error!("Recv datagram error: {}", e)
+                Err(e) => error!("Recv msg error: {}", e)
             }
         }
     };
