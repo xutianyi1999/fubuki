@@ -35,18 +35,16 @@ impl LocalMapping {
     }
 }
 
-pub async fn start(listen_addr: SocketAddr,
-                   server_addr: SocketAddr,
+pub async fn start(server_addr: SocketAddr,
                    rc4: Rc4,
-                   tun_address: (IpAddr, IpAddr),
-                   node_name: &str,
-) -> Result<()> {
+                   tun_address: (IpAddr, IpAddr)) -> Result<()> {
     let node_id: NodeId = rand::random();
 
     let tun_addr = tun_address.0;
     let netmask = tun_address.1;
 
     let device = create_device(tun_addr, netmask)?;
+    info!("Tun ip addr: {}", tun_addr);
     let (mut tun_tx, mut tun_rx) = device.split();
 
     let (to_local, mut recv_remote) = mpsc::channel::<Vec<u8>>(100);
@@ -65,7 +63,7 @@ pub async fn start(listen_addr: SocketAddr,
         loop {
             let size = tun_rx.recv_packet(&mut buff)?;
             let slice = &buff[..size];
-            let ipv4 = Ipv4Packet::new_checked(slice).res_auto_convert()?;
+            let ipv4 = Ipv4Packet::new_unchecked(slice);
 
             let dest_addr = ipv4.dst_addr();
             let dest_addr = IpAddr::from(dest_addr.0);
@@ -80,7 +78,7 @@ pub async fn start(listen_addr: SocketAddr,
         }
     });
 
-    let udp_socket = UdpSocket::bind(listen_addr).await?;
+    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
     let udp_rx = &udp_socket;
     let udp_tx1 = &udp_socket;
     let udp_tx2 = &udp_socket;
@@ -88,12 +86,16 @@ pub async fn start(listen_addr: SocketAddr,
     let u1 = async move {
         let mut udp_rx = MsgSocket::new(udp_rx, rc4);
 
-        while let Ok((msg, _)) = udp_rx.recv_msg().await {
-            if let Msg::Data(buff) = msg {
-                to_local.send(buff.to_owned()).await.res_auto_convert()?;
+        loop {
+            let res = udp_rx.recv_msg().await;
+
+            match res {
+                Ok((msg, _)) => if let Msg::Data(buff) = msg {
+                    to_local.send(buff.to_owned()).await.res_auto_convert()?;
+                }
+                Err(e) => error!("u1: {}", e)
             }
         }
-        Ok(())
     };
 
     let u2 = async move {
@@ -116,21 +118,50 @@ pub async fn start(listen_addr: SocketAddr,
 
     let node = Node {
         id: node_id,
-        name: String::from(node_name),
         tun_addr,
         source_udp_addr: None,
     };
 
     let th = tcp_handle(server_addr, rc4, node);
+    info!("Client start");
+    // tokio::select! {
+    //     res = t1 => res?,
+    //     res = t2 => res?,
+    //     res = u1 => res,
+    //     res = u2 => res,
+    //     res = h => res,
+    //     res = th => res
+    // }
 
-    tokio::select! {
-        res = t1 => res?,
-        res = t2 => res?,
-        res = u1 => res,
-        res = u2 => res,
-        res = h => res,
-        res = th => res
-    }
+    let res = tokio::select! {
+        res = t1 => {
+        println!("t1");
+         res?
+        }
+        res = t2 => {
+        println!("t2");
+        res?
+        }
+        res = u1 => {
+        println!("u1");
+        res
+        }
+        res = u2 => {
+        println!("u2");
+        res
+        }
+
+        res = h => {
+        println!("h");
+        res
+        }
+        res = th =>{
+         println!("th");
+         res
+        }
+    };
+    println!("=============");
+    res
 }
 
 async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()> {
@@ -158,7 +189,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
         };
 
         if let Err(e) = f().await {
-            error!("{}", e)
+            error!("th: {}", e)
         }
     }
 }

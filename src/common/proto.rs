@@ -24,7 +24,6 @@ pub type NodeId = u32;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Node {
     pub id: NodeId,
-    pub name: String,
     pub tun_addr: IpAddr,
     pub source_udp_addr: Option<SocketAddr>,
 }

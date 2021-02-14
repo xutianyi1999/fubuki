@@ -70,6 +70,8 @@ pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
 async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     let socket = UdpSocket::bind(listen_addr).await?;
+    info!("Udp socket listening on {}", listen_addr);
+
     let mut msg_socket = MsgSocket::new(&socket, rc4);
 
     while let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
@@ -93,6 +95,7 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
 async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await?;
+    info!("Tcp socket listening on {}", listen_addr);
 
     while let Ok((stream, _)) = listener.accept().await {
         tokio::spawn(async move {
