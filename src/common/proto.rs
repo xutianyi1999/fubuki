@@ -94,7 +94,7 @@ impl<R> MsgReader<R>
                 let node_map: HashMap<NodeId, Node> = serde_json::from_slice(&data).res_auto_convert()?;
                 Ok(Some(NodeMap(node_map)))
             }
-            _ => return Err(Error::new(ErrorKind::Other, "Message error"))
+            _ => return Err(Error::new(ErrorKind::Other, "Config message error"))
         }
     }
 }
@@ -136,7 +136,7 @@ impl<W> MsgWriter<W>
                 data.put_slice(&json_vec);
                 data
             }
-            _ => return Err(Error::new(ErrorKind::Other, "Message error"))
+            _ => panic!("Write message error")
         };
 
         let mut out = vec![0u8; data.len()];
@@ -182,7 +182,7 @@ impl MsgSocket<'_> {
             DATA => {
                 Ok((Msg::Data(&out[1..]), peer_addr))
             }
-            _ => Err(Error::new(ErrorKind::Other, "Message error"))
+            _ => Err(Error::new(ErrorKind::Other, "Datagram message error"))
         }
     }
 
@@ -204,7 +204,7 @@ impl MsgSocket<'_> {
                 buff[1..(data_len + 1)].copy_from_slice(data);
                 &buff[..(data_len + 1)]
             }
-            _ => return Err(Error::new(ErrorKind::Other, "Message error"))
+            _ => panic!("Send Message error")
         };
 
         let slice = crypto(data, out, rc4)?;

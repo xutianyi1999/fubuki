@@ -119,7 +119,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
 
     let msg = match op {
         Some(v) => v,
-        None => return Err(Error::new(ErrorKind::Other, "Message error"))
+        None => return Err(Error::new(ErrorKind::Other, "Register error"))
     };
 
     let node_id = match msg {
@@ -128,7 +128,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
             MAPPING.insert(node_id, node);
             node_id
         }
-        _ => return Err(Error::new(ErrorKind::Other, "Message error"))
+        _ => return Err(Error::new(ErrorKind::Other, "Register error"))
     };
 
     let f1 = async move {
