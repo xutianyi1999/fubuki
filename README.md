@@ -13,9 +13,11 @@ fubuki是类似与tincVPN的简单组网工具
 
 ## 使用
 
-客户端
+[配置文件样例](https://github.com/xutianyi1999/fubuki/tree/master/cfg-example)
 
-下载wintun, https://www.wintun.net/
+#### 客户端
+
+下载wintun(https://www.wintun.net/)
 
 将wintun.dll和fubuki.exe保持相同目录
 
@@ -24,7 +26,7 @@ fubuki是类似与tincVPN的简单组网工具
 .\fubuki.exe client client-config.json
 ```
 
-服务端
+#### 服务端
 ```shell
 .\fubuki.exe server server-config.json
 ```
