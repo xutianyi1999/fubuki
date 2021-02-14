@@ -47,7 +47,7 @@ pub async fn start(listen_addr: SocketAddr,
     let netmask = tun_address.1;
 
     let device = create_device(tun_addr, netmask)?;
-    let (mut tun_rx, mut tun_tx) = device.split();
+    let (mut tun_tx, mut tun_rx) = device.split();
 
     let (to_local, mut recv_remote) = mpsc::channel::<Vec<u8>>(100);
     let (to_remote, mut recv_local) = mpsc::channel::<(Vec<u8>, SocketAddr)>(100);
