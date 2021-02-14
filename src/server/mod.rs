@@ -75,24 +75,21 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     let mut msg_socket = MsgSocket::new(&socket, rc4);
 
     loop {
-        match msg_socket.recv_msg().await {
-            Ok((msg, peer_addr)) => {
-                if let Msg::Heartbeat(node_id) = msg {
-                    if let Some(node) = MAPPING.get(&node_id) {
-                        if let Some(udp_addr) = node.source_udp_addr {
-                            if udp_addr == peer_addr {
-                                continue;
-                            }
-                        };
+        if let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
+            if let Msg::Heartbeat(node_id) = msg {
+                if let Some(node) = MAPPING.get(&node_id) {
+                    if let Some(udp_addr) = node.source_udp_addr {
+                        if udp_addr == peer_addr {
+                            continue;
+                        }
+                    };
 
-                        MAPPING.update(&node_id, |_, mut node| {
-                            node.source_udp_addr = Some(peer_addr);
-                            node
-                        });
-                    }
+                    MAPPING.update(&node_id, |_, mut node| {
+                        node.source_udp_addr = Some(peer_addr);
+                        node
+                    });
                 }
             }
-            Err(e) => error!("Recv msg error: {}", e)
         }
     };
 }
