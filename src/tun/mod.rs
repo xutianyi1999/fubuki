@@ -1,5 +1,4 @@
 use std::net::IpAddr;
-use std::sync::Arc;
 
 use tokio::io::Result;
 
@@ -43,11 +42,11 @@ pub trait Rx: Clone {
 }
 
 #[cfg(target_os = "linux")]
-pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<Device> {
+pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<tun::platform::Device, tun::platform::posix::Writer, tun::platform::posix::Reader>> {
     linux::create_device(address, netmask)
 }
 
 #[cfg(target_os = "windows")]
-pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<simple_wintun::adapter::WintunStream>, crate::tun::windows::Writer, crate::tun::windows::Reader>> {
+pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<std::sync::Arc<simple_wintun::adapter::WintunStream>, crate::tun::windows::Writer, crate::tun::windows::Reader>> {
     windows::create_device(address, netmask)
 }
