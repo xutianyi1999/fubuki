@@ -11,7 +11,8 @@ use crate::tun::{Rx, TunDevice, Tx};
 pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Device, Writer, Reader>> {
     let mut config = tun::Configuration::default();
     config.address(address)
-        .netmask(netmask);
+        .netmask(netmask)
+        .up();
 
     config.platform(|config| {
         config.packet_information(false);
