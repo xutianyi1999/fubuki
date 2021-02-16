@@ -3,8 +3,10 @@ Simple VPN implemented using rust
 
 fubuki是类似与tincVPN的简单组网工具
 
-目前支持的平台：
-  - Windows
+支持的平台：
+
+- Windows
+- Linux
   
 ## 工作机制
 
@@ -17,16 +19,28 @@ fubuki是类似与tincVPN的简单组网工具
 
 #### 客户端
 
+###### Windows
+
 下载wintun(https://www.wintun.net/)
 
 将wintun.dll和fubuki.exe保持相同目录
 
 在管理员模式运行
+
 ```shell
 .\fubuki.exe client client-config.json
 ```
 
+###### Linux
+
+需要内核支持tun模块
+
+```shell
+sudo ./fubuki client client-config.json
+```
+
 #### 服务端
+
 ```shell
 .\fubuki.exe server server-config.json
 ```
