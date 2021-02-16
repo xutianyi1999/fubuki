@@ -19,7 +19,7 @@ fubuki是类似与tincVPN的简单组网工具
 
 #### 客户端
 
-###### Windows
+#### Windows
 
 下载wintun(https://www.wintun.net/)
 
@@ -31,7 +31,7 @@ fubuki是类似与tincVPN的简单组网工具
 .\fubuki.exe client client-config.json
 ```
 
-###### Linux
+#### Linux
 
 需要内核支持tun模块
 
