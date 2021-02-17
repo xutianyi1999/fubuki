@@ -224,7 +224,7 @@ pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> Result<&
 }
 
 pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
-    let socket = UdpSocket::bind("0.0.0.0").await?;
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(dest_addr).await?;
     let addr = socket.local_addr()?;
     Ok(addr.ip())
