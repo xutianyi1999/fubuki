@@ -25,6 +25,7 @@ pub type NodeId = u32;
 pub struct Node {
     pub id: NodeId,
     pub tun_addr: IpAddr,
+    pub lan_udp_addr: SocketAddr,
     pub source_udp_addr: Option<SocketAddr>,
 }
 
@@ -220,4 +221,11 @@ pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> Result<&
     rc4.encrypt(&mut ref_read_buf, &mut ref_write_buf, false)
         .res_convert(|_| "Crypto error".to_string())?;
     Ok(&mut output[..input.len()])
+}
+
+pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0").await?;
+    socket.connect(dest_addr).await?;
+    let addr = socket.local_addr()?;
+    Ok(addr.ip())
 }

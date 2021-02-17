@@ -26,9 +26,10 @@ pub struct Writer {
 impl Rx for Reader {
     fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         let res = self.session.read_packet(buff)?;
+
         match res {
             ReadResult::Success(len) => Ok(len),
-            ReadResult::NotEnoughSize(_) => Err(Error::new(ErrorKind::Other, "Not enough buff size"))
+            ReadResult::NotEnoughSize(_) => Ok(0)
         }
     }
 }

@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
 use crate::common::persistence::ToJson;
-use crate::common::proto::{Msg, MsgReader, MsgSocket, MsgWriter, Node, NodeId};
+use crate::common::proto::{get_interface_addr, Msg, MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::res::StdResAutoConvert;
 use crate::tun::{create_device, Rx, Tx};
 
@@ -63,10 +63,16 @@ pub async fn start(server_addr: SocketAddr,
     });
 
     let t2 = tokio::task::spawn_blocking(move || {
-        let mut buff = vec![0u8; 65536];
+        // 65507 - 1(DATA MODE) = 65506
+        let mut buff = vec![0u8; 65506];
 
         loop {
             let size = tun_rx.recv_packet(&mut buff)?;
+
+            if size == 0 {
+                continue;
+            }
+
             let slice = &buff[..size];
             let ipv4 = Ipv4Packet::new_unchecked(slice);
 
@@ -75,15 +81,30 @@ pub async fn start(server_addr: SocketAddr,
 
             let op = MAPPING.get(&dest_addr);
 
-            if let Some(node) = op {
-                if let Some(addr) = node.source_udp_addr {
-                    to_remote.blocking_send((slice.to_vec(), addr)).res_auto_convert()?;
+            if let Some(dest_node) = op {
+                if let Some(dest_addr) = dest_node.source_udp_addr {
+                    let local_node = MAPPING.get(&tun_addr);
+
+                    if let Some(local_node) = local_node {
+                        if let Some(local_addr) = local_node.source_udp_addr {
+                            let addr = if local_addr.ip() == dest_addr.ip() {
+                                dest_node.lan_udp_addr
+                            } else {
+                                dest_addr
+                            };
+                            to_remote.blocking_send((slice.to_vec(), addr)).res_auto_convert()?;
+                        }
+                    }
                 }
             }
         }
     });
 
-    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let listen_ip = get_interface_addr(server_addr).await?;
+
+    let udp_socket = UdpSocket::bind((listen_ip, 0)).await?;
+    let udp_socket_addr = udp_socket.local_addr()?;
+
     let udp_rx = &udp_socket;
     let udp_tx1 = &udp_socket;
     let udp_tx2 = &udp_socket;
@@ -115,14 +136,36 @@ pub async fn start(server_addr: SocketAddr,
         let mut udp_tx = MsgSocket::new(udp_tx2, rc4);
 
         loop {
-            sleep(Duration::from_secs(3)).await;
             udp_tx.send_msg(Msg::Heartbeat(node_id), server_addr).await?;
+            let map = MAPPING.get_all();
+            let local_node = map.get(&tun_addr);
+
+            let client_addr_list: Vec<Option<SocketAddr>> = map.iter()
+                .map(|(_, node)| node.source_udp_addr)
+                .filter(|op| op.is_some())
+                .collect();
+
+            for dest_addr in client_addr_list {
+                let dest_addr = dest_addr.unwrap();
+
+                if let Some(local_node) = local_node {
+                    if let Some(local_addr) = local_node.source_udp_addr {
+                        if local_addr.ip() == dest_addr.ip() {
+                            continue;
+                        }
+                    }
+                }
+                udp_tx.send_msg(Msg::Heartbeat(node_id), dest_addr).await?;
+            }
+
+            sleep(Duration::from_secs(5)).await;
         }
     };
 
     let node = Node {
         id: node_id,
         tun_addr,
+        lan_udp_addr: udp_socket_addr,
         source_udp_addr: None,
     };
 
