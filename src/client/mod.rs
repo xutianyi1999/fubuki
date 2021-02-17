@@ -10,6 +10,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
+use crate::common::persistence::ToJson;
 use crate::common::proto::{Msg, MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::res::StdResAutoConvert;
 use crate::tun::{create_device, Rx, Tx};
@@ -27,6 +28,10 @@ impl LocalMapping {
 
     fn get(&self, dest_addr: &IpAddr) -> Option<Node> {
         self.map.read().get(dest_addr).cloned()
+    }
+
+    fn get_all(&self) -> HashMap<IpAddr, Node> {
+        (*self.map.read()).clone()
     }
 
     fn update_all(&self, map: HashMap<IpAddr, Node>) -> () {
@@ -122,6 +127,8 @@ pub async fn start(server_addr: SocketAddr,
     };
 
     let th = tcp_handle(server_addr, rc4, node);
+    let s = tokio::task::spawn_blocking(|| stdin());
+
     info!("Client start");
 
     let res = tokio::select! {
@@ -130,7 +137,8 @@ pub async fn start(server_addr: SocketAddr,
         res = u1 => res,
         res = u2 => res,
         res = h => res,
-        res = th => res
+        res = th => res,
+        res = s => res?
     };
 
     error!("Client crashed");
@@ -164,6 +172,28 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
 
         if let Err(e) = f().await {
             error!("Tcp handle error -> {}", e)
+        }
+    }
+}
+
+fn stdin() -> Result<()> {
+    let stdin = std::io::stdin();
+
+    loop {
+        let mut cmd = String::new();
+        stdin.read_line(&mut cmd)?;
+
+        match cmd.trim() {
+            "show" => {
+                let map = MAPPING.get_all();
+                let node_list: Vec<Node> = map.iter()
+                    .map(|(_, v)| v.clone())
+                    .collect();
+
+                let json = node_list.to_json_string_pretty()?;
+                println!("{}", json)
+            }
+            _ => ()
         }
     }
 }
