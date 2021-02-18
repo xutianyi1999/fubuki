@@ -97,14 +97,15 @@ async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await?;
     info!("Tcp socket listening on {}", listen_addr);
 
-    while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(async move {
-            if let Err(e) = tunnel(stream, rc4).await {
-                error!("tunnel error -> {}", e)
-            }
-        });
-    };
-    Ok(())
+    loop {
+        if let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                if let Err(e) = tunnel(stream, rc4).await {
+                    error!("tunnel error -> {}", e)
+                }
+            });
+        };
+    }
 }
 
 async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {

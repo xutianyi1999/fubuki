@@ -84,7 +84,7 @@ impl<R> MsgReader<R>
                 let now = Utc::now().timestamp();
                 let r = now - old_time;
 
-                if (r > 10) || (r < -1) {
+                if (r > 10) || (r < -10) {
                     return Err(Error::new(ErrorKind::Other, "Message timeout"));
                 }
 
