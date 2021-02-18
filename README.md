@@ -2,12 +2,13 @@
 Simple VPN implemented using rust
 
 fubuki是类似与tincVPN的简单组网工具
+##### 不支持对等NAT
 
 支持的平台：
 
 - Windows
 - Linux
-  
+
 ## 工作机制
 
 它由一台拥有公网IP的服务器来维持各个内网客户端的实际地址映射，在客户端和客户端之间实现P2P通信
@@ -30,7 +31,7 @@ fubuki是类似与tincVPN的简单组网工具
 ```shell
 .\fubuki.exe client client-config.json
 ```
-
+stdin "show" 可以打印接入的客户端
 #### Linux
 
 需要内核支持tun模块
