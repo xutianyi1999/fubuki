@@ -47,6 +47,7 @@ pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<W
     };
     let netmask = get_netmask_bit_count(ipv4);
 
+    WintunAdapter::initialize();
     let res = WintunAdapter::get_adapter(POOL_NAME, ADAPTER_NAME);
 
     if let Ok(adapter) = res {
