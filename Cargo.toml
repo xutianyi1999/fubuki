@@ -20,6 +20,7 @@ dashmap = { version = "4", features = ["serde"] }
 parking_lot = "0.11"
 smoltcp = { version = "0.7", default-features = false, features = ["proto-ipv4", "proto-ipv6", "socket-tcp"] }
 rand = "0.8"
+socket2 = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tun = { git = "https://github.com/xutianyi1999/rust-tun.git", branch = "fix" }

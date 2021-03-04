@@ -8,6 +8,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
 
+use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
@@ -109,6 +110,7 @@ async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 }
 
 async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
+    stream.set_keepalive()?;
     let (rx, tx) = stream.split();
 
     let mut reader = MsgReader::new(rx, rc4);

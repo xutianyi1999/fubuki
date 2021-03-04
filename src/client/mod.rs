@@ -10,6 +10,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
+use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{get_interface_addr, Msg, MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::res::StdResAutoConvert;
@@ -194,6 +195,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
 
         let f = || async move {
             let mut stream = TcpStream::connect(server_addr).await?;
+            stream.set_keepalive()?;
             info!("Server connected");
             let (rx, tx) = stream.split();
 
