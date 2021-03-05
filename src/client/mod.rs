@@ -218,6 +218,9 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
         if let Err(e) = f().await {
             error!("Tcp handle error -> {}", e)
         }
+
+        // 尝试修复重连后将原映射覆盖
+        sleep(Duration::from_secs(3)).await;
     }
 }
 
