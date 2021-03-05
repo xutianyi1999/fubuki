@@ -47,7 +47,9 @@ async fn process() -> Result<()> {
             let client_config: ClientConfig = serde_json::from_str(&json_str).res_auto_convert()?;
             let rc4 = Rc4::new(client_config.key.as_bytes());
             let tun_addr = (client_config.tun.ip, client_config.tun.netmask);
-            client::start(client_config.server_addr, rc4, tun_addr).await
+            let buff_capacity = client_config.buff_capacity;
+
+            client::start(client_config.server_addr, rc4, tun_addr, buff_capacity).await
         }
         "server" => {
             let server_config: ServerConfig = serde_json::from_str(&json_str).res_auto_convert()?;
@@ -88,5 +90,6 @@ struct TunConfig {
 struct ClientConfig {
     server_addr: SocketAddr,
     tun: TunConfig,
+    buff_capacity: usize,
     key: String,
 }

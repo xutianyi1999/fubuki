@@ -43,7 +43,8 @@ impl LocalMapping {
 
 pub async fn start(server_addr: SocketAddr,
                    rc4: Rc4,
-                   tun_address: (IpAddr, IpAddr)) -> Result<()> {
+                   tun_address: (IpAddr, IpAddr),
+                   buff_capacity: usize) -> Result<()> {
     let node_id: NodeId = rand::random();
 
     let tun_addr = tun_address.0;
@@ -53,8 +54,8 @@ pub async fn start(server_addr: SocketAddr,
     info!("Tun adapter ip address: {}", tun_addr);
     let (mut tun_tx, mut tun_rx) = device.split();
 
-    let (to_local, mut recv_remote) = mpsc::channel::<Vec<u8>>(100);
-    let (to_remote, mut recv_local) = mpsc::channel::<(Vec<u8>, SocketAddr)>(100);
+    let (to_local, mut recv_remote) = mpsc::channel::<Vec<u8>>(buff_capacity);
+    let (to_remote, mut recv_local) = mpsc::channel::<(Vec<u8>, SocketAddr)>(buff_capacity);
 
     let t1 = tokio::task::spawn_blocking(move || {
         while let Some(packet) = recv_remote.blocking_recv() {
