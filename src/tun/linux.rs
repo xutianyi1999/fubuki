@@ -5,6 +5,7 @@ use tokio::io::Result;
 use tun::platform::Device;
 use tun::platform::posix::{Reader, Writer};
 
+use crate::common::proto::MTU;
 use crate::common::res::StdResConvert;
 use crate::tun::{Rx, TunDevice, Tx};
 
@@ -12,6 +13,7 @@ pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Devic
     let mut config = tun::Configuration::default();
     config.address(address)
         .netmask(netmask)
+        .mtu(MTU as i32)
         .up();
 
     config.platform(|config| {

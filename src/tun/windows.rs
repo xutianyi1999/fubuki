@@ -1,10 +1,12 @@
 use std::net::{IpAddr, Ipv4Addr};
+use std::process::Command;
 use std::sync::Arc;
 
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
 use simple_wintun::ReadResult;
 use tokio::io::{Error, ErrorKind, Result};
 
+use crate::common::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
 
 const POOL_NAME: &str = "Wintun";
@@ -57,6 +59,10 @@ pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<W
     let adapter = WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?;
 
     adapter.set_ipaddr(&address.to_string(), netmask)?;
+    Command::new("netsh")
+        .args(vec!["interface", "ipv4", "set", "subinterface", ADAPTER_NAME, &format!("mtu={}", MTU), "store=persistent"])
+        .output()?;
+
     let session = adapter.open_adapter(ADAPTER_BUFF_SIZE)?;
     let session = Arc::new(session);
 

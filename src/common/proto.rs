@@ -14,6 +14,8 @@ use crate::common::persistence::ToJson;
 use crate::common::proto::Msg::{Data, Heartbeat, NodeMap, NodeMapSerde, Register};
 use crate::common::res::{StdResAutoConvert, StdResConvert};
 
+pub const MTU: usize = 1420;
+
 const REGISTER: u8 = 0x00;
 const NODE_MAP: u8 = 0x01;
 const HEARTBEAT: u8 = 0x02;
@@ -157,7 +159,7 @@ pub struct MsgSocket<'a> {
 
 impl MsgSocket<'_> {
     pub fn new(socket: &UdpSocket, rc4: Rc4) -> MsgSocket {
-        MsgSocket { socket, rc4, buff: vec![0u8; 65536], out: vec![0u8; 65536] }
+        MsgSocket { socket, rc4, buff: vec![0u8; MTU + 1], out: vec![0u8; MTU + 1] }
     }
 
     pub async fn recv_msg(&mut self) -> Result<(Msg<'_>, SocketAddr)> {

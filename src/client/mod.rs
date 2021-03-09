@@ -12,7 +12,7 @@ use tokio::time::{Duration, sleep};
 
 use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
-use crate::common::proto::{get_interface_addr, Msg, MsgReader, MsgSocket, MsgWriter, Node, NodeId};
+use crate::common::proto::{get_interface_addr, Msg, MsgReader, MsgSocket, MsgWriter, MTU, Node, NodeId};
 use crate::common::res::StdResAutoConvert;
 use crate::tun::{create_device, Rx, Tx};
 
@@ -65,8 +65,7 @@ pub async fn start(server_addr: SocketAddr,
     });
 
     let t2 = tokio::task::spawn_blocking(move || {
-        // 65507 - 1(DATA MODE) = 65506
-        let mut buff = vec![0u8; 65506];
+        let mut buff = [0u8; MTU];
 
         loop {
             let size = tun_rx.recv_packet(&mut buff)?;
