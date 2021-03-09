@@ -153,13 +153,13 @@ impl<W> MsgWriter<W>
 pub struct MsgSocket<'a> {
     socket: &'a UdpSocket,
     rc4: Rc4,
-    buff: Vec<u8>,
-    out: Vec<u8>,
+    buff: [u8; MTU + 1],
+    out: [u8; MTU + 1],
 }
 
 impl MsgSocket<'_> {
     pub fn new(socket: &UdpSocket, rc4: Rc4) -> MsgSocket {
-        MsgSocket { socket, rc4, buff: vec![0u8; MTU + 1], out: vec![0u8; MTU + 1] }
+        MsgSocket { socket, rc4, buff: [0u8; MTU + 1], out: [0u8; MTU + 1] }
     }
 
     pub async fn recv_msg(&mut self) -> Result<(Msg<'_>, SocketAddr)> {
