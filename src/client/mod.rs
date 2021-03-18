@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 
+use chrono::Utc;
 use crypto::rc4::Rc4;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
@@ -168,7 +169,7 @@ pub async fn start(server_addr: SocketAddr,
         tun_addr,
         lan_udp_addr: udp_socket_addr,
         source_udp_addr: None,
-        register_time: None
+        register_time: 0
     };
 
     let th = tcp_handle(server_addr, rc4, node);
@@ -192,7 +193,7 @@ pub async fn start(server_addr: SocketAddr,
 
 async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()> {
     loop {
-        let node = node.clone();
+        let mut node = node.clone();
 
         let f = || async move {
             let mut stream = TcpStream::connect(server_addr).await?;
@@ -203,6 +204,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
             let mut tx = MsgWriter::new(tx, rc4);
             let mut rx = MsgReader::new(rx, rc4);
 
+            node.register_time = Utc::now().timestamp();
             tx.write_msg(Msg::Register(node)).await?;
 
             while let Some(msg) = rx.read_msg().await? {
@@ -220,7 +222,6 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
             error!("Tcp handle error -> {}", e)
         }
 
-        // 尝试修复重连后将原映射覆盖
         sleep(Duration::from_secs(3)).await;
     }
 }

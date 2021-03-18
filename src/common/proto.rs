@@ -29,7 +29,7 @@ pub struct Node {
     pub tun_addr: IpAddr,
     pub lan_udp_addr: SocketAddr,
     pub source_udp_addr: Option<SocketAddr>,
-    pub register_time: Option<i64>
+    pub register_time: i64,
 }
 
 impl Node {
@@ -83,15 +83,14 @@ impl<R> MsgReader<R>
 
         match mode {
             REGISTER => {
-                let old_time = data.get_i64();
+                let node = Node::from_slice(&data)?;
+                let old_time = node.register_time;
                 let now = Utc::now().timestamp();
                 let r = now - old_time;
 
                 if (r > 10) || (r < -10) {
                     return Err(Error::new(ErrorKind::Other, "Message timeout"));
                 }
-
-                let node = Node::from_slice(&data)?;
                 Ok(Some(Register(node)))
             }
             NODE_MAP => {
@@ -125,10 +124,9 @@ impl<W> MsgWriter<W>
             Register(node) => {
                 let v = node.to_json_vec()?;
                 let len = v.len();
-                let mut data: Vec<u8> = Vec::with_capacity(1 + 8 + len);
+                let mut data: Vec<u8> = Vec::with_capacity(1 + len);
 
                 data.put_u8(REGISTER);
-                data.put_i64(Utc::now().timestamp());
                 data.put_slice(&v);
                 data
             }

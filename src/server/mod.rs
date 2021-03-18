@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 
-use chrono::Utc;
 use crypto::rc4::Rc4;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -125,10 +124,9 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
     };
 
     let (node_id, register_time) = match msg {
-        Msg::Register(mut node) => {
-            let register_time = Utc::now().timestamp();
-            node.register_time = Some(register_time);
+        Msg::Register(node) => {
             let node_id = node.id;
+            let register_time = node.register_time;
 
             MAPPING.insert(node_id, node);
             (node_id, register_time)
@@ -157,8 +155,9 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
         res = f2 => res,
     };
 
+    // 存在并发一致性问题
     if let Some(node) = MAPPING.get(&node_id) {
-        if node.register_time.unwrap() == register_time {
+        if node.register_time == register_time {
             MAPPING.remove(&node_id);
         }
     }
