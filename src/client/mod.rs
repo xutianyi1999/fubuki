@@ -168,6 +168,7 @@ pub async fn start(server_addr: SocketAddr,
         tun_addr,
         lan_udp_addr: udp_socket_addr,
         source_udp_addr: None,
+        register_time: None
     };
 
     let th = tcp_handle(server_addr, rc4, node);

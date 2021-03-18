@@ -29,6 +29,7 @@ pub struct Node {
     pub tun_addr: IpAddr,
     pub lan_udp_addr: SocketAddr,
     pub source_udp_addr: Option<SocketAddr>,
+    pub register_time: Option<i64>
 }
 
 impl Node {
