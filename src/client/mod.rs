@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::RwLock;
 
 use chrono::Utc;
 use crypto::rc4::Rc4;
 use once_cell::sync::Lazy;
+use parking_lot::RwLock;
 use smoltcp::wire::Ipv4Packet;
 use tokio::io::Result;
 use tokio::net::{TcpStream, UdpSocket};
@@ -29,11 +29,11 @@ impl LocalMapping {
     }
 
     fn get_all(&self) -> HashMap<IpAddr, Node> {
-        (*self.map.read().unwrap()).clone()
+        (*self.map.read()).clone()
     }
 
     fn update_all(&self, map: HashMap<IpAddr, Node>) -> () {
-        let mut m = self.map.write().unwrap();
+        let mut m = self.map.write();
         *m = map;
     }
 }
@@ -77,7 +77,7 @@ pub async fn start(server_addr: SocketAddr,
             let dest_addr = ipv4.dst_addr();
             let dest_addr = IpAddr::from(dest_addr.0);
 
-            let guard = MAPPING.map.read().unwrap();
+            let guard = MAPPING.map.read();
 
             if let Some(dest_node) = guard.get(&dest_addr) {
                 if let Some(dest_addr) = dest_node.source_udp_addr {

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::RwLock;
 
 use crypto::rc4::Rc4;
 use once_cell::sync::Lazy;
+use parking_lot::RwLock;
 use tokio::io::{Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::watch;
@@ -13,6 +13,7 @@ use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
+use crate::common::res::StdResAutoConvert;
 
 static MAPPING: Lazy<RwLock<HashMap<NodeId, Node>>> = Lazy::new(|| RwLock::new(HashMap::new()));
 
@@ -35,7 +36,7 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
             if let Msg::Heartbeat(node_id) = msg {
-                let guard = MAPPING.read().unwrap();
+                let guard = MAPPING.read();
 
                 if let Some(node) = guard.get(&node_id) {
                     if let Some(udp_addr) = node.source_udp_addr {
@@ -46,14 +47,14 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
                     drop(guard);
 
-                    let mut guard = MAPPING.write().unwrap();
+                    let mut guard = MAPPING.write();
 
                     if let Some(node) = guard.get_mut(&node_id) {
                         node.source_udp_addr = Some(peer_addr);
 
                         let map = (*guard).clone();
                         drop(guard);
-                        (*BROADCAST).0.send(map.to_json_vec().unwrap()).unwrap();
+                        (*BROADCAST).0.send(map.to_json_vec()?).res_auto_convert()?;
                     }
                 }
             }
@@ -95,12 +96,12 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
             let node_id = node.id;
             let register_time = node.register_time;
 
-            let mut guard = MAPPING.write().unwrap();
+            let mut guard = MAPPING.write();
             guard.insert(node_id, node);
             let map = (*guard).clone();
 
             drop(guard);
-            (*BROADCAST).0.send(map.to_json_vec().unwrap()).unwrap();
+            (*BROADCAST).0.send(map.to_json_vec()?).res_auto_convert()?;
             (node_id, register_time)
         }
         _ => return Err(Error::new(ErrorKind::Other, "Register error"))
@@ -127,7 +128,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
         res = f2 => res,
     };
 
-    let mut guard = MAPPING.write().unwrap();
+    let mut guard = MAPPING.write();
 
     if let Some(node) = guard.get(&node_id) {
         if node.register_time == register_time {
@@ -135,7 +136,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
 
             let map = (*guard).clone();
             drop(guard);
-            (*BROADCAST).0.send(map.to_json_vec().unwrap()).unwrap();
+            (*BROADCAST).0.send(map.to_json_vec()?).res_auto_convert()?;
         }
     }
     res
