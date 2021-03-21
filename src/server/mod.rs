@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::RwLock;
 
 use crypto::rc4::Rc4;
-use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use tokio::io::{Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -12,54 +13,11 @@ use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
-use crate::common::res::StdResAutoConvert;
 
-static MAPPING: Lazy<NatMapping> = Lazy::new(|| NatMapping::new());
+static MAPPING: Lazy<RwLock<HashMap<NodeId, Node>>> = Lazy::new(|| RwLock::new(HashMap::new()));
+
 static BROADCAST: Lazy<(Sender<Vec<u8>>, Receiver<Vec<u8>>)> =
     Lazy::new(|| watch::channel::<Vec<u8>>(Vec::new()));
-
-struct NatMapping {
-    map: DashMap<NodeId, Node>
-}
-
-impl NatMapping {
-    fn new() -> Self {
-        NatMapping { map: DashMap::new() }
-    }
-
-    fn get(&self, id: &NodeId) -> Option<Node> {
-        let op = self.map.get(id);
-        op.map(|v| v.clone())
-    }
-
-    fn insert(&self, id: NodeId, node: Node) -> () {
-        self.map.insert(id, node);
-        self.config_broadcast().unwrap();
-    }
-
-    fn update<F>(&self, id: &NodeId, f: F) -> ()
-        where F: FnOnce(&u32, Node) -> Node
-    {
-        self.map.alter(id, f);
-        self.config_broadcast().unwrap();
-    }
-
-    fn remove(&self, id: &NodeId) -> Option<Node> {
-        let op = self.map.remove(id).map(|v| v.1);
-        self.config_broadcast().unwrap();
-        op
-    }
-
-    fn get_all(&self) -> DashMap<NodeId, Node> {
-        self.map.clone()
-    }
-
-    fn config_broadcast(&self) -> Result<()> {
-        let map = self.get_all();
-        let json_vec = map.to_json_vec()?;
-        (*BROADCAST).0.send(json_vec).res_auto_convert()
-    }
-}
 
 pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     tokio::select! {
@@ -77,17 +35,20 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
             if let Msg::Heartbeat(node_id) = msg {
-                if let Some(node) = MAPPING.get(&node_id) {
+                let guard = MAPPING.read().unwrap();
+
+                if let Some(node) = guard.get(&node_id) {
                     if let Some(udp_addr) = node.source_udp_addr {
                         if udp_addr == peer_addr {
                             continue;
                         }
                     };
 
-                    MAPPING.update(&node_id, |_, mut node| {
+                    drop(guard);
+
+                    if let Some(node) = MAPPING.write().unwrap().get_mut(&node_id) {
                         node.source_udp_addr = Some(peer_addr);
-                        node
-                    });
+                    }
                 }
             }
         }
@@ -128,7 +89,12 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
             let node_id = node.id;
             let register_time = node.register_time;
 
-            MAPPING.insert(node_id, node);
+            let mut guard = MAPPING.write().unwrap();
+            guard.insert(node_id, node);
+            let map = (*guard).clone();
+
+            drop(guard);
+            (*BROADCAST).0.send(map.to_json_vec().unwrap()).unwrap();
             (node_id, register_time)
         }
         _ => return Err(Error::new(ErrorKind::Other, "Register error"))
@@ -155,10 +121,15 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
         res = f2 => res,
     };
 
-    // 存在并发一致性问题
-    if let Some(node) = MAPPING.get(&node_id) {
+    let mut guard = MAPPING.write().unwrap();
+
+    if let Some(node) = guard.get(&node_id) {
         if node.register_time == register_time {
-            MAPPING.remove(&node_id);
+            guard.remove(&node_id);
+
+            let map = (*guard).clone();
+            drop(guard);
+            (*BROADCAST).0.send(map.to_json_vec().unwrap()).unwrap();
         }
     }
     res
