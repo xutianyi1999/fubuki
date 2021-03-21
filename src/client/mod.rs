@@ -171,7 +171,7 @@ pub async fn start(server_addr: SocketAddr,
     };
 
     let th = tcp_handle(server_addr, rc4, node);
-    let s = tokio::task::spawn_blocking(|| stdin());
+    tokio::task::spawn_blocking(|| stdin());
 
     info!("Client start");
 
@@ -182,7 +182,6 @@ pub async fn start(server_addr: SocketAddr,
         res = u2 => res,
         res = h => res,
         res = th => res,
-        res = s => res?
     };
 
     error!("Client crashed");
@@ -229,7 +228,11 @@ fn stdin() -> Result<()> {
 
     loop {
         let mut cmd = String::new();
-        stdin.read_line(&mut cmd)?;
+        let len = stdin.read_line(&mut cmd)?;
+
+        if len == 0 {
+            return Ok(());
+        }
 
         match cmd.trim() {
             "show" => {
