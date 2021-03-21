@@ -46,8 +46,14 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
                     drop(guard);
 
-                    if let Some(node) = MAPPING.write().unwrap().get_mut(&node_id) {
+                    let mut guard = MAPPING.write().unwrap();
+
+                    if let Some(node) = guard.get_mut(&node_id) {
                         node.source_udp_addr = Some(peer_addr);
+
+                        let map = (*guard).clone();
+                        drop(guard);
+                        (*BROADCAST).0.send(map.to_json_vec().unwrap()).unwrap();
                     }
                 }
             }
