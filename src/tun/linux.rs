@@ -27,7 +27,8 @@ pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Devic
 
 impl Tx for Writer {
     fn send_packet(&mut self, buff: &[u8]) -> Result<()> {
-        self.write_all(buff)
+        self.write(buff)?;
+        Ok(())
     }
 }
 
