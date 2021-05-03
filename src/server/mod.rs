@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crypto::rc4::Rc4;
-use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use tokio::io::{Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -15,19 +15,25 @@ use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
 use crate::common::res::StdResAutoConvert;
 
-static MAPPING: Lazy<RwLock<HashMap<NodeId, Node>>> = Lazy::new(|| RwLock::new(HashMap::new()));
-
-static BROADCAST: Lazy<(Sender<Vec<u8>>, Receiver<Vec<u8>>)> =
-    Lazy::new(|| watch::channel::<Vec<u8>>(Vec::new()));
+type Mapping = Arc<RwLock<HashMap<NodeId, Node>>>;
+type Broadcast = Arc<(Sender<Vec<u8>>, Receiver<Vec<u8>>)>;
 
 pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
+    let mapping = Arc::new(RwLock::new(HashMap::new()));
+    let broadcast = Arc::new(watch::channel::<Vec<u8>>(Vec::new()));
+
     tokio::select! {
-        res = udp_handle(listen_addr, rc4) => res,
-        res = tcp_handle(listen_addr, rc4) => res
+        res = udp_handle(listen_addr, rc4, &mapping, &broadcast) => res,
+        res = tcp_handle(listen_addr, rc4, &mapping, &broadcast) => res
     }
 }
 
-async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
+async fn udp_handle(
+    listen_addr: SocketAddr,
+    rc4: Rc4,
+    mapping: &Mapping,
+    broadcast: &Broadcast,
+) -> Result<()> {
     let socket = UdpSocket::bind(listen_addr).await?;
     info!("Udp socket listening on {}", listen_addr);
 
@@ -36,7 +42,7 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
             if let Msg::Heartbeat(node_id) = msg {
-                let guard = MAPPING.read();
+                let guard = mapping.read();
 
                 if let Some(node) = guard.get(&node_id) {
                     if let Some(udp_addr) = node.source_udp_addr {
@@ -47,14 +53,14 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
 
                     drop(guard);
 
-                    let mut guard = MAPPING.write();
+                    let mut guard = mapping.write();
 
                     if let Some(node) = guard.get_mut(&node_id) {
                         node.source_udp_addr = Some(peer_addr);
 
                         let map = (*guard).clone();
                         drop(guard);
-                        (*BROADCAST).0.send(map.to_json_vec()?).res_auto_convert()?;
+                        broadcast.0.send(map.to_json_vec()?).res_auto_convert()?;
                     }
                 }
             }
@@ -62,14 +68,22 @@ async fn udp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     };
 }
 
-async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
+async fn tcp_handle(
+    listen_addr: SocketAddr,
+    rc4: Rc4,
+    mapping: &Mapping,
+    broadcast: &Broadcast,
+) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await?;
     info!("Tcp socket listening on {}", listen_addr);
 
     loop {
         if let Ok((stream, _)) = listener.accept().await {
+            let inner_mapping = mapping.clone();
+            let inner_broadcast = broadcast.clone();
+
             tokio::spawn(async move {
-                if let Err(e) = tunnel(stream, rc4).await {
+                if let Err(e) = tunnel(stream, rc4, inner_mapping, inner_broadcast).await {
                     error!("tunnel error -> {}", e)
                 }
             });
@@ -77,7 +91,12 @@ async fn tcp_handle(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
     }
 }
 
-async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
+async fn tunnel(
+    mut stream: TcpStream,
+    rc4: Rc4,
+    mapping: Mapping,
+    broadcast: Broadcast,
+) -> Result<()> {
     stream.set_keepalive()?;
     let (rx, tx) = stream.split();
 
@@ -96,19 +115,19 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
             let node_id = node.id;
             let register_time = node.register_time;
 
-            let mut guard = MAPPING.write();
+            let mut guard = mapping.write();
             guard.insert(node_id, node);
             let map = (*guard).clone();
 
             drop(guard);
-            (*BROADCAST).0.send(map.to_json_vec()?).res_auto_convert()?;
+            broadcast.0.send(map.to_json_vec()?).res_auto_convert()?;
             (node_id, register_time)
         }
         _ => return Err(Error::new(ErrorKind::Other, "Register error"))
     };
 
-    let f1 = async move {
-        let mut rx = (*BROADCAST).1.clone();
+    let f1 = async {
+        let mut rx = broadcast.1.clone();
 
         while rx.changed().await.is_ok() {
             let vec = rx.borrow().clone();
@@ -128,7 +147,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
         res = f2 => res,
     };
 
-    let mut guard = MAPPING.write();
+    let mut guard = mapping.write();
 
     if let Some(node) = guard.get(&node_id) {
         if node.register_time == register_time {
@@ -136,7 +155,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4) -> Result<()> {
 
             let map = (*guard).clone();
             drop(guard);
-            (*BROADCAST).0.send(map.to_json_vec()?).res_auto_convert()?;
+            broadcast.0.send(map.to_json_vec()?).res_auto_convert()?;
         }
     }
     res
