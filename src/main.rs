@@ -13,6 +13,7 @@ use log::LevelFilter;
 use serde::Deserialize;
 use tokio::fs;
 use tokio::io::{Error, ErrorKind, Result};
+use tokio::sync::Notify;
 
 use crate::common::res::{OptionConvert, StdResAutoConvert};
 
@@ -44,7 +45,7 @@ async fn process() -> Result<()> {
 
     match mode.as_str() {
         "client" => {
-            let client_config: ClientConfig = serde_json::from_str(&json_str).res_auto_convert()?;
+            let client_config: ClientConfig = serde_json::from_str(&json_str)?;
             let rc4 = Rc4::new(client_config.key.as_bytes());
             let tun_addr = (client_config.tun.ip, client_config.tun.netmask);
             let buff_capacity = client_config.buff_capacity;
@@ -52,9 +53,20 @@ async fn process() -> Result<()> {
             client::start(client_config.server_addr, rc4, tun_addr, buff_capacity).await
         }
         "server" => {
-            let server_config: ServerConfig = serde_json::from_str(&json_str).res_auto_convert()?;
-            let rc4 = Rc4::new(server_config.key.as_bytes());
-            server::start(server_config.listen_addr, rc4).await
+            let server_config_vec: Vec<ServerConfig> = serde_json::from_str(&json_str)?;
+
+            for server_config in server_config_vec {
+                tokio::spawn(async move {
+                    let rc4 = Rc4::new(server_config.key.as_bytes());
+
+                    if let Err(e) = server::start(server_config.listen_addr, rc4).await {
+                        error!("{}", e)
+                    }
+                });
+            }
+
+            Notify::new().notified().await;
+            Ok(())
         }
         _ => Err(Error::new(ErrorKind::Other, COMMAND_FAILED))
     }
