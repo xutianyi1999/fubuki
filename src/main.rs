@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     logger_init()?;
 
     if let Err(e) = process().await {
-        error!("process error -> {}", e)
+        error!("Process error -> {}", e)
     };
     Ok(())
 }
@@ -50,7 +50,15 @@ async fn process() -> Result<()> {
             let tun_addr = (client_config.tun.ip, client_config.tun.netmask);
             let buff_capacity = client_config.buff_capacity;
 
-            client::start(client_config.server_addr, rc4, tun_addr, buff_capacity).await
+            let res = client::start(
+                client_config.server_addr,
+                rc4,
+                tun_addr,
+                buff_capacity,
+            ).await;
+
+            error!("Client crashed");
+            res
         }
         "server" => {
             let server_config_vec: Vec<ServerConfig> = serde_json::from_str(&json_str)?;
@@ -60,8 +68,9 @@ async fn process() -> Result<()> {
                     let rc4 = Rc4::new(server_config.key.as_bytes());
 
                     if let Err(e) = server::start(server_config.listen_addr, rc4).await {
-                        error!("{}", e)
+                        error!("Server handler -> {}", e)
                     }
+                    error!("{} crashed", server_config.listen_addr)
                 });
             }
 

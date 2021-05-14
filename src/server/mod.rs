@@ -84,7 +84,7 @@ async fn tcp_handle(
 
             tokio::spawn(async move {
                 if let Err(e) = tunnel(stream, rc4, inner_mapping, inner_broadcast).await {
-                    error!("tunnel error -> {}", e)
+                    error!("Tunnel error -> {}", e)
                 }
             });
         };
