@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use crypto::rc4::Rc4;
@@ -8,6 +10,7 @@ use parking_lot::RwLock;
 use smoltcp::wire::Ipv4Packet;
 use tokio::io::Result;
 use tokio::net::{TcpStream, UdpSocket};
+use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
@@ -15,12 +18,12 @@ use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{get_interface_addr, Msg, MsgReader, MsgSocket, MsgWriter, MTU, Node, NodeId};
 use crate::common::res::StdResAutoConvert;
-use crate::tun::{create_device, Rx, Tx};
+use crate::tun::create_device;
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
 
 pub struct LocalMapping {
-    map: RwLock<HashMap<IpAddr, Node>>
+    map: RwLock<HashMap<Ipv4Addr, Node>>,
 }
 
 impl LocalMapping {
@@ -28,11 +31,11 @@ impl LocalMapping {
         LocalMapping { map: RwLock::new(HashMap::new()) }
     }
 
-    fn get_all(&self) -> HashMap<IpAddr, Node> {
+    fn get_all(&self) -> HashMap<Ipv4Addr, Node> {
         (*self.map.read()).clone()
     }
 
-    fn update_all(&self, map: HashMap<IpAddr, Node>) -> () {
+    fn update_all(&self, map: HashMap<Ipv4Addr, Node>) -> () {
         let mut m = self.map.write();
         *m = map;
     }
@@ -40,8 +43,11 @@ impl LocalMapping {
 
 pub async fn start(server_addr: SocketAddr,
                    rc4: Rc4,
-                   tun_address: (IpAddr, IpAddr),
+                   tun_address: (Ipv4Addr, Ipv4Addr),
                    buff_capacity: usize) -> Result<()> {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let inner_shutdown = shutdown.clone();
+
     let node_id: NodeId = rand::random();
 
     let tun_addr = tun_address.0;
@@ -64,8 +70,10 @@ pub async fn start(server_addr: SocketAddr,
     let t2 = tokio::task::spawn_blocking(move || {
         let mut buff = [0u8; MTU];
 
-        loop {
-            let size = tun_rx.recv_packet(&mut buff)?;
+        while let Ok(size) = tun_rx.recv_packet(&mut buff) {
+            if inner_shutdown.load(Ordering::SeqCst) {
+                break;
+            }
 
             if size == 0 {
                 continue;
@@ -75,7 +83,7 @@ pub async fn start(server_addr: SocketAddr,
             let ipv4 = Ipv4Packet::new_unchecked(slice);
 
             let dest_addr = ipv4.dst_addr();
-            let dest_addr = IpAddr::from(dest_addr.0);
+            let dest_addr = Ipv4Addr::from(dest_addr.0);
 
             let guard = MAPPING.map.read();
 
@@ -98,6 +106,7 @@ pub async fn start(server_addr: SocketAddr,
                 }
             }
         }
+        Ok(())
     });
 
     let listen_ip = get_interface_addr(server_addr).await?;
@@ -171,8 +180,8 @@ pub async fn start(server_addr: SocketAddr,
     };
 
     let th = tcp_handle(server_addr, rc4, node);
-    tokio::task::spawn_blocking(|| stdin());
 
+    tokio::task::spawn_blocking(|| if let Err(e) = stdin() { error!("{}", e) });
     info!("Client start");
 
     let res = tokio::select! {
@@ -182,9 +191,10 @@ pub async fn start(server_addr: SocketAddr,
         res = u2 => res,
         res = h => res,
         res = th => res,
+        res = signal::ctrl_c() => res
     };
 
-    error!("Client crashed");
+    shutdown.store(true, Ordering::SeqCst);
     res
 }
 
@@ -206,7 +216,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
 
             while let Some(msg) = rx.read_msg().await? {
                 if let Msg::NodeMap(map) = msg {
-                    let m: HashMap<IpAddr, Node> = map.iter()
+                    let m: HashMap<Ipv4Addr, Node> = map.iter()
                         .map(|(_, v)| (v.tun_addr, v.clone()))
                         .collect();
                     MAPPING.update_all(m)

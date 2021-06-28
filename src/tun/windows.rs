@@ -1,10 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::io::{Error, ErrorKind, Result};
+use std::net::Ipv4Addr;
 use std::process::Command;
+use std::ptr::null_mut;
 use std::sync::Arc;
 
+use simple_wintun::{raw, ReadResult};
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
-use simple_wintun::ReadResult;
-use tokio::io::{Error, ErrorKind, Result};
 
 use crate::common::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
@@ -15,17 +16,59 @@ const ADAPTER_GUID: &str = "{248B1B2B-94FA-0E20-150F-5C2D2FB4FBF9}";
 //1MB
 const ADAPTER_BUFF_SIZE: u32 = 1048576;
 
-#[derive(Clone)]
-pub struct Reader {
-    session: Arc<WintunStream>
+pub struct Wintun {
+    adapter: WintunAdapter,
+    session: WintunStream,
 }
 
-#[derive(Clone)]
-pub struct Writer {
-    session: Arc<WintunStream>
+impl Wintun {
+    pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Wintun> {
+        let netmask_count = get_netmask_bit_count(netmask);
+        WintunAdapter::initialize();
+
+        if let Ok(adapter) = WintunAdapter::get_adapter(POOL_NAME, ADAPTER_NAME) {
+            adapter.delete_adapter()?;
+        }
+
+        let adapter = WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?;
+        adapter.set_ipaddr(&address.to_string(), netmask_count)?;
+
+        let status = Command::new("netsh")
+            .args(vec!["interface", "ipv4", "set", "subinterface", ADAPTER_NAME, &format!("mtu={}", MTU), "store=persistent"])
+            .output()?
+            .status;
+
+        if !status.success() {
+            return Err(Error::new(ErrorKind::Other, "Failed to set tun mtu"));
+        }
+
+        let session = adapter.open_adapter(ADAPTER_BUFF_SIZE)?;
+
+        Ok(Wintun { adapter, session })
+    }
 }
 
-impl Rx for Reader {
+unsafe impl Send for Wintun {}
+
+unsafe impl Send for WintunRx {}
+
+unsafe impl Send for WintunTx {}
+
+impl Drop for Wintun {
+    fn drop(&mut self) {
+        raw::close_adapter(self.session.session);
+        self.session.session = null_mut();
+        raw::delete_adapter(self.adapter.adapter).unwrap()
+    }
+}
+
+impl Rx for Wintun {
+    fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
+        self.session.write_packet(packet)
+    }
+}
+
+impl Tx for Wintun {
     fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         let res = self.session.read_packet(buff)?;
 
@@ -36,40 +79,38 @@ impl Rx for Reader {
     }
 }
 
-impl Tx for Writer {
-    fn send_packet(&mut self, buff: &[u8]) -> Result<()> {
-        self.session.write_packet(buff)
+struct WintunTx {
+    wintun: Arc<Wintun>,
+}
+
+impl Tx for WintunTx {
+    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
+        let p_wintun: *const Wintun = &*self.wintun;
+        let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };
+        ref_wintun.recv_packet(buff)
     }
 }
 
-pub fn create_device(address: IpAddr, netmask: IpAddr) -> Result<TunDevice<Arc<WintunStream>, Writer, Reader>> {
-    let ipv4 = match netmask {
-        IpAddr::V4(ipv4) => ipv4,
-        _ => return Err(Error::new(ErrorKind::Other, "Netmask only supports IPV4"))
-    };
-    let netmask = get_netmask_bit_count(ipv4);
+struct WintunRx {
+    wintun: Arc<Wintun>,
+}
 
-    WintunAdapter::initialize();
-    let res = WintunAdapter::get_adapter(POOL_NAME, ADAPTER_NAME);
+impl Rx for WintunRx {
+    fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
+        let p_wintun: *const Wintun = &*self.wintun;
+        let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };
+        ref_wintun.send_packet(packet)
+    }
+}
 
-    if let Ok(adapter) = res {
-        adapter.delete_adapter()?;
-    };
+impl TunDevice for Wintun {
+    fn split(self: Box<Self>) -> (Box<dyn Rx>, Box<dyn Tx>) {
+        let wintun = Arc::new(*self);
+        let wintun_tx = WintunTx { wintun: wintun.clone() };
+        let wintun_rx = WintunRx { wintun };
 
-    let adapter = WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?;
-
-    adapter.set_ipaddr(&address.to_string(), netmask)?;
-    Command::new("netsh")
-        .args(vec!["interface", "ipv4", "set", "subinterface", ADAPTER_NAME, &format!("mtu={}", MTU), "store=persistent"])
-        .output()?;
-
-    let session = adapter.open_adapter(ADAPTER_BUFF_SIZE)?;
-    let session = Arc::new(session);
-
-    let rx = Reader { session: session.clone() };
-    let tx = Writer { session: session.clone() };
-
-    Ok(TunDevice::new(session, tx, rx))
+        (Box::new(wintun_rx), Box::new(wintun_tx))
+    }
 }
 
 fn get_netmask_bit_count(ipv4: Ipv4Addr) -> u8 {

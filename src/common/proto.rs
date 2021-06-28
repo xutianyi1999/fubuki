@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use bytes::{Buf, BufMut, Bytes};
 use chrono::Utc;
@@ -26,7 +26,7 @@ pub type NodeId = u32;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Node {
     pub id: NodeId,
-    pub tun_addr: IpAddr,
+    pub tun_addr: Ipv4Addr,
     pub lan_udp_addr: SocketAddr,
     pub source_udp_addr: Option<SocketAddr>,
     pub register_time: i64,

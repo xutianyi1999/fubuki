@@ -2,7 +2,7 @@
 extern crate log;
 
 use std::env;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use crypto::rc4::Rc4;
 use log4rs::append::console::ConsoleAppender;
@@ -57,7 +57,7 @@ async fn process() -> Result<()> {
                 buff_capacity,
             ).await;
 
-            error!("Client crashed");
+            info!("Client shutdown");
             res
         }
         "server" => {
@@ -103,8 +103,8 @@ struct ServerConfig {
 
 #[derive(Deserialize, Clone)]
 struct TunConfig {
-    ip: IpAddr,
-    netmask: IpAddr,
+    ip: Ipv4Addr,
+    netmask: Ipv4Addr,
 }
 
 #[derive(Deserialize, Clone)]
