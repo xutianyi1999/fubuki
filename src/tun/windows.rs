@@ -62,13 +62,13 @@ impl Drop for Wintun {
     }
 }
 
-impl Rx for Wintun {
+impl Tx for Wintun {
     fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         self.session.write_packet(packet)
     }
 }
 
-impl Tx for Wintun {
+impl Rx for Wintun {
     fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         let res = self.session.read_packet(buff)?;
 
@@ -79,23 +79,25 @@ impl Tx for Wintun {
     }
 }
 
-struct WintunTx {
-    wintun: Arc<Wintun>,
+impl TunDevice for Wintun {
+    fn split(self: Box<Self>) -> (Box<dyn Tx>, Box<dyn Rx>) {
+        let wintun = Arc::new(*self);
+        let wintun_tx = WintunTx { wintun: wintun.clone() };
+        let wintun_rx = WintunRx { wintun };
+
+        (Box::new(wintun_rx), Box::new(wintun_tx))
+    }
 }
 
-impl Tx for WintunTx {
-    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
-        let p_wintun: *const Wintun = &*self.wintun;
-        let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };
-        ref_wintun.recv_packet(buff)
-    }
+struct WintunTx {
+    wintun: Arc<Wintun>,
 }
 
 struct WintunRx {
     wintun: Arc<Wintun>,
 }
 
-impl Rx for WintunRx {
+impl Tx for WintunRx {
     fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         let p_wintun: *const Wintun = &*self.wintun;
         let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };
@@ -103,13 +105,11 @@ impl Rx for WintunRx {
     }
 }
 
-impl TunDevice for Wintun {
-    fn split(self: Box<Self>) -> (Box<dyn Rx>, Box<dyn Tx>) {
-        let wintun = Arc::new(*self);
-        let wintun_tx = WintunTx { wintun: wintun.clone() };
-        let wintun_rx = WintunRx { wintun };
-
-        (Box::new(wintun_rx), Box::new(wintun_tx))
+impl Rx for WintunTx {
+    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
+        let p_wintun: *const Wintun = &*self.wintun;
+        let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };
+        ref_wintun.recv_packet(buff)
     }
 }
 
