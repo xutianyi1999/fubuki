@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
-use tokio::io::{Error, ErrorKind, Result};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::watch;
 use tokio::sync::watch::{Receiver, Sender};
@@ -13,12 +14,11 @@ use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
-use crate::common::res::StdResAutoConvert;
 
 type Mapping = Arc<RwLock<HashMap<NodeId, Node>>>;
 type Broadcast = Arc<(Sender<Vec<u8>>, Receiver<Vec<u8>>)>;
 
-pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<()> {
+pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Error>> {
     let mapping = Arc::new(RwLock::new(HashMap::new()));
     let broadcast = Arc::new(watch::channel::<Vec<u8>>(Vec::new()));
 
@@ -33,7 +33,7 @@ async fn udp_handle(
     rc4: Rc4,
     mapping: &Mapping,
     broadcast: &Broadcast,
-) -> Result<()> {
+) -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(listen_addr).await?;
     info!("Udp socket listening on {}", listen_addr);
 
@@ -60,7 +60,7 @@ async fn udp_handle(
 
                         let map = (*guard).clone();
                         drop(guard);
-                        broadcast.0.send(map.to_json_vec()?).res_auto_convert()?;
+                        broadcast.0.send(map.to_json_vec()?)?;
                     }
                 }
             }
@@ -73,7 +73,7 @@ async fn tcp_handle(
     rc4: Rc4,
     mapping: &Mapping,
     broadcast: &Broadcast,
-) -> Result<()> {
+) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
     info!("Tcp socket listening on {}", listen_addr);
 
@@ -96,7 +96,7 @@ async fn tunnel(
     rc4: Rc4,
     mapping: Mapping,
     broadcast: Broadcast,
-) -> Result<()> {
+) -> Result<(), Box<dyn Error>> {
     stream.set_keepalive()?;
     let (rx, tx) = stream.split();
 
@@ -107,7 +107,7 @@ async fn tunnel(
 
     let msg = match op {
         Some(v) => v,
-        None => return Err(Error::new(ErrorKind::Other, "Register error"))
+        None => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
     };
 
     let (node_id, register_time) = match msg {
@@ -120,10 +120,10 @@ async fn tunnel(
             let map = (*guard).clone();
 
             drop(guard);
-            broadcast.0.send(map.to_json_vec()?).res_auto_convert()?;
+            broadcast.0.send(map.to_json_vec()?)?;
             (node_id, register_time)
         }
-        _ => return Err(Error::new(ErrorKind::Other, "Register error"))
+        _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
     };
 
     let f1 = async {
@@ -155,7 +155,7 @@ async fn tunnel(
 
             let map = (*guard).clone();
             drop(guard);
-            broadcast.0.send(map.to_json_vec()?).res_auto_convert()?;
+            broadcast.0.send(map.to_json_vec()?)?;
         }
     }
     res

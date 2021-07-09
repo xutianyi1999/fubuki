@@ -24,7 +24,7 @@ impl Linuxtun {
         config.platform(|config| {
             config.packet_information(false);
         });
-        Ok(tun::create(&config)?)
+        Ok(Linuxtun { fd: tun::create(&config)? })
     }
 }
 

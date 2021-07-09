@@ -1,5 +1,8 @@
+use std::borrow::{Borrow, BorrowMut};
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::error::Error;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -8,17 +11,17 @@ use crypto::rc4::Rc4;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use smoltcp::wire::Ipv4Packet;
-use tokio::io::Result;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::signal;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 
 use crate::common::net::TcpSocketExt;
 use crate::common::persistence::ToJson;
 use crate::common::proto::{get_interface_addr, Msg, MsgReader, MsgSocket, MsgWriter, MTU, Node, NodeId};
-use crate::common::res::StdResAutoConvert;
-use crate::tun::create_device;
+use crate::tun::{create_device, Rx, Tx};
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
 
@@ -41,10 +44,12 @@ impl LocalMapping {
     }
 }
 
-pub async fn start(server_addr: SocketAddr,
-                   rc4: Rc4,
-                   tun_address: (Ipv4Addr, Ipv4Addr),
-                   buff_capacity: usize) -> Result<()> {
+pub async fn start(
+    server_addr: SocketAddr,
+    rc4: Rc4,
+    tun_address: (Ipv4Addr, Ipv4Addr),
+    buff_capacity: usize,
+) -> Result<(), Box<dyn Error>> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let inner_shutdown = shutdown.clone();
 
@@ -57,21 +62,62 @@ pub async fn start(server_addr: SocketAddr,
     info!("Tun adapter ip address: {}", tun_addr);
     let (mut tun_tx, mut tun_rx) = device.split();
 
-    let (to_local, mut recv_remote) = mpsc::channel::<Vec<u8>>(buff_capacity);
-    let (to_remote, mut recv_local) = mpsc::channel::<(Vec<u8>, SocketAddr)>(buff_capacity);
+    let (to_tun, mut from_socket) = mpsc::unbounded_channel::<Box<[u8]>>();
+    let (to_socket, mut from_tun) = mpsc::unbounded_channel::<(Box<[u8]>, SocketAddr)>();
 
-    let t1 = tokio::task::spawn_blocking(move || {
-        while let Some(packet) = recv_remote.blocking_recv() {
+    let listen_ip = get_interface_addr(server_addr).await?;
+
+    let udp_socket = UdpSocket::bind((listen_ip, 0)).await?;
+    let udp_socket_addr = udp_socket.local_addr()?;
+
+    let node = Node {
+        id: node_id,
+        tun_addr,
+        lan_udp_addr: udp_socket_addr,
+        source_udp_addr: None,
+        register_time: 0,
+    };
+
+    tokio::task::spawn_blocking(|| if let Err(e) = stdin() { error!("{}", e) });
+    info!("Client start");
+
+    tokio::select! {
+        res = mpsc_to_tun(from_socket,tun_tx) => res??,
+        res = tun_to_mpsc(to_socket, tun_rx, shutdown.clone(), tun_addr) => res??,
+        res = socket_to_mpsc(to_tun, MsgSocket::new(&udp_socket, rc4)) => res?,
+        res = mpsc_to_socket(from_tun, MsgSocket::new(&udp_socket, rc4)) => res?,
+        res = client_heartbeat_schedule(MsgSocket::new(&udp_socket, rc4),node_id,server_addr,tun_addr) => res?,
+        res = client_handler(server_addr, rc4, node) => res?,
+        res = signal::ctrl_c() => res?
+    }
+
+    shutdown.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+fn mpsc_to_tun(
+    mut mpsc_rx: UnboundedReceiver<Box<[u8]>>,
+    mut tun_tx: Box<dyn Tx>,
+) -> JoinHandle<io::Result<()>> {
+    tokio::task::spawn_blocking(move || {
+        while let Some(packet) = mpsc_rx.blocking_recv() {
             tun_tx.send_packet(&packet)?;
-        }
+        };
         Ok(())
-    });
+    })
+}
 
-    let t2 = tokio::task::spawn_blocking(move || {
+fn tun_to_mpsc(
+    mpsc_tx: UnboundedSender<(Box<[u8]>, SocketAddr)>,
+    mut tun_rx: Box<dyn Rx>,
+    shutdown: Arc<AtomicBool>,
+    tun_addr: Ipv4Addr,
+) -> JoinHandle<io::Result<()>> {
+    tokio::task::spawn_blocking(move || {
         let mut buff = [0u8; MTU];
 
         while let Ok(size) = tun_rx.recv_packet(&mut buff) {
-            if inner_shutdown.load(Ordering::SeqCst) {
+            if shutdown.load(Ordering::SeqCst) {
                 break;
             }
 
@@ -100,105 +146,81 @@ pub async fn start(server_addr: SocketAddr,
                             };
 
                             drop(guard);
-                            to_remote.blocking_send((slice.to_vec(), addr)).res_auto_convert()?;
+                            mpsc_tx.send((slice.into(), addr))
+                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                         }
                     }
                 }
             }
         }
         Ok(())
-    });
-
-    let listen_ip = get_interface_addr(server_addr).await?;
-
-    let udp_socket = UdpSocket::bind((listen_ip, 0)).await?;
-    let udp_socket_addr = udp_socket.local_addr()?;
-
-    let udp_rx = &udp_socket;
-    let udp_tx1 = &udp_socket;
-    let udp_tx2 = &udp_socket;
-
-    let u1 = async move {
-        let mut udp_rx = MsgSocket::new(udp_rx, rc4);
-
-        loop {
-            let res = udp_rx.recv_msg().await;
-
-            if let Ok((msg, _)) = res {
-                if let Msg::Data(buff) = msg {
-                    to_local.send(buff.to_owned()).await.res_auto_convert()?;
-                }
-            }
-        }
-    };
-
-    let u2 = async move {
-        let mut udp_tx = MsgSocket::new(udp_tx1, rc4);
-
-        while let Some((data, peer_addr)) = recv_local.recv().await {
-            udp_tx.send_msg(Msg::Data(&data), peer_addr).await?;
-        }
-        Ok(())
-    };
-
-    let h = async move {
-        let mut udp_tx = MsgSocket::new(udp_tx2, rc4);
-
-        loop {
-            udp_tx.send_msg(Msg::Heartbeat(node_id), server_addr).await?;
-            let map = MAPPING.get_all();
-            let local_node = map.get(&tun_addr);
-
-            let client_addr_list: Vec<Option<SocketAddr>> = map.iter()
-                .map(|(_, node)| node.source_udp_addr)
-                .filter(|op| op.is_some())
-                .collect();
-
-            for dest_addr in client_addr_list {
-                let dest_addr = dest_addr.unwrap();
-
-                if let Some(local_node) = local_node {
-                    if let Some(local_addr) = local_node.source_udp_addr {
-                        if local_addr.ip() == dest_addr.ip() {
-                            continue;
-                        }
-                    }
-                }
-                udp_tx.send_msg(Msg::Heartbeat(node_id), dest_addr).await?;
-            }
-
-            sleep(Duration::from_secs(5)).await;
-        }
-    };
-
-    let node = Node {
-        id: node_id,
-        tun_addr,
-        lan_udp_addr: udp_socket_addr,
-        source_udp_addr: None,
-        register_time: 0,
-    };
-
-    let th = tcp_handle(server_addr, rc4, node);
-
-    tokio::task::spawn_blocking(|| if let Err(e) = stdin() { error!("{}", e) });
-    info!("Client start");
-
-    let res = tokio::select! {
-        res = t1 => res?,
-        res = t2 => res?,
-        res = u1 => res,
-        res = u2 => res,
-        res = h => res,
-        res = th => res,
-        res = signal::ctrl_c() => res
-    };
-
-    shutdown.store(true, Ordering::SeqCst);
-    res
+    })
 }
 
-async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()> {
+async fn socket_to_mpsc(
+    mpsc_tx: UnboundedSender<Box<[u8]>>,
+    mut socket: MsgSocket<'_>,
+) -> Result<(), Box<dyn Error>> {
+    loop {
+        let res = socket.recv_msg().await;
+
+        if let Ok((msg, _)) = res {
+            if let Msg::Data(buff) = msg {
+                mpsc_tx.send(buff.into())?;
+            }
+        }
+    }
+}
+
+async fn mpsc_to_socket(
+    mut mpsc_rx: UnboundedReceiver<(Box<[u8]>, SocketAddr)>,
+    mut socket: MsgSocket<'_>,
+) -> Result<(), Box<dyn Error>> {
+    while let Some((data, peer_addr)) = mpsc_rx.recv().await {
+        socket.send_msg(Msg::Data(&data), peer_addr).await?;
+    }
+    Ok(())
+}
+
+async fn client_heartbeat_schedule(
+    mut socket: MsgSocket<'_>,
+    node_id: NodeId,
+    server_addr: SocketAddr,
+    tun_addr: Ipv4Addr,
+) -> Result<(), Box<dyn Error>> {
+    loop {
+        socket.send_msg(Msg::Heartbeat(node_id), server_addr).await?;
+        let map = MAPPING.get_all();
+        let local_node = map.get(&tun_addr);
+
+        let client_addr_list: Vec<Option<SocketAddr>> = map.iter()
+            .map(|(_, node)| node.source_udp_addr)
+            .filter(|op| op.is_some())
+            .collect();
+
+        for dest_addr in client_addr_list {
+            let dest_addr = dest_addr.unwrap();
+
+            if let Some(local_node) = local_node {
+                if let Some(local_addr) = local_node.source_udp_addr {
+                    if local_addr.ip() == dest_addr.ip() {
+                        continue;
+                    }
+                }
+            }
+            socket.send_msg(Msg::Heartbeat(node_id), dest_addr).await?;
+        }
+
+        sleep(Duration::from_secs(5)).await;
+    }
+}
+
+
+async fn client_handler(
+    server_addr: SocketAddr,
+    rc4: Rc4,
+    node: Node,
+) -> Result<(), Box<dyn Error>> {
     loop {
         let mut node = node.clone();
 
@@ -222,7 +244,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
                     MAPPING.update_all(m)
                 }
             }
-            Result::Ok(())
+            Result::<(), Box<dyn Error>>::Ok(())
         };
 
         if let Err(e) = f().await {
@@ -233,7 +255,7 @@ async fn tcp_handle(server_addr: SocketAddr, rc4: Rc4, node: Node) -> Result<()>
     }
 }
 
-fn stdin() -> Result<()> {
+fn stdin() -> io::Result<()> {
     let stdin = std::io::stdin();
 
     loop {

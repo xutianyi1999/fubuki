@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::error::Error;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use bytes::{Buf, BufMut, Bytes};
@@ -7,12 +9,11 @@ use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use crypto::rc4::Rc4;
 use crypto::symmetriccipher::Encryptor;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, Error, ErrorKind, Result};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UdpSocket;
 
 use crate::common::persistence::ToJson;
 use crate::common::proto::Msg::{Data, Heartbeat, NodeMap, NodeMapSerde, Register};
-use crate::common::res::{StdResAutoConvert, StdResConvert};
 
 pub const MTU: usize = 1420;
 
@@ -33,8 +34,8 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn from_slice(s: &[u8]) -> Result<Node> {
-        serde_json::from_slice(s).res_auto_convert()
+    pub fn from_slice(s: &[u8]) -> Result<Node, serde_json::Error> {
+        serde_json::from_slice(s)
     }
 }
 
@@ -60,7 +61,7 @@ impl<R> MsgReader<R>
         MsgReader { rx, rc4 }
     }
 
-    pub async fn read_msg(&mut self) -> Result<Option<Msg<'_>>> {
+    pub async fn read_msg(&mut self) -> io::Result<Option<Msg<'_>>> {
         let rx = &mut self.rx;
         let rc4 = &mut self.rc4;
 
@@ -83,21 +84,21 @@ impl<R> MsgReader<R>
 
         match mode {
             REGISTER => {
-                let node = Node::from_slice(&data)?;
+                let node = Node::from_slice(&data).map_err(|e| io::Error::from(e))?;
                 let old_time = node.register_time;
                 let now = Utc::now().timestamp();
                 let r = now - old_time;
 
                 if (r > 10) || (r < -10) {
-                    return Err(Error::new(ErrorKind::Other, "Message timeout"));
+                    return Err(io::Error::new(io::ErrorKind::Other, "Message timeout"));
                 }
                 Ok(Some(Register(node)))
             }
             NODE_MAP => {
-                let node_map: HashMap<NodeId, Node> = serde_json::from_slice(&data).res_auto_convert()?;
+                let node_map: HashMap<NodeId, Node> = serde_json::from_slice(&data)?;
                 Ok(Some(NodeMap(node_map)))
             }
-            _ => return Err(Error::new(ErrorKind::Other, "Config message error"))
+            _ => return Err(io::Error::new(io::ErrorKind::Other, "Config message error"))
         }
     }
 }
@@ -116,7 +117,7 @@ impl<W> MsgWriter<W>
         MsgWriter { tx, rc4 }
     }
 
-    pub async fn write_msg(&mut self, msg: Msg<'_>) -> Result<()> {
+    pub async fn write_msg(&mut self, msg: Msg<'_>) -> io::Result<()> {
         let tx = &mut self.tx;
         let rc4 = &mut self.rc4;
 
@@ -161,7 +162,7 @@ impl MsgSocket<'_> {
         MsgSocket { socket, rc4, buff: [0u8; MTU + 1], out: [0u8; MTU + 1] }
     }
 
-    pub async fn recv_msg(&mut self) -> Result<(Msg<'_>, SocketAddr)> {
+    pub async fn recv_msg(&mut self) -> io::Result<(Msg<'_>, SocketAddr)> {
         let socket = self.socket;
         let mut rc4 = self.rc4;
         let buff = &mut self.buff;
@@ -184,11 +185,11 @@ impl MsgSocket<'_> {
             DATA => {
                 Ok((Msg::Data(&out[1..]), peer_addr))
             }
-            _ => Err(Error::new(ErrorKind::Other, "Datagram message error"))
+            _ => Err(io::Error::new(io::ErrorKind::Other, "Datagram message error"))
         }
     }
 
-    pub async fn send_msg(&mut self, msg: Msg<'_>, peer_addr: SocketAddr) -> Result<()> {
+    pub async fn send_msg(&mut self, msg: Msg<'_>, peer_addr: SocketAddr) -> io::Result<()> {
         let socket = self.socket;
         let mut rc4 = self.rc4;
         let buff = &mut self.buff;
@@ -215,16 +216,16 @@ impl MsgSocket<'_> {
     }
 }
 
-pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> Result<&'a mut [u8]> {
+pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> io::Result<&'a mut [u8]> {
     let mut ref_read_buf = RefReadBuffer::new(input);
     let mut ref_write_buf = RefWriteBuffer::new(output);
 
     rc4.encrypt(&mut ref_read_buf, &mut ref_write_buf, false)
-        .res_convert(|_| "Crypto error".to_string())?;
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, "Crypto error"))?;
     Ok(&mut output[..input.len()])
 }
 
-pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
+pub async fn get_interface_addr(dest_addr: SocketAddr) -> io::Result<IpAddr> {
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(dest_addr).await?;
     let addr = socket.local_addr()?;
