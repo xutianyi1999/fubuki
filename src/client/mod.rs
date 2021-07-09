@@ -1,8 +1,7 @@
-use std::borrow::{Borrow, BorrowMut};
 use std::collections::HashMap;
 use std::error::Error;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,7 +13,7 @@ use smoltcp::wire::Ipv4Packet;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::signal;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 
@@ -48,10 +47,8 @@ pub async fn start(
     server_addr: SocketAddr,
     rc4: Rc4,
     tun_address: (Ipv4Addr, Ipv4Addr),
-    buff_capacity: usize,
 ) -> Result<(), Box<dyn Error>> {
     let shutdown = Arc::new(AtomicBool::new(false));
-    let inner_shutdown = shutdown.clone();
 
     let node_id: NodeId = rand::random();
 
@@ -60,10 +57,10 @@ pub async fn start(
 
     let device = create_device(tun_addr, netmask)?;
     info!("Tun adapter ip address: {}", tun_addr);
-    let (mut tun_tx, mut tun_rx) = device.split();
+    let (tun_tx, tun_rx) = device.split();
 
-    let (to_tun, mut from_socket) = mpsc::unbounded_channel::<Box<[u8]>>();
-    let (to_socket, mut from_tun) = mpsc::unbounded_channel::<(Box<[u8]>, SocketAddr)>();
+    let (to_tun, from_socket) = mpsc::unbounded_channel::<Box<[u8]>>();
+    let (to_socket, from_tun) = mpsc::unbounded_channel::<(Box<[u8]>, SocketAddr)>();
 
     let listen_ip = get_interface_addr(server_addr).await?;
 

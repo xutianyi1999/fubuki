@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -221,7 +220,7 @@ pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> io::Resu
     let mut ref_write_buf = RefWriteBuffer::new(output);
 
     rc4.encrypt(&mut ref_read_buf, &mut ref_write_buf, false)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, "Crypto error"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Crypto error"))?;
     Ok(&mut output[..input.len()])
 }
 

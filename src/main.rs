@@ -14,7 +14,6 @@ use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::Deserialize;
 use tokio::fs;
-use tokio::sync::Notify;
 
 mod tun;
 mod server;
@@ -47,13 +46,11 @@ async fn process() -> Result<(), Box<dyn Error>> {
             let client_config: ClientConfig = serde_json::from_str(&json_str)?;
             let rc4 = Rc4::new(client_config.key.as_bytes());
             let tun_addr = (client_config.tun.ip, client_config.tun.netmask);
-            let buff_capacity = client_config.buff_capacity;
 
             let res = client::start(
                 client_config.server_addr,
                 rc4,
                 tun_addr,
-                buff_capacity,
             ).await;
 
             info!("Client shutdown");
@@ -112,6 +109,5 @@ struct TunConfig {
 struct ClientConfig {
     server_addr: SocketAddr,
     tun: TunConfig,
-    buff_capacity: usize,
     key: String,
 }
