@@ -17,11 +17,11 @@ use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
 
 type Mapping = Rc<RefCell<HashMap<NodeId, Node>>>;
-type Broadcast = (Rc<Sender<HashMap<NodeId, Node>>>, Receiver<HashMap<NodeId, Node>>);
+type Broadcast = (Rc<Sender<Mapping>>, Receiver<Mapping>);
 
 pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Error>> {
     let mapping = Rc::new(RefCell::new(HashMap::new()));
-    let (tx, rx) = watch::channel::<HashMap<NodeId, Node>>(HashMap::new());
+    let (tx, rx) = watch::channel::<Mapping>(Rc::new(RefCell::new(HashMap::new())));
 
     let tx = Rc::new(tx);
     let broadcast: Broadcast = (tx, rx);
@@ -36,7 +36,7 @@ async fn udp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
     mapping: &Mapping,
-    tx: &Rc<Sender<HashMap<NodeId, Node>>>,
+    tx: &Rc<Sender<Mapping>>,
 ) -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(listen_addr).await?;
     info!("Udp socket listening on {}", listen_addr);
@@ -56,7 +56,7 @@ async fn udp_handler(
                     };
 
                     node.source_udp_addr = Some(peer_addr);
-                    tx.send(guard.clone())?;
+                    tx.send(mapping.clone())?;
                 }
             }
         }
@@ -121,7 +121,7 @@ async fn tunnel(
             let mut guard = mapping.borrow_mut();
             guard.insert(node_id, node);
 
-            broadcast.0.send(guard.clone())?;
+            broadcast.0.send(mapping.clone())?;
             (node_id, register_time)
         }
         _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
@@ -153,7 +153,7 @@ async fn tunnel(
     if let Some(node) = guard.get(&node_id) {
         if node.register_time == register_time {
             guard.remove(&node_id);
-            broadcast.0.send(guard.clone())?;
+            broadcast.0.send(mapping.clone())?;
         }
     }
     res
