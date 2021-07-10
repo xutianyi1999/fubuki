@@ -67,7 +67,7 @@ async fn process() -> Result<(), Box<dyn Error>> {
             futures_util::future::join_all(list).await;
             Ok(())
         }
-        _ => Err(Box::new(io::Error::new(io::ErrorKind::Other, COMMAND_FAILED)))
+        _ => Err(Box::new(io::Error::new(io::ErrorKind::InvalidInput, COMMAND_FAILED)))
     }
 }
 

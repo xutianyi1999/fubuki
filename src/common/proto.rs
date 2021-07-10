@@ -23,7 +23,7 @@ const DATA: u8 = 0x03;
 
 pub type NodeId = u32;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Node {
     pub id: NodeId,
     pub tun_addr: Ipv4Addr,
