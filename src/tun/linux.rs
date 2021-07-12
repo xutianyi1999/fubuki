@@ -65,6 +65,6 @@ impl Tx for Linuxtun {
 impl TunDevice for Linuxtun {
     fn split(self: Box<Self>) -> (Box<dyn Tx>, Box<dyn Rx>) {
         let (rx, tx) = self.fd.split();
-        (Box::new(tx), Box::new(rx))
+        (Box::new(LinuxtunTx { tx }), Box::new(LinuxtunRx { rx }))
     }
 }
