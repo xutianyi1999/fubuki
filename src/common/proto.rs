@@ -205,7 +205,7 @@ impl MsgSocket<'_> {
                 buff[1..(data_len + 1)].copy_from_slice(data);
                 &buff[..(data_len + 1)]
             }
-            _ => panic!("Send Message error")
+            _ => unreachable!()
         };
 
         let slice = crypto(data, out, &mut rc4)?;
