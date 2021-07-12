@@ -12,7 +12,6 @@ use tokio::sync::watch::{Receiver, Sender};
 use tokio::task;
 
 use crate::common::net::TcpSocketExt;
-use crate::common::persistence::ToJson;
 use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
 
@@ -131,8 +130,7 @@ async fn tunnel(
         let mut rx = broadcast.1.clone();
 
         while rx.changed().await.is_ok() {
-            let vec = (*rx.borrow()).to_json_vec()?;
-            let msg = Msg::NodeMapSerde(&vec);
+            let msg = Msg::NodeMap((**rx.borrow()).borrow().clone());
             writer.write_msg(msg).await?;
         }
         Ok(())

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use bytes::{Buf, BufMut, Bytes};
+use bytes::BufMut;
 use chrono::Utc;
 use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use crypto::rc4::Rc4;
@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UdpSocket;
 
 use crate::common::persistence::ToJson;
-use crate::common::proto::Msg::{Data, Heartbeat, NodeMap, NodeMapSerde, Register};
+use crate::common::proto::Msg::{Data, Heartbeat, NodeMap, Register};
 
 pub const MTU: usize = 1420;
 
@@ -41,7 +41,6 @@ impl Node {
 pub enum Msg<'a> {
     Register(Node),
     NodeMap(HashMap<NodeId, Node>),
-    NodeMapSerde(&'a [u8]),
     Heartbeat(NodeId),
     Data(&'a [u8]),
 }
@@ -77,13 +76,12 @@ impl<R> MsgReader<R>
         let mut out = vec![0u8; len];
         crypto(&data, &mut out, rc4)?;
 
-        let mut data = Bytes::from(out);
-
-        let mode = data.get_u8();
+        let mode = out[0];
+        let data = &out[1..];
 
         match mode {
             REGISTER => {
-                let node = Node::from_slice(&data).map_err(|e| io::Error::from(e))?;
+                let node = Node::from_slice(data)?;
                 let old_time = node.register_time;
                 let now = Utc::now().timestamp();
                 let r = now - old_time;
@@ -94,7 +92,7 @@ impl<R> MsgReader<R>
                 Ok(Some(Register(node)))
             }
             NODE_MAP => {
-                let node_map: HashMap<NodeId, Node> = serde_json::from_slice(&data)?;
+                let node_map: HashMap<NodeId, Node> = serde_json::from_slice(data)?;
                 Ok(Some(NodeMap(node_map)))
             }
             _ => return Err(io::Error::new(io::ErrorKind::Other, "Config message error"))
@@ -130,7 +128,8 @@ impl<W> MsgWriter<W>
                 data.put_slice(&v);
                 data
             }
-            NodeMapSerde(json_vec) => {
+            NodeMap(map) => {
+                let json_vec = map.to_json_vec()?;
                 let len = json_vec.len();
 
                 let mut data = Vec::with_capacity(1 + len);
@@ -138,7 +137,7 @@ impl<W> MsgWriter<W>
                 data.put_slice(&json_vec);
                 data
             }
-            _ => panic!("Write message error")
+            _ => unreachable!()
         };
 
         let mut out = vec![0u8; data.len()];

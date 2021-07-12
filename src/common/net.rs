@@ -1,4 +1,4 @@
-use socket2::Socket;
+use socket2::{Socket, TcpKeepalive};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::Duration;
 
@@ -18,27 +18,27 @@ impl TcpSocketExt for TcpSocket {
     }
 }
 
-const KEEPALIVE_DURATION: Option<Duration> = Option::Some(Duration::from_secs(120));
+const TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive::new().with_time(Duration::from_secs(120));
 
 #[cfg(target_os = "windows")]
-pub fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> tokio::io::Result<()> {
+fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> std::io::Result<()> {
     use std::os::windows::io::FromRawSocket;
 
     unsafe {
         let socket = Socket::from_raw_socket(socket.as_raw_socket());
-        socket.set_keepalive(KEEPALIVE_DURATION)?;
+        socket.set_tcp_keepalive(&TCP_KEEPALIVE)?;
         std::mem::forget(socket);
     };
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> tokio::io::Result<()> {
+fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> std::io::Result<()> {
     use std::os::unix::io::FromRawFd;
 
     unsafe {
         let socket = Socket::from_raw_fd(socket.as_raw_fd());
-        socket.set_keepalive(KEEPALIVE_DURATION)?;
+        socket.set_tcp_keepalive(&TCP_KEEPALIVE)?;
         std::mem::forget(socket);
     };
     Ok(())

@@ -212,7 +212,6 @@ async fn client_heartbeat_schedule(
     }
 }
 
-
 async fn client_handler(
     server_addr: SocketAddr,
     rc4: Rc4,
