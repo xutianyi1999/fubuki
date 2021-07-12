@@ -24,6 +24,7 @@ use crate::tun::{create_device, Rx, Tx};
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
 
+// tun_addr -> node
 pub struct LocalMapping {
     map: RwLock<HashMap<Ipv4Addr, Node>>,
 }
@@ -188,9 +189,9 @@ async fn client_heartbeat_schedule(
     loop {
         socket.send_msg(Msg::Heartbeat(node_id), server_addr).await?;
         let map = MAPPING.get_all();
-        let local_node = map.get(&tun_addr);
+        let local_node = map.get(&tun_addr).cloned();
 
-        let client_addr_list: Vec<Option<SocketAddr>> = map.iter()
+        let client_addr_list: Vec<Option<SocketAddr>> = map.into_iter()
             .map(|(_, node)| node.source_udp_addr)
             .filter(|op| op.is_some())
             .collect();
@@ -198,7 +199,7 @@ async fn client_heartbeat_schedule(
         for dest_addr in client_addr_list {
             let dest_addr = dest_addr.unwrap();
 
-            if let Some(local_node) = local_node {
+            if let Some(local_node) = &local_node {
                 if let Some(local_addr) = local_node.source_udp_addr {
                     if local_addr.ip() == dest_addr.ip() {
                         continue;
@@ -234,8 +235,8 @@ async fn client_handler(
 
             while let Some(msg) = rx.read_msg().await? {
                 if let Msg::NodeMap(map) = msg {
-                    let m: HashMap<Ipv4Addr, Node> = map.iter()
-                        .map(|(_, v)| (v.tun_addr, v.clone()))
+                    let m: HashMap<Ipv4Addr, Node> = map.into_iter()
+                        .map(|(_, v)| (v.tun_addr, v))
                         .collect();
                     MAPPING.update_all(m)
                 }
@@ -265,8 +266,8 @@ fn stdin() -> io::Result<()> {
         match cmd.trim() {
             "show" => {
                 let map = MAPPING.get_all();
-                let node_list: Vec<Node> = map.iter()
-                    .map(|(_, v)| v.clone())
+                let node_list: Vec<Node> = map.into_iter()
+                    .map(|(_, v)| v)
                     .collect();
 
                 let json = node_list.to_json_string_pretty()?;

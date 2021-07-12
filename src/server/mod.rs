@@ -97,7 +97,7 @@ async fn tunnel(
     mut stream: TcpStream,
     rc4: Rc4,
     mapping: Mapping,
-    broadcast: Broadcast,
+    (broadcast_tx, mut broadcast_rx): Broadcast,
 ) -> Result<(), Box<dyn Error>> {
     stream.set_keepalive()?;
     let (rx, tx) = stream.split();
@@ -120,17 +120,15 @@ async fn tunnel(
             let mut guard = mapping.borrow_mut();
             guard.insert(node_id, node);
 
-            broadcast.0.send(mapping.clone())?;
+            broadcast_tx.send(mapping.clone())?;
             (node_id, register_time)
         }
         _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
     };
 
     let f1 = async {
-        let mut rx = broadcast.1.clone();
-
-        while rx.changed().await.is_ok() {
-            let msg = Msg::NodeMap((**rx.borrow()).borrow().clone());
+        while broadcast_rx.changed().await.is_ok() {
+            let msg = Msg::NodeMap((**broadcast_rx.borrow()).borrow().clone());
             writer.write_msg(msg).await?;
         }
         Ok(())
@@ -151,7 +149,7 @@ async fn tunnel(
     if let Some(node) = guard.get(&node_id) {
         if node.register_time == register_time {
             guard.remove(&node_id);
-            broadcast.0.send(mapping.clone())?;
+            broadcast_tx.send(mapping.clone())?;
         }
     }
     res
