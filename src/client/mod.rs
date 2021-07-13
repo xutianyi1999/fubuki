@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use crypto::rc4::Rc4;
@@ -49,8 +47,6 @@ pub async fn start(
     rc4: Rc4,
     tun_address: (Ipv4Addr, Ipv4Addr),
 ) -> Result<(), Box<dyn Error>> {
-    let shutdown = Arc::new(AtomicBool::new(false));
-
     let node_id: NodeId = rand::random();
 
     let tun_addr = tun_address.0;
@@ -61,7 +57,7 @@ pub async fn start(
     let (tun_tx, tun_rx) = device.split();
 
     let (to_tun, from_socket) = mpsc::unbounded_channel::<Box<[u8]>>();
-    let (to_socket, from_tun) = mpsc::unbounded_channel::<(Box<[u8]>, SocketAddr)>();
+    let (to_socket, from_tun) = mpsc::unbounded_channel::<Box<[u8]>>();
 
     let listen_ip = get_interface_addr(server_addr).await?;
 
@@ -81,15 +77,14 @@ pub async fn start(
 
     tokio::select! {
         res = mpsc_to_tun(from_socket,tun_tx) => res??,
-        res = tun_to_mpsc(to_socket, tun_rx, shutdown.clone(), tun_addr) => res??,
+        res = tun_to_mpsc(to_socket, tun_rx) => res??,
         res = socket_to_mpsc(to_tun, MsgSocket::new(&udp_socket, rc4)) => res?,
-        res = mpsc_to_socket(from_tun, MsgSocket::new(&udp_socket, rc4)) => res?,
-        res = client_heartbeat_schedule(MsgSocket::new(&udp_socket, rc4),node_id,server_addr,tun_addr) => res?,
+        res = mpsc_to_socket(from_tun, MsgSocket::new(&udp_socket, rc4), tun_addr) => res?,
+        res = client_heartbeat_schedule(MsgSocket::new(&udp_socket, rc4), node_id, server_addr, tun_addr) => res?,
         res = client_handler(server_addr, rc4, node) => res?,
         res = signal::ctrl_c() => res?
     }
 
-    shutdown.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -106,50 +101,19 @@ fn mpsc_to_tun(
 }
 
 fn tun_to_mpsc(
-    mpsc_tx: UnboundedSender<(Box<[u8]>, SocketAddr)>,
+    mpsc_tx: UnboundedSender<Box<[u8]>>,
     mut tun_rx: Box<dyn Rx>,
-    shutdown: Arc<AtomicBool>,
-    tun_addr: Ipv4Addr,
 ) -> JoinHandle<io::Result<()>> {
     tokio::task::spawn_blocking(move || {
         let mut buff = [0u8; MTU];
 
         while let Ok(size) = tun_rx.recv_packet(&mut buff) {
-            if shutdown.load(Ordering::SeqCst) {
-                break;
-            }
-
             if size == 0 {
                 continue;
             }
 
-            let slice = &buff[..size];
-            let ipv4 = Ipv4Packet::new_unchecked(slice);
-
-            let dest_addr = ipv4.dst_addr();
-            let dest_addr = Ipv4Addr::from(dest_addr.0);
-
-            let guard = MAPPING.map.read();
-
-            if let Some(dest_node) = guard.get(&dest_addr) {
-                if let Some(dest_addr) = dest_node.source_udp_addr {
-                    let local_node = guard.get(&tun_addr);
-
-                    if let Some(local_node) = local_node {
-                        if let Some(local_addr) = local_node.source_udp_addr {
-                            let addr = if local_addr.ip() == dest_addr.ip() {
-                                dest_node.lan_udp_addr
-                            } else {
-                                dest_addr
-                            };
-
-                            drop(guard);
-                            mpsc_tx.send((slice.into(), addr))
-                                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                        }
-                    }
-                }
-            }
+            mpsc_tx.send(buff[..size].into())
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }
         Ok(())
     })
@@ -171,11 +135,36 @@ async fn socket_to_mpsc(
 }
 
 async fn mpsc_to_socket(
-    mut mpsc_rx: UnboundedReceiver<(Box<[u8]>, SocketAddr)>,
+    mut mpsc_rx: UnboundedReceiver<Box<[u8]>>,
     mut socket: MsgSocket<'_>,
+    tun_addr: Ipv4Addr,
 ) -> Result<(), Box<dyn Error>> {
-    while let Some((data, peer_addr)) = mpsc_rx.recv().await {
-        socket.send_msg(Msg::Data(&data), peer_addr).await?;
+    while let Some(data) = mpsc_rx.recv().await {
+        let ipv4 = Ipv4Packet::new_unchecked(&data);
+
+        let dest_addr = ipv4.dst_addr();
+        let dest_addr = Ipv4Addr::from(dest_addr.0);
+
+        let guard = MAPPING.map.read();
+
+        if let Some(dest_node) = guard.get(&dest_addr) {
+            if let Some(dest_addr) = dest_node.source_udp_addr {
+                let local_node = guard.get(&tun_addr);
+
+                if let Some(local_node) = local_node {
+                    if let Some(local_addr) = local_node.source_udp_addr {
+                        let addr = if local_addr.ip() == dest_addr.ip() {
+                            dest_node.lan_udp_addr
+                        } else {
+                            dest_addr
+                        };
+
+                        drop(guard);
+                        socket.send_msg(Msg::Data(&data), addr).await?;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -221,7 +210,7 @@ async fn client_handler(
     loop {
         let mut node = node.clone();
 
-        let f = || async move {
+        let f = async move {
             let mut stream = TcpStream::connect(server_addr).await?;
             stream.set_keepalive()?;
             info!("Server connected");
@@ -244,7 +233,7 @@ async fn client_handler(
             Result::<(), Box<dyn Error>>::Ok(())
         };
 
-        if let Err(e) = f().await {
+        if let Err(e) = f.await {
             error!("Tcp handle error -> {}", e)
         }
 
