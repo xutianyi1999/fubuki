@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use bytes::BufMut;
 use chrono::Utc;
 use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
 use crypto::rc4::Rc4;
@@ -12,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UdpSocket;
 
 use crate::common::persistence::ToJson;
-use crate::common::proto::Msg::{Data, Heartbeat, NodeMap, Register};
+use crate::common::proto::Msg::{Data, Forward, Heartbeat, NodeMap, Register};
 
 pub const MTU: usize = 1420;
 
@@ -20,6 +19,7 @@ const REGISTER: u8 = 0x00;
 const NODE_MAP: u8 = 0x01;
 const HEARTBEAT: u8 = 0x02;
 const DATA: u8 = 0x03;
+const FORWARD: u8 = 0x04;
 
 pub type NodeId = u32;
 
@@ -43,6 +43,7 @@ pub enum Msg<'a> {
     NodeMap(HashMap<NodeId, Node>),
     Heartbeat(NodeId),
     Data(&'a [u8]),
+    Forward(&'a [u8], NodeId),
 }
 
 pub struct MsgReader<R>
@@ -50,13 +51,17 @@ pub struct MsgReader<R>
 {
     rx: R,
     rc4: Rc4,
+    buff: Box<[u8]>,
+    out: Box<[u8]>,
 }
 
 impl<R> MsgReader<R>
     where R: AsyncRead + Unpin
 {
     pub fn new(rx: R, rc4: Rc4) -> Self {
-        MsgReader { rx, rc4 }
+        let buff = vec![0u8; 65536].into_boxed_slice();
+        let out = vec![0u8; 65536].into_boxed_slice();
+        MsgReader { rx, rc4, buff, out }
     }
 
     pub async fn read_msg(&mut self) -> io::Result<Option<Msg<'_>>> {
@@ -70,11 +75,10 @@ impl<R> MsgReader<R>
             Err(_) => return Ok(None)
         };
 
-        let mut data = vec![0u8; len];
-        rx.read_exact(&mut data).await?;
+        let data = &mut self.buff[..len];
 
-        let mut out = vec![0u8; len];
-        crypto(&data, &mut out, rc4)?;
+        rx.read_exact(data).await?;
+        let out = crypto(data, &mut self.out, rc4)?;
 
         let mode = out[0];
         let data = &out[1..];
@@ -95,6 +99,13 @@ impl<R> MsgReader<R>
                 let node_map: HashMap<NodeId, Node> = serde_json::from_slice(data)?;
                 Ok(Some(NodeMap(node_map)))
             }
+            FORWARD => {
+                let mut node_id_buff = [0u8; 4];
+                node_id_buff.copy_from_slice(&data[..4]);
+                let node_id = NodeId::from_be_bytes(node_id_buff);
+
+                Ok(Some(Forward(&data[4..], node_id)))
+            }
             _ => return Err(io::Error::new(io::ErrorKind::Other, "Config message error"))
         }
     }
@@ -105,13 +116,17 @@ pub struct MsgWriter<W>
 {
     tx: W,
     rc4: Rc4,
+    buff: Box<[u8]>,
+    out: Box<[u8]>,
 }
 
 impl<W> MsgWriter<W>
     where W: AsyncWrite + Unpin
 {
     pub fn new(tx: W, rc4: Rc4) -> Self {
-        MsgWriter { tx, rc4 }
+        let buff = vec![0u8; 65536].into_boxed_slice();
+        let out = vec![0u8; 65536].into_boxed_slice();
+        MsgWriter { tx, rc4, buff, out }
     }
 
     pub async fn write_msg(&mut self, msg: Msg<'_>) -> io::Result<()> {
@@ -122,29 +137,36 @@ impl<W> MsgWriter<W>
             Register(node) => {
                 let v = node.to_json_vec()?;
                 let len = v.len();
-                let mut data: Vec<u8> = Vec::with_capacity(1 + len);
+                let data = &mut self.buff[..len + 1];
 
-                data.put_u8(REGISTER);
-                data.put_slice(&v);
+                data[0] = REGISTER;
+                data[1..].copy_from_slice(&v);
                 data
             }
             NodeMap(map) => {
                 let json_vec = map.to_json_vec()?;
                 let len = json_vec.len();
+                let data = &mut self.buff[..len + 1];
 
-                let mut data = Vec::with_capacity(1 + len);
-                data.put_u8(NODE_MAP);
-                data.put_slice(&json_vec);
+                data[0] = NODE_MAP;
+                data[1..].copy_from_slice(&json_vec);
+                data
+            }
+            Forward(buff, node_id) => {
+                let data = &mut self.buff[..1 + 4 + buff.len()];
+
+                data[0] = FORWARD;
+                data[1..5].copy_from_slice(&node_id.to_be_bytes());
+                data[5..].copy_from_slice(buff);
                 data
             }
             _ => unreachable!()
         };
 
-        let mut out = vec![0u8; data.len()];
-        crypto(&data, &mut out, rc4)?;
+        let out = crypto(data, &mut self.out, rc4)?;
 
         tx.write_u16(out.len() as u16).await?;
-        tx.write_all(&out).await
+        tx.write_all(out).await
     }
 }
 
