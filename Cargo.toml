@@ -26,3 +26,7 @@ tun = { git = "https://github.com/xutianyi1999/rust-tun.git", branch = "custom" 
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git" }
+
+[profile.release]
+lto = true
+codegen-units = 1
