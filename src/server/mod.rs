@@ -4,10 +4,15 @@ use std::error::Error;
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crypto::rc4::Rc4;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::watch;
+use tokio::net::tcp::WriteHalf;
+use tokio::sync::{mpsc, TryAcquireError, watch};
+use tokio::sync;
+use tokio::sync::mpsc::error::{SendTimeoutError, TrySendError};
 use tokio::sync::watch::{Receiver, Sender};
 use tokio::task;
 
@@ -15,14 +20,38 @@ use crate::common::net::TcpSocketExt;
 use crate::common::proto::{MsgReader, MsgSocket, MsgWriter, Node, NodeId};
 use crate::common::proto::Msg;
 
-type Mapping = Rc<RefCell<HashMap<NodeId, Node>>>;
-type Broadcast = (Rc<Sender<Mapping>>, Receiver<Mapping>);
+type Mapping = HashMap<NodeId, (Node, mpsc::Sender<Box<[u8]>>)>;
+type SharedMapping = Arc<parking_lot::RwLock<Mapping>>;
+type Broadcast = (Arc<Sender<HashMap<NodeId, Node>>>, Receiver<HashMap<NodeId, Node>>);
+
+struct NodeHandler {
+    mapping: parking_lot::RwLock<Mapping>,
+}
+
+impl NodeHandler {
+    async fn send_packet(&self, node_id: NodeId, packet: Box<[u8]>) -> io::Result<()> {
+        let guard = self.mapping.read();
+
+        if let Some((_, tx)) = guard.get(&node_id) {
+            match tx.try_send(packet) {
+                Err(TrySendError::Closed(_)) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Already EOF")),
+                _ => ()
+            }
+        }
+        Ok(())
+    }
+
+    fn update_mapping(&self, mapping: Mapping) -> () {
+        let guard = self.mapping.write();
+        *guard = mapping;
+    }
+}
 
 pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Error>> {
-    let mapping = Rc::new(RefCell::new(HashMap::new()));
-    let (tx, rx) = watch::channel::<Mapping>(Rc::new(RefCell::new(HashMap::new())));
+    let mapping: SharedMapping = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+    let (tx, rx) = watch::channel::<HashMap<NodeId, Node>>(HashMap::new());
 
-    let tx = Rc::new(tx);
+    let tx = Arc::new(tx);
     let broadcast: Broadcast = (tx, rx);
 
     tokio::select! {
@@ -34,8 +63,8 @@ pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Erro
 async fn udp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
-    mapping: &Mapping,
-    tx: &Rc<Sender<Mapping>>,
+    mapping: &SharedMapping,
+    tx: &Arc<Sender<HashMap<NodeId, Node>>>,
 ) -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(listen_addr).await?;
     info!("Udp socket listening on {}", listen_addr);
@@ -45,9 +74,9 @@ async fn udp_handler(
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
             if let Msg::Heartbeat(node_id) = msg {
-                let mut guard = mapping.borrow_mut();
+                let guard = mapping.read();
 
-                if let Some(node) = guard.get_mut(&node_id) {
+                if let Some((node, _)) = guard.get(&node_id) {
                     if let Some(udp_addr) = node.source_udp_addr {
                         if udp_addr == peer_addr {
                             continue;
@@ -55,7 +84,12 @@ async fn udp_handler(
                     };
 
                     node.source_udp_addr = Some(peer_addr);
-                    tx.send(mapping.clone())?;
+
+                    let mapping: HashMap<NodeId, Node> = guard.iter()
+                        .map(|(k, (node, _))| (*k, node.clone()))
+                        .collect();
+
+                    tx.send(mapping)?;
                 }
             }
         }
@@ -96,9 +130,10 @@ async fn tcp_handler(
 async fn tunnel(
     mut stream: TcpStream,
     rc4: Rc4,
-    mapping: Mapping,
+    shared_mapping: SharedMapping,
     (broadcast_tx, mut broadcast_rx): Broadcast,
 ) -> Result<(), Box<dyn Error>> {
+    let mapping = &shared_mapping;
     stream.set_keepalive()?;
     let (rx, tx) = stream.split();
 
@@ -112,46 +147,80 @@ async fn tunnel(
         None => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
     };
 
-    let (node_id, register_time) = match msg {
+    let (node_id, register_time, mut mpsc_rx) = match msg {
         Msg::Register(node) => {
             let node_id = node.id;
             let register_time = node.register_time;
 
-            let mut guard = mapping.borrow_mut();
-            guard.insert(node_id, node);
+            let (mpsc_tx, mpsc_rx) = mpsc::channel::<Box<[u8]>>(100);
+            let mut guard = mapping.write();
+            guard.insert(node_id, (node, mpsc_tx));
 
-            broadcast_tx.send(mapping.clone())?;
-            (node_id, register_time)
+            let mapping: HashMap<NodeId, Node> = guard.iter()
+                .map(|(k, (node, _))| (*k, node.clone()))
+                .collect();
+
+            broadcast_tx.send(mapping)?;
+            (node_id, register_time, mpsc_rx)
         }
         _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
     };
 
-    let f1 = async {
-        while broadcast_rx.changed().await.is_ok() {
-            let msg = Msg::NodeMap((**broadcast_rx.borrow()).borrow().clone());
-            writer.write_msg(msg).await?;
+    let task = async move {
+        loop {
+            tokio::select! {
+                res = broadcast_rx.changed() => {
+                    res?;
+                    mapping_sync(&broadcast_rx, &mut writer).await?
+                }
+                data = mpsc_rx.recv() => mpsc_to_socket(data, &mut writer).await?,
+                data = reader.read_msg() => socket_to_mpsc(data, mapping)?
+            }
         }
-        Ok(())
     };
 
-    let f2 = async move {
-        reader.read_msg().await?;
-        Ok(())
-    };
+    let res = task.await;
+    let mut guard = mapping.write();
 
-    let res = tokio::select! {
-        res = f1 => res,
-        res = f2 => res,
-    };
-
-    let mut guard = mapping.borrow_mut();
-
-    if let Some(node) = guard.get(&node_id) {
+    if let Some((node, _)) = guard.get(&node_id) {
         if node.register_time == register_time {
             guard.remove(&node_id);
-            broadcast_tx.send(mapping.clone())?;
+            let mapping: HashMap<NodeId, Node> = guard.iter()
+                .map(|(k, (node, _))| (*k, node.clone()))
+                .collect();
+
+            broadcast_tx.send(mapping)?;
         }
     }
     res
 }
 
+async fn mapping_sync(
+    broadcast: &Receiver<HashMap<NodeId, Node>>,
+    tx: &mut MsgWriter<WriteHalf<'_>>,
+) -> io::Result<()> {
+    let map = broadcast.borrow().clone();
+    tx.write_msg(Msg::NodeMap(map)).await
+}
+
+async fn mpsc_to_socket(
+    data: Option<Box<[u8]>>,
+    tx: &mut MsgWriter<WriteHalf<'_>>,
+) -> io::Result<()> {
+    let packet = data.ok_or(io::Error::new(io::ErrorKind::UnexpectedEof, "MPSC closed"))?;
+    tx.write_msg(Msg::Data(&packet)).await
+}
+
+fn socket_to_mpsc(
+    data: io::Result<Option<Msg<'_>>>,
+    mapping: &SharedMapping,
+) -> io::Result<()> {
+    if let Some(Msg::Forward(packet, node_id)) = data? {
+        let guard = mapping.read();
+
+        if let Some((_, tx)) = guard.get(&node_id) {
+            tx.try_send(packet.into());
+        }
+    }
+    Ok(())
+}

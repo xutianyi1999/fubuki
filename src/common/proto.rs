@@ -106,6 +106,7 @@ impl<R> MsgReader<R>
 
                 Ok(Some(Forward(&data[4..], node_id)))
             }
+            DATA => Ok(Some(Data(data))),
             _ => return Err(io::Error::new(io::ErrorKind::Other, "Config message error"))
         }
     }
@@ -158,6 +159,13 @@ impl<W> MsgWriter<W>
                 data[0] = FORWARD;
                 data[1..5].copy_from_slice(&node_id.to_be_bytes());
                 data[5..].copy_from_slice(buff);
+                data
+            }
+            Data(buff) => {
+                let data = &mut self.buff[..1 + buff.len()];
+
+                data[0] = DATA;
+                data[1..].copy_from_slice(buff);
                 data
             }
             _ => unreachable!()
