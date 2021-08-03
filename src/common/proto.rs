@@ -20,8 +20,15 @@ const NODE_MAP: u8 = 0x01;
 const HEARTBEAT: u8 = 0x02;
 const DATA: u8 = 0x03;
 const FORWARD: u8 = 0x04;
+const REQ: u8 = 0x00;
+const RESP: u8 = 0x01;
 
 pub type NodeId = u32;
+pub type Seq = u32;
+
+pub enum HeartbeatType {
+    REQ, RESP
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Node {
@@ -41,7 +48,7 @@ impl Node {
 pub enum Msg<'a> {
     Register(Node),
     NodeMap(HashMap<NodeId, Node>),
-    Heartbeat(NodeId),
+    Heartbeat(NodeId, Seq, HeartbeatType),
     Data(&'a [u8]),
     Forward(&'a [u8], NodeId),
 }
@@ -208,7 +215,19 @@ impl MsgSocket<'_> {
                 let mut node_id = [0u8; 4];
                 node_id.copy_from_slice(&out[1..5]);
                 let node_id: NodeId = u32::from_be_bytes(node_id);
-                Ok((Msg::Heartbeat(node_id), peer_addr))
+
+                let mut seq = [0u8; 4];
+                seq.copy_from_slice(&out[5..9]);
+                let seq: Seq = u32::from_be_bytes(seq);
+
+                let heartbeat_type = out[9];
+
+                let heartbeat_type = match heartbeat_type {
+                    REQ => HeartbeatType::REQ,
+                    RESP => HeartbeatType::RESP,
+                    _ => return Err(io::Error::new(io::ErrorKind::Other, "Datagram message error"))
+                };
+                Ok((Msg::Heartbeat(node_id, seq, heartbeat_type), peer_addr))
             }
             DATA => {
                 Ok((Msg::Data(&out[1..]), peer_addr))
@@ -224,10 +243,18 @@ impl MsgSocket<'_> {
         let out = &mut self.out;
 
         let data = match msg {
-            Heartbeat(node_id) => {
+            Heartbeat(node_id, seq, heartbeat_type) => {
                 buff[0] = HEARTBEAT;
                 buff[1..5].copy_from_slice(&node_id.to_be_bytes());
-                &buff[..5]
+                buff[5..9].copy_from_slice(&seq.to_be_bytes());
+
+                let type_byte = match heartbeat_type {
+                    HeartbeatType::REQ => REQ,
+                    HeartbeatType::RESP => RESP
+                };
+
+                buff[9] = type_byte;
+                &buff[..10]
             }
             Data(data) => {
                 let data_len = data.len();

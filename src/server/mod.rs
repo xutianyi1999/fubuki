@@ -24,29 +24,6 @@ type Mapping = HashMap<NodeId, (Node, mpsc::Sender<Box<[u8]>>)>;
 type SharedMapping = Arc<parking_lot::RwLock<Mapping>>;
 type Broadcast = (Arc<Sender<HashMap<NodeId, Node>>>, Receiver<HashMap<NodeId, Node>>);
 
-struct NodeHandler {
-    mapping: parking_lot::RwLock<Mapping>,
-}
-
-impl NodeHandler {
-    async fn send_packet(&self, node_id: NodeId, packet: Box<[u8]>) -> io::Result<()> {
-        let guard = self.mapping.read();
-
-        if let Some((_, tx)) = guard.get(&node_id) {
-            match tx.try_send(packet) {
-                Err(TrySendError::Closed(_)) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Already EOF")),
-                _ => ()
-            }
-        }
-        Ok(())
-    }
-
-    fn update_mapping(&self, mapping: Mapping) -> () {
-        let guard = self.mapping.write();
-        *guard = mapping;
-    }
-}
-
 pub async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Error>> {
     let mapping: SharedMapping = Arc::new(parking_lot::RwLock::new(HashMap::new()));
     let (tx, rx) = watch::channel::<HashMap<NodeId, Node>>(HashMap::new());
@@ -73,19 +50,27 @@ async fn udp_handler(
 
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.recv_msg().await {
-            if let Msg::Heartbeat(node_id) = msg {
-                let guard = mapping.read();
+            if let Msg::Heartbeat(node_id, _, _) = msg {
+                let read_guard = mapping.read();
 
-                if let Some((node, _)) = guard.get(&node_id) {
-                    if let Some(udp_addr) = node.source_udp_addr {
-                        if udp_addr == peer_addr {
-                            continue;
-                        }
-                    };
+                match read_guard.get(&node_id) {
+                    Some((node, _)) => {
+                        if let Some(udp_addr) = node.source_udp_addr {
+                            if udp_addr == peer_addr {
+                                continue;
+                            }
+                        };
+                    }
+                    None => continue
+                }
 
+                drop(read_guard);
+                let mut write_guard = mapping.write();
+
+                if let Some((node, _)) = write_guard.get_mut(&node_id) {
                     node.source_udp_addr = Some(peer_addr);
 
-                    let mapping: HashMap<NodeId, Node> = guard.iter()
+                    let mapping: HashMap<NodeId, Node> = write_guard.iter()
                         .map(|(k, (node, _))| (*k, node.clone()))
                         .collect();
 
@@ -99,32 +84,28 @@ async fn udp_handler(
 async fn tcp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
-    mapping: &Mapping,
+    mapping: &SharedMapping,
     broadcast: &Broadcast,
 ) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
     info!("Tcp socket listening on {}", listen_addr);
 
-    let local = task::LocalSet::new();
+    while let Ok((stream, _)) = listener.accept().await {
+        let inner_mapping = mapping.clone();
+        let inner_broadcast = broadcast.clone();
 
-    local.run_until(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let inner_mapping = mapping.clone();
-            let inner_broadcast = broadcast.clone();
-
-            task::spawn_local(async move {
-                if let Err(e) = tunnel(
-                    stream,
-                    rc4,
-                    inner_mapping,
-                    inner_broadcast,
-                ).await {
-                    error!("Tunnel error -> {}", e)
-                }
-            });
-        };
-        Ok(())
-    }).await
+        tokio::spawn(async move {
+            if let Err(e) = tunnel(
+                stream,
+                rc4,
+                inner_mapping,
+                inner_broadcast,
+            ).await {
+                error!("Tunnel error -> {}", e)
+            }
+        });
+    };
+    Ok(())
 }
 
 async fn tunnel(
