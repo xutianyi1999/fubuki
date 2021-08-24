@@ -1,3 +1,4 @@
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io;
@@ -11,48 +12,43 @@ use chrono::{DateTime, Utc};
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
 use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, Interest};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::Instant;
 
 use crate::common::persistence::ToJson;
-use crate::common::proto::{HeartbeatType, Node, NodeId, TcpMsg, TcpMsgDecoder, TcpMsgEncoder, UdpMsg, UdpMsgCodec};
-
-#[derive(Deserialize, Clone)]
-pub struct ServerConfig {
-    listen_addr: SocketAddr,
-    key: String,
-    forward_only: Option<bool>,
-}
+use crate::common::proto;
+use crate::common::proto::{HeartbeatType, Node, NodeId, TcpMsg, UdpMsg};
 
 struct NodeHandle {
     node: Node,
-    tx: Sender<TcpMsg>,
+    tx: Sender<Box<[u8]>>,
 }
 
 struct Bridge {
-    channel_rx: Receiver<TcpMsg>,
-    watch_rx: watch::Receiver<Vec<Node>>,
+    channel_rx: Receiver<Box<[u8]>>,
+    watch_rx: watch::Receiver<Box<[u8]>>,
 }
 
 struct NodeDb {
     mapping: RwLock<HashMap<NodeId, NodeHandle>>,
-    watch: (watch::Sender<Vec<Node>>, watch::Receiver<Vec<Node>>),
+    watch: (watch::Sender<Box<[u8]>>, watch::Receiver<Box<[u8]>>),
 }
 
 impl NodeDb {
     fn new() -> Self {
         NodeDb {
             mapping: RwLock::new(HashMap::new()),
-            watch: watch::channel(Vec::new()),
+            watch: watch::channel(Box::from([0u8; 0])),
         }
     }
 
     fn insert(&self, node: Node) -> Result<Bridge, Box<dyn Error>> {
         let node_id = node.id;
-        let (tx, rx) = mpsc::channel::<TcpMsg>(30);
+        let (tx, rx) = mpsc::channel::<Box<[u8]>>(10);
 
         self.mapping.write().insert(node_id, NodeHandle { node, tx });
         self.sync()?;
@@ -82,32 +78,43 @@ impl NodeDb {
             .map(|(_, handle)| handle.node.clone())
             .collect();
 
-        self.watch.0.send(node_list)?;
+        let mut buff = vec![0u8; 65535];
+        let data = TcpMsg::NodeList(node_list).encode(&mut buff)?;
+
+        self.watch.0.send(data.into())?;
         Ok(())
     }
 }
 
-async fn start(listen_addr: SocketAddr, rc4: Rc4) -> () {
+async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Error>> {
     let node_db = Arc::new(NodeDb::new());
+
+    tokio::select! {
+        res = udp_handler(listen_addr, rc4, &node_db) => res,
+        res = tcp_handler(listen_addr, rc4, &node_db) => res
+    }
 }
 
 async fn udp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
-    node_db: Arc<NodeDb>,
+    node_db: &Arc<NodeDb>,
 ) -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(listen_addr).await?;
     info!("Udp socket listening on {}", listen_addr);
 
     let mut buff = [0u8; 1024];
-    let mut codec = UdpMsgCodec::new(rc4);
+    let mut out = [0u8; 1024];
 
     loop {
+        let mut inner_rc4 = rc4;
         let (len, peer_addr) = socket.recv_from(&mut buff).await?;
+        let packet = &buff[..len];
+        let packet = proto::crypto(packet, &mut out, &mut inner_rc4)?;
 
-        if let Ok(UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req)) = codec.decode(&buff[..len]) {
+        if let Ok(UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req)) = UdpMsg::decode(packet) {
             socket.send_to(
-                codec.encode(UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp), &mut buff)?,
+                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp).encode(&mut buff)?,
                 peer_addr,
             ).await?;
 
@@ -137,7 +144,7 @@ async fn udp_handler(
 async fn tcp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
-    node_db: Arc<NodeDb>,
+    node_db: &Arc<NodeDb>,
 ) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
     info!("Tcp socket listening on {}", listen_addr);
@@ -159,48 +166,122 @@ async fn tunnel(
     rc4: Rc4,
     node_db: Arc<NodeDb>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut decoder = TcpMsgDecoder::new(rc4);
-    let mut encoder = TcpMsgEncoder::new(rc4);
-    let mut buff = vec![0u8; 65536];
+    let (mut rx, mut tx) = stream.split();
 
-    let len = stream.read_u16().await?;
-    let packet = &mut buff[..len as usize];
+    let mut rx_rc4 = rc4;
+    let mut tx_rc4 = rc4;
 
-    stream.read_exact(packet).await?;
+    let len = rx.read_u16().await? as usize;
+    let mut buff = vec![0u8; len];
+    rx.read_exact(&mut buff).await?;
 
-    let (node_id, register_time, bridge) = match decoder.decode(packet)? {
+    let mut buff2 = vec![0u8; len];
+    let packet = proto::crypto(&mut buff, &mut buff2, &mut rx_rc4)?;
+
+    let (node_id, register_time, bridge) = match TcpMsg::decode(packet)? {
         TcpMsg::Register(node) => {
             let node_id = node.id;
             let register_time = node.register_time.clone();
+            let old_time = DateTime::<Utc>::from_str(&register_time)?;
+
+            let remain = (Utc::now() - old_time).num_seconds();
+
+            if (remain > 10) || (remain < -10) {
+                return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register message timeout")));
+            }
 
             let bridge = node_db.insert(node)?;
             (node_id, register_time, bridge)
         }
-        _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register error")))
+        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register error")))
     };
 
     let mut watch = bridge.watch_rx;
-    let channel_rx = bridge.channel_rx;
+    let mut channel_rx = bridge.channel_rx;
 
-    let mut a = 10;
-    let p = &mut a;
+    let fut1 = async move {
+        let mut buff = vec![0u8; 65535];
+        let mut out = vec![0u8; 65535];
 
-    loop {
-        // tokio::select! {
-        //     res = watch.changed() => {
-        //         res?;
-        //
-        //     }
-        // }
+        loop {
+            let len = rx.read_u16().await?;
+            let slice = &mut buff[..len as usize];
+            rx.read_exact(slice).await?;
+
+            let packet = proto::crypto(slice, &mut out, &mut rx_rc4)?;
+
+            if let TcpMsg::Forward(data, node_id) = TcpMsg::decode(packet)? {
+                let res = node_db.get(&node_id, |op| {
+                    match op {
+                        Some(NodeHandle { node: _, tx: channel_tx }) => {
+                            channel_tx.try_send(packet.into())
+                        }
+                        _ => Ok(())
+                    }
+                });
+
+                if let Err(TrySendError::Closed(_)) = res {
+                    res?;
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    let fut2 = async move {
+        let mut buff = vec![0u8; 65535];
+        let mut out = vec![0u8; 65535];
+
+        loop {
+            tokio::select! {
+                res = watch.changed() => {
+                    res?;
+                    node_list_sync(&watch, &mut tx, &mut tx_rc4, &mut buff, &mut out).await?;
+                }
+                res = channel_rx.recv() => mpsc_to_socket(res, &mut tx, &mut tx_rc4, &mut buff, &mut out).await?
+            }
+        }
+    };
+
+    tokio::select! {
+        res = fut1 => res,
+        res = fut2 => res
     }
+}
+
+async fn node_list_sync<TX: AsyncWrite + Unpin>(
+    watch: &watch::Receiver<Box<[u8]>>,
+    tx: &mut TX,
+    rc4: &mut Rc4,
+    buff: &mut [u8],
+    out: &mut [u8],
+) -> Result<(), Box<dyn Error>> {
+    let node_list = watch.borrow().clone();
+    let packet = proto::crypto(&node_list, buff, rc4)?;
+    let len = packet.len();
+
+    out[..2].copy_from_slice(&(len as u16).to_be_bytes());
+    out[2..len + 2].copy_from_slice(packet);
+
+    tx.write_all(&out[..len + 2]).await?;
     Ok(())
 }
 
-async fn node_list_sync(
-    watch: &watch::Receiver<Vec<Node>>,
-    stream: &mut TcpStream,
-    encoder: &mut TcpMsgEncoder,
+async fn mpsc_to_socket<TX: AsyncWrite + Unpin>(
+    data: Option<Box<[u8]>>,
+    tx: &mut TX,
+    rc4: &mut Rc4,
+    buff: &mut [u8],
+    out: &mut [u8],
 ) -> Result<(), Box<dyn Error>> {
-    let node_list = watch.borrow().clone();
+    let data = data.ok_or(io::Error::new(io::ErrorKind::UnexpectedEof, "MPSC closed"))?;
+    let packet = proto::crypto(&data, buff, rc4)?;
+    let len = packet.len();
+
+    out[..2].copy_from_slice(&(len as u16).to_be_bytes());
+    out[2..len + 2].copy_from_slice(packet);
+
+    tx.write_all(&out[..len + 2]).await?;
+    Ok(())
 }
 

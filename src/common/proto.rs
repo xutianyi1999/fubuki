@@ -40,31 +40,19 @@ pub enum HeartbeatType {
     Resp,
 }
 
-pub enum TcpMsg {
+#[derive(Clone, Debug)]
+pub enum TcpMsg<'a> {
     Register(Node),
     NodeList(Vec<Node>),
-    Forward(Box<[u8]>, NodeId),
+    Forward(&'a [u8], NodeId),
 }
 
-pub struct TcpMsgEncoder {
-    rc4: Rc4,
-    buff: Box<[u8]>,
-}
+impl TcpMsg<'_> {
+    pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a [u8], Box<dyn Error>> {
+        buff[0] = MAGIC_NUM;
+        let slice = &mut buff[1..];
 
-impl TcpMsgEncoder {
-    pub fn new(rc4: Rc4) -> Self {
-        TcpMsgEncoder { rc4, buff: vec![0u8; 65535].into_boxed_slice() }
-    }
-
-    pub fn encode<'a>(&mut self, msg: TcpMsg, out: &'a mut [u8]) -> Result<&'a [u8], Box<dyn Error>> {
-        let rc4 = &mut self.rc4;
-        let buff = &mut self.buff;
-
-        let len_slice = &mut buff[..2];
-        buff[2] = MAGIC_NUM;
-        let slice = &mut buff[3..];
-
-        let len = match msg {
+        let len = match self {
             TcpMsg::NodeList(node_list) => {
                 let data = node_list.to_json_vec()?;
                 slice[0] = NODE_LIST;
@@ -80,32 +68,17 @@ impl TcpMsgEncoder {
             TcpMsg::Forward(data, node_id) => {
                 slice[0] = FORWARD;
                 slice[1..5].copy_from_slice(&node_id.to_be_bytes());
-                slice[5..].copy_from_slice(&data);
-                data.len() + 6
+                slice[5..data.len() + 5].copy_from_slice(*data);
+                data.len() + 5
             }
         };
-        Ok(())
-    }
-}
-
-pub struct TcpMsgDecoder {
-    rc4: Rc4,
-    buff: Box<[u8]>,
-}
-
-impl TcpMsgDecoder {
-    pub fn new(rc4: Rc4) -> Self {
-        TcpMsgDecoder { rc4, buff: vec![0u8; 65535].into_boxed_slice() }
+        Ok(&buff[..len])
     }
 
-    pub fn decode(&mut self, packet: &[u8]) -> Result<TcpMsg, Box<dyn Error>> {
-        let rc4 = &mut self.rc4;
-        let buff = &mut self.buff;
-
-        let packet = crypto(packet, buff, rc4)?;
+    pub fn decode(packet: &[u8]) -> Result<TcpMsg, Box<dyn Error>> {
         let magic_num = packet[0];
         let mode = packet[1];
-        let data = &mut packet[2..];
+        let data = &packet[2..];
 
         if magic_num != MAGIC_NUM {
             return Err(Box::new(io::Error::new(io::ErrorKind::Other, "TCP Message error")));
@@ -114,13 +87,6 @@ impl TcpMsgDecoder {
         let msg = match mode {
             REGISTER => {
                 let node: Node = serde_json::from_slice(data)?;
-                let old_time = DateTime::<Utc>::from_str(&node.register_time)?;
-
-                let sec = (Utc::now() - old_time).num_seconds();
-
-                if (sec > 10) || (sec < -10) {
-                    return Err(Box::new(io::Error::new(io::ErrorKind::Other, "Register message timeout")));
-                }
                 TcpMsg::Register(node)
             }
             NODE_LIST => {
@@ -132,8 +98,7 @@ impl TcpMsgDecoder {
                 node_id_buff.copy_from_slice(&data[..4]);
                 let node_id = NodeId::from_be_bytes(node_id_buff);
 
-                Box::<[u8]>::from(&data[4..]);
-                TcpMsg::Forward(data[4..].into(), node_id)
+                TcpMsg::Forward(&data[4..], node_id)
             }
             _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "TCP Message error")))
         };
@@ -146,78 +111,76 @@ pub enum UdpMsg<'a> {
     Data(&'a [u8]),
 }
 
-impl UdpMsg {
-    pub fn encode(&self, buff: &mut [u8]) -> Result<&[u8], Box<dyn Error>> {}
-}
+impl<'a> UdpMsg<'a> {
+    pub fn encode(&self, buff: &'a mut [u8]) -> Result<&'a [u8], Box<dyn Error>> {
+        buff[0] = MAGIC_NUM;
+        let slice = &mut buff[1..];
 
-pub fn udp_msg_encode<'a>(msg: UdpMsg, buff: &'a mut [u8]) -> Result<&'a [u8], Box<dyn Error>> {
-    buff[0] = MAGIC_NUM;
-    let slice = &mut buff[1..];
+        let len = match self {
+            UdpMsg::Heartbeat(node_id, seq, heartbeat_type) => {
+                slice[0] = HEARTBEAT;
+                slice[1..5].copy_from_slice(&node_id.to_be_bytes());
+                slice[5..9].copy_from_slice(&seq.to_be_bytes());
 
-    let len = match msg {
-        UdpMsg::Heartbeat(node_id, seq, heartbeat_type) => {
-            slice[0] = HEARTBEAT;
-            slice[1..5].copy_from_slice(&node_id.to_be_bytes());
-            slice[5..9].copy_from_slice(&seq.to_be_bytes());
+                let type_byte = match heartbeat_type {
+                    HeartbeatType::Req => REQ,
+                    HeartbeatType::Resp => RESP
+                };
 
-            let type_byte = match heartbeat_type {
-                HeartbeatType::Req => REQ,
-                HeartbeatType::Resp => RESP
-            };
+                slice[9] = type_byte;
+                10
+            }
+            UdpMsg::Data(data) => {
+                slice[0] = DATA;
+                slice[1..data.len() + 1].copy_from_slice(*data);
+                data.len() + 1
+            }
+        };
 
-            slice[9] = type_byte;
-            10
-        }
-        UdpMsg::Data(data) => {
-            slice[0] = DATA;
-            slice[1..data.len() + 1].copy_from_slice(data);
-            data.len() + 1
-        }
-    };
-
-    Ok(&buff[..len + 1])
-}
-
-pub fn udp_msg_decode(packet: &[u8]) -> Result<UdpMsg, Box<dyn Error>> {
-    let magic_num = packet[0];
-    let mode = packet[1];
-    let data = &packet[2..];
-
-    if magic_num != MAGIC_NUM {
-        return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")));
+        Ok(&buff[..len + 1])
     }
 
-    match mode {
-        DATA => {
-            Ok(UdpMsg::Data(data))
+    pub fn decode(packet: &'a [u8]) -> Result<Self, Box<dyn Error>> {
+        let magic_num = packet[0];
+        let mode = packet[1];
+        let data = &packet[2..];
+
+        if magic_num != MAGIC_NUM {
+            return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")));
         }
-        HEARTBEAT => {
-            let mut node_id = [0u8; 4];
-            node_id.copy_from_slice(&data[..4]);
-            let node_id: NodeId = u32::from_be_bytes(node_id);
 
-            let mut seq = [0u8; 4];
-            seq.copy_from_slice(&data[4..8]);
-            let seq: Seq = u32::from_be_bytes(seq);
+        match mode {
+            DATA => {
+                Ok(UdpMsg::Data(data))
+            }
+            HEARTBEAT => {
+                let mut node_id = [0u8; 4];
+                node_id.copy_from_slice(&data[..4]);
+                let node_id: NodeId = u32::from_be_bytes(node_id);
 
-            let heartbeat_type = data[8];
+                let mut seq = [0u8; 4];
+                seq.copy_from_slice(&data[4..8]);
+                let seq: Seq = u32::from_be_bytes(seq);
 
-            let heartbeat_type = match heartbeat_type {
-                REQ => HeartbeatType::Req,
-                RESP => HeartbeatType::Resp,
-                _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")))
-            };
-            Ok((UdpMsg::Heartbeat(node_id, seq, heartbeat_type)))
+                let heartbeat_type = data[8];
+
+                let heartbeat_type = match heartbeat_type {
+                    REQ => HeartbeatType::Req,
+                    RESP => HeartbeatType::Resp,
+                    _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")))
+                };
+                Ok((UdpMsg::Heartbeat(node_id, seq, heartbeat_type)))
+            }
+            _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")))
         }
-        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")))
     }
 }
 
-fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> io::Result<&'a mut [u8]> {
+pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> io::Result<&'a [u8]> {
     let mut ref_read_buf = RefReadBuffer::new(input);
     let mut ref_write_buf = RefWriteBuffer::new(output);
 
     rc4.encrypt(&mut ref_read_buf, &mut ref_write_buf, false)
         .map_err(|_| io::Error::new(io::ErrorKind::Other, "Crypto error"))?;
-    Ok(&mut output[..input.len()])
+    Ok(&output[..input.len()])
 }
