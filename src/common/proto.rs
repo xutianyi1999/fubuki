@@ -72,7 +72,7 @@ impl TcpMsg<'_> {
                 data.len() + 5
             }
         };
-        Ok(&buff[..len])
+        Ok(&buff[..len + 1])
     }
 
     pub fn decode(packet: &[u8]) -> Result<TcpMsg, Box<dyn Error>> {
@@ -146,7 +146,7 @@ impl<'a> UdpMsg<'a> {
         let data = &packet[2..];
 
         if magic_num != MAGIC_NUM {
-            return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")));
+            return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")));
         }
 
         match mode {
@@ -167,11 +167,11 @@ impl<'a> UdpMsg<'a> {
                 let heartbeat_type = match heartbeat_type {
                     REQ => HeartbeatType::Req,
                     RESP => HeartbeatType::Resp,
-                    _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")))
+                    _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")))
                 };
                 Ok((UdpMsg::Heartbeat(node_id, seq, heartbeat_type)))
             }
-            _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Udp message error")))
+            _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")))
         }
     }
 }

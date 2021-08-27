@@ -101,7 +101,7 @@ async fn udp_handler(
     node_db: &Arc<NodeDb>,
 ) -> Result<(), Box<dyn Error>> {
     let socket = UdpSocket::bind(listen_addr).await?;
-    info!("Udp socket listening on {}", listen_addr);
+    info!("UDP socket listening on {}", listen_addr);
 
     let mut buff = [0u8; 1024];
     let mut out = [0u8; 1024];
@@ -147,7 +147,7 @@ async fn tcp_handler(
     node_db: &Arc<NodeDb>,
 ) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
-    info!("Tcp socket listening on {}", listen_addr);
+    info!("TCP socket listening on {}", listen_addr);
 
     loop {
         let node_db = node_db.clone();
@@ -178,13 +178,16 @@ async fn tunnel(
     let mut buff2 = vec![0u8; len];
     let packet = proto::crypto(&mut buff, &mut buff2, &mut rx_rc4)?;
 
-    let (node_id, register_time, bridge) = match TcpMsg::decode(packet)? {
+    let (
+        node_id,
+        register_time,
+        Bridge { watch_rx: mut watch, mut channel_rx }
+    ) = match TcpMsg::decode(packet)? {
         TcpMsg::Register(node) => {
             let node_id = node.id;
-            let register_time = node.register_time.clone();
-            let old_time = DateTime::<Utc>::from_str(&register_time)?;
+            let register_time = DateTime::<Utc>::from_str(&node.register_time)?;
 
-            let remain = (Utc::now() - old_time).num_seconds();
+            let remain = (Utc::now() - register_time).num_seconds();
 
             if (remain > 10) || (remain < -10) {
                 return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register message timeout")));
@@ -196,8 +199,7 @@ async fn tunnel(
         _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register error")))
     };
 
-    let mut watch = bridge.watch_rx;
-    let mut channel_rx = bridge.channel_rx;
+    let inner_node_db = &node_db;
 
     let fut1 = async move {
         let mut buff = vec![0u8; 65535];
@@ -211,19 +213,14 @@ async fn tunnel(
             let packet = proto::crypto(slice, &mut out, &mut rx_rc4)?;
 
             if let TcpMsg::Forward(data, node_id) = TcpMsg::decode(packet)? {
-                let res = node_db.get(&node_id, |op| {
+                inner_node_db.get(&node_id, |op| {
                     match op {
-                        Some(NodeHandle { node: _, tx: channel_tx }) => {
-                            channel_tx.try_send(packet.into())
+                        Some(NodeHandle { tx: channel_tx, .. }) => {
+                            channel_tx.try_send(packet.into());
                         }
-                        _ => Ok(())
+                        _ => ()
                     }
                 });
-
-                if let Err(TrySendError::Closed(_)) = res {
-                    res?;
-                    return Ok(());
-                }
             }
         }
     };
@@ -243,10 +240,21 @@ async fn tunnel(
         }
     };
 
-    tokio::select! {
+    let res = tokio::select! {
         res = fut1 => res,
         res = fut2 => res
-    }
+    };
+
+    let mut guard = node_db.mapping.write();
+
+    if let Some(NodeHandle { node, .. }) = guard.get(&node_id) {
+        if DateTime::<Utc>::from_str(&node.register_time)? == register_time {
+            guard.remove(&node_id);
+            drop(guard);
+            node_db.sync()?;
+        }
+    };
+    res
 }
 
 async fn node_list_sync<TX: AsyncWrite + Unpin>(
