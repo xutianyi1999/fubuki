@@ -31,7 +31,6 @@ pub struct Node {
     pub tun_addr: Ipv4Addr,
     pub lan_udp_addr: Option<SocketAddr>,
     pub source_udp_addr: Option<SocketAddr>,
-    pub direct: bool,
     pub register_time: String,
 }
 
