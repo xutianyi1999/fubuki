@@ -19,8 +19,11 @@ const NODE_LIST: u8 = 0x01;
 const HEARTBEAT: u8 = 0x02;
 const DATA: u8 = 0x03;
 const FORWARD: u8 = 0x04;
+const RESULT: u8 = 0x05;
 const REQ: u8 = 0x00;
 const RESP: u8 = 0x01;
+const SUCCESS: u8 = 0x00;
+const TIMEOUT: u8 = 0x01;
 
 pub type NodeId = u32;
 pub type Seq = u32;
@@ -40,8 +43,15 @@ pub enum HeartbeatType {
 }
 
 #[derive(Clone, Debug)]
+pub enum MsgResult {
+    Success,
+    Timeout,
+}
+
+#[derive(Clone, Debug)]
 pub enum TcpMsg<'a> {
     Register(Node),
+    Result(MsgResult),
     NodeList(Vec<Node>),
     Forward(&'a [u8], NodeId),
 }
@@ -63,6 +73,15 @@ impl TcpMsg<'_> {
                 slice[0] = REGISTER;
                 slice[1..data.len() + 1].copy_from_slice(&data);
                 data.len() + 1
+            }
+            TcpMsg::Result(res) => {
+                slice[0] = RESULT;
+
+                match res {
+                    MsgResult::Success => slice[1] = SUCCESS,
+                    MsgResult::Timeout => slice[1] = TIMEOUT
+                };
+                2
             }
             TcpMsg::Forward(data, node_id) => {
                 slice[0] = FORWARD;
@@ -87,6 +106,13 @@ impl TcpMsg<'_> {
             REGISTER => {
                 let node: Node = serde_json::from_slice(data)?;
                 TcpMsg::Register(node)
+            }
+            RESULT => {
+                match data[0] {
+                    SUCCESS => TcpMsg::Result(MsgResult::Success),
+                    TIMEOUT => TcpMsg::Result(MsgResult::Timeout),
+                    _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "TCP Message error")))
+                }
             }
             NODE_LIST => {
                 let node_list: Vec<Node> = serde_json::from_slice(data)?;

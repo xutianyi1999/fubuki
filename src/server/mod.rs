@@ -1,27 +1,20 @@
-use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
-use serde::Deserialize;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, Interest};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::time::Instant;
 
-use crate::common::persistence::ToJson;
 use crate::common::proto;
-use crate::common::proto::{HeartbeatType, Node, NodeId, TcpMsg, UdpMsg};
+use crate::common::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 
 struct NodeHandle {
     node: Node,
@@ -178,11 +171,19 @@ async fn tunnel(
     let mut buff2 = vec![0u8; len];
     let packet = proto::crypto(&mut buff, &mut buff2, &mut rx_rc4)?;
 
+    // magic code + mode + result
+    let mut buff = [0u8; 3];
+    // len(2) + magic code + mode + result
+    let mut out = [0u8; 5];
+    out.copy_from_slice(&2u16.to_be_bytes());
+
+    let msg = TcpMsg::decode(packet)?;
+
     let (
         node_id,
         register_time,
         Bridge { watch_rx: mut watch, mut channel_rx }
-    ) = match TcpMsg::decode(packet)? {
+    ) = match msg {
         TcpMsg::Register(node) => {
             let node_id = node.id;
             let register_time = DateTime::<Utc>::from_str(&node.register_time)?;
@@ -190,8 +191,16 @@ async fn tunnel(
             let remain = (Utc::now() - register_time).num_seconds();
 
             if (remain > 10) || (remain < -10) {
+                let data = TcpMsg::Result(MsgResult::Timeout).encode(&mut buff)?;
+                let packet = proto::crypto(data, &mut out[2..], &mut tx_rc4)?;
+                tx.write_all(&out).await?;
+
                 return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register message timeout")));
             }
+
+            let data = TcpMsg::Result(MsgResult::Success).encode(&mut buff)?;
+            let packet = proto::crypto(data, &mut out[2..], &mut tx_rc4)?;
+            tx.write_all(&out).await?;
 
             let bridge = node_db.insert(node)?;
             (node_id, register_time, bridge)
@@ -212,7 +221,7 @@ async fn tunnel(
 
             let packet = proto::crypto(slice, &mut out, &mut rx_rc4)?;
 
-            if let TcpMsg::Forward(data, node_id) = TcpMsg::decode(packet)? {
+            if let TcpMsg::Forward(_, node_id) = TcpMsg::decode(packet)? {
                 inner_node_db.get(&node_id, |op| {
                     match op {
                         Some(NodeHandle { tx: channel_tx, .. }) => {
