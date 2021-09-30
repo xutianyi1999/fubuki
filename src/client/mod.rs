@@ -21,11 +21,12 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 use tokio::time;
 
+use crate::{ClientConfig, TunAdapter};
 use crate::common::net::get_interface_addr;
+use crate::common::net::proto::{HeartbeatType, MTU, Node, NodeId, TcpMsg, UdpMsg};
+use crate::common::net::proto;
+use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
-use crate::common::proto::{HeartbeatType, MTU, Node, NodeId, TcpMsg, UdpMsg};
-use crate::common::proto;
-use crate::common::proto::UdpMsg::Heartbeat;
 use crate::tun::{create_device, Rx, Tx};
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
@@ -69,24 +70,24 @@ impl LocalMapping {
     }
 }
 
-struct TunAdapter {
-    ip_addr: Ipv4Addr,
-    netmask: Ipv4Addr,
-}
-
-async fn start(
-    server_addr: SocketAddr,
-    rc4: Rc4,
-    TunAdapter { ip_addr: tun_addr, netmask }: TunAdapter,
-    is_direct: bool,
+pub(super) async fn start(
+    ClientConfig {
+        server_addr,
+        tun: TunAdapter {
+            ip: tun_addr,
+            netmask: tun_netmask
+        },
+        key,
+        is_direct,
+    }: ClientConfig
 ) -> Result<(), Box<dyn Error>> {
+    let rc4 = Rc4::new(key.as_bytes());
     let node_id: NodeId = rand::random();
-    let device = create_device(tun_addr, netmask)?;
+    let device = create_device(tun_addr, tun_netmask)?;
     let (tun_tx, tun_rx) = device.split();
 
     let (to_tun, from_handler) = mpsc::unbounded_channel::<Box<[u8]>>();
     let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(10);
-
 
     if is_direct {
         let lan_ip = get_interface_addr(server_addr).await?;

@@ -13,8 +13,10 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use crate::common::proto;
-use crate::common::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
+use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
+use crate::common::net::proto;
+use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
+use crate::ServerConfig;
 
 struct NodeHandle {
     node: Node,
@@ -79,13 +81,27 @@ impl NodeDb {
     }
 }
 
-async fn start(listen_addr: SocketAddr, rc4: Rc4) -> Result<(), Box<dyn Error>> {
+pub(super) async fn start(server_config: Vec<ServerConfig>) {
+    let mut list = Vec::with_capacity(server_config.len());
+
+    for config in server_config {
+        list.push(serve(config));
+    }
+    futures_util::future::join_all(list).await;
+}
+
+async fn serve(ServerConfig { listen_addr, key }: ServerConfig) {
+    let rc4 = Rc4::new(key.as_bytes());
     let node_db = Arc::new(NodeDb::new());
 
-    tokio::select! {
+    let res = tokio::select! {
         res = udp_handler(listen_addr, rc4, &node_db) => res,
         res = tcp_handler(listen_addr, rc4, &node_db) => res
-    }
+    };
+
+    if let Err(e) = res {
+        error!("Server execute error -> {}", e)
+    };
 }
 
 async fn udp_handler(
@@ -96,25 +112,18 @@ async fn udp_handler(
     let socket = UdpSocket::bind(listen_addr).await?;
     info!("UDP socket listening on {}", listen_addr);
 
-    let mut buff = [0u8; 1024];
-    let mut out = [0u8; 1024];
+    let mut msg_socket = UdpMsgSocket::new(&socket, rc4);
 
     loop {
-        let mut inner_rc4 = rc4;
-        let (len, peer_addr) = socket.recv_from(&mut buff).await?;
-        let packet = &buff[..len];
-        let packet = proto::crypto(packet, &mut out, &mut inner_rc4)?;
+        let (msg, peer_addr) = msg_socket.read().await?;
 
-        if let Ok(UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req)) = UdpMsg::decode(packet) {
-            socket.send_to(
-                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp).encode(&mut buff)?,
-                peer_addr,
-            ).await?;
+        if let UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) = msg {
+            msg_socket.write(&UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp), peer_addr).await?;
 
             let res = node_db.get(&node_id, |v| {
                 match v {
-                    Some(node_handle) => {
-                        match node_handle.node.source_udp_addr {
+                    Some(NodeHandle { node, .. }) => {
+                        match node.source_udp_addr {
                             Some(addr) if addr == peer_addr => false,
                             _ => true
                         }
@@ -126,8 +135,8 @@ async fn udp_handler(
             if !res { continue; }
 
             node_db.get_mut(&node_id, |v| {
-                if let Some(node_handle) = v {
-                    node_handle.node.source_udp_addr = Some(peer_addr)
+                if let Some(NodeHandle { node, .. }) = v {
+                    node.source_udp_addr = Some(peer_addr)
                 }
             });
         }
@@ -164,25 +173,18 @@ async fn tunnel(
     let mut rx_rc4 = rc4;
     let mut tx_rc4 = rc4;
 
-    let len = rx.read_u16().await? as usize;
-    let mut buff = vec![0u8; len];
-    rx.read_exact(&mut buff).await?;
+    let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_rc4);
+    let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
 
-    let mut buff2 = vec![0u8; len];
-    let packet = proto::crypto(&mut buff, &mut buff2, &mut rx_rc4)?;
-
-    // magic code + mode + result
-    let mut buff = [0u8; 3];
-    // len(2) + magic code + mode + result
-    let mut out = [0u8; 5];
-    out.copy_from_slice(&2u16.to_be_bytes());
-
-    let msg = TcpMsg::decode(packet)?;
+    let msg = msg_reader.read().await?;
 
     let (
         node_id,
         register_time,
-        Bridge { watch_rx: mut watch, mut channel_rx }
+        Bridge {
+            watch_rx: mut watch,
+            mut channel_rx
+        }
     ) = match msg {
         TcpMsg::Register(node) => {
             let node_id = node.id;
@@ -191,16 +193,11 @@ async fn tunnel(
             let remain = (Utc::now() - register_time).num_seconds();
 
             if (remain > 10) || (remain < -10) {
-                let data = TcpMsg::Result(MsgResult::Timeout).encode(&mut buff)?;
-                let packet = proto::crypto(data, &mut out[2..], &mut tx_rc4)?;
-                tx.write_all(&out).await?;
-
+                msg_writer.write(&TcpMsg::Result(MsgResult::Timeout)).await?;
                 return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register message timeout")));
             }
 
-            let data = TcpMsg::Result(MsgResult::Success).encode(&mut buff)?;
-            let packet = proto::crypto(data, &mut out[2..], &mut tx_rc4)?;
-            tx.write_all(&out).await?;
+            msg_writer.write(&TcpMsg::Result(MsgResult::Success)).await?;
 
             let bridge = node_db.insert(node)?;
             (node_id, register_time, bridge)

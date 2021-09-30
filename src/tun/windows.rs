@@ -7,7 +7,7 @@ use std::sync::Arc;
 use simple_wintun::{raw, ReadResult};
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
 
-use crate::common::proto::MTU;
+use crate::common::net::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
 
 const POOL_NAME: &str = "Wintun";
