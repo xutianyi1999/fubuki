@@ -6,6 +6,8 @@ use std::net::Ipv4Addr;
 mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 pub trait Tx: Send {
     fn send_packet(&mut self, packet: &[u8]) -> io::Result<()>;

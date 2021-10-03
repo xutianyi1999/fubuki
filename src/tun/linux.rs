@@ -6,7 +6,7 @@ use std::net::Ipv4Addr;
 use tun::platform::Device;
 use tun::platform::posix::{Reader, Writer};
 
-use crate::common::proto::MTU;
+use crate::common::net::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
 
 pub struct Linuxtun {

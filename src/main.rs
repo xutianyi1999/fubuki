@@ -48,7 +48,6 @@ async fn main() {
     };
 }
 
-
 async fn launch() -> Result<(), Box<dyn Error>> {
     logger_init().unwrap();
 
