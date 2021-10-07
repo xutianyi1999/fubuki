@@ -30,4 +30,8 @@ pub fn create_device(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Box<dyn Tun
         {
             Ok(Box::new(linux::Linuxtun::create(address, netmask)?))
         }
+    #[cfg(target_os = "macos")]
+        {
+            Ok(Box::new(macos::Mactun::create(address, netmask)?))
+        }
 }

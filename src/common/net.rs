@@ -7,17 +7,17 @@ use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::time::Duration;
 
 pub trait TcpSocketExt {
-    fn set_keepalive(&self) -> tokio::io::Result<()>;
+    fn set_keepalive(&self) -> io::Result<()>;
 }
 
 impl TcpSocketExt for TcpStream {
-    fn set_keepalive(&self) -> tokio::io::Result<()> {
+    fn set_keepalive(&self) -> io::Result<()> {
         set_keepalive(self)
     }
 }
 
 impl TcpSocketExt for TcpSocket {
-    fn set_keepalive(&self) -> tokio::io::Result<()> {
+    fn set_keepalive(&self) -> io::Result<()> {
         set_keepalive(self)
     }
 }
@@ -25,7 +25,7 @@ impl TcpSocketExt for TcpSocket {
 const TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive::new().with_time(Duration::from_secs(120));
 
 #[cfg(windows)]
-fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> std::io::Result<()> {
+fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> io::Result<()> {
     use std::os::windows::io::FromRawSocket;
 
     unsafe {
@@ -37,7 +37,7 @@ fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> std::io::R
 }
 
 #[cfg(unix)]
-fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> std::io::Result<()> {
+fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> io::Result<()> {
     use std::os::unix::io::FromRawFd;
 
     unsafe {
@@ -155,7 +155,7 @@ pub mod proto {
             let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(Box::new(io::Error::new(io::ErrorKind::Other, "TCP Message error")));
+                return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")));
             }
 
             let msg = match mode {
@@ -167,7 +167,7 @@ pub mod proto {
                     match data[0] {
                         SUCCESS => TcpMsg::Result(MsgResult::Success),
                         TIMEOUT => TcpMsg::Result(MsgResult::Timeout),
-                        _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "TCP Message error")))
+                        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")))
                     }
                 }
                 NODE_LIST => {
@@ -181,7 +181,7 @@ pub mod proto {
 
                     TcpMsg::Forward(&data[4..], node_id)
                 }
-                _ => return Err(Box::new(io::Error::new(io::ErrorKind::Other, "TCP Message error")))
+                _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")))
             };
             Ok(msg)
         }
@@ -278,6 +278,9 @@ pub mod msg_operator {
     use super::proto;
     use super::proto::{TcpMsg, UdpMsg};
 
+    const TCP_BUFF_SIZE: usize = u16::MAX as usize;
+    const UDP_BUFF_SIZE: usize = 2048;
+
     pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
         rx: &'a mut Rx,
         rc4: &'a mut Rc4,
@@ -287,20 +290,22 @@ pub mod msg_operator {
 
     impl<'a, Rx: AsyncRead + Unpin> TcpMsgReader<'a, Rx> {
         pub fn new(rx: &'a mut Rx, rc4: &'a mut Rc4) -> Self {
-            let buff = vec![0u8; 65535].into_boxed_slice();
-            let out = vec![0u8; 65535].into_boxed_slice();
+            let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
+            let out = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
             TcpMsgReader { rx, rc4, buff, out }
         }
 
         pub async fn read(&mut self) -> Result<TcpMsg<'_>, Box<dyn Error>> {
             let buff = &mut self.buff;
             let out = &mut self.out;
+            let rx = &mut self.rx;
+            let rc4 = &mut self.rc4;
 
-            let len = self.rx.read_u16().await?;
+            let len = rx.read_u16().await?;
             let data = &mut buff[..len as usize];
-            self.rx.read_exact(data).await?;
+            rx.read_exact(data).await?;
 
-            let out = proto::crypto(data, out, self.rc4)?;
+            let out = proto::crypto(data, out, rc4)?;
             Ok(TcpMsg::decode(out)?)
         }
     }
@@ -314,23 +319,25 @@ pub mod msg_operator {
 
     impl<'a, Tx: AsyncWrite + Unpin> TcpMsgWriter<'a, Tx> {
         pub fn new(tx: &'a mut Tx, rc4: &'a mut Rc4) -> Self {
-            let buff = vec![0u8; 65535].into_boxed_slice();
-            let out = vec![0u8; 65535].into_boxed_slice();
+            let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
+            let out = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
             TcpMsgWriter { tx, rc4, buff, out }
         }
 
         pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<(), Box<dyn Error>> {
             let buff = &mut self.buff;
             let out = &mut self.out;
+            let tx = &mut self.tx;
+            let rc4 = &mut self.rc4;
 
             let data = msg.encode(buff)?;
-            let out = proto::crypto(data, out, self.rc4)?;
+            let out = proto::crypto(data, out, rc4)?;
 
             let len = out.len();
             buff[..2].copy_from_slice(&(len as u16).to_be_bytes());
             buff[2..len + 2].copy_from_slice(out);
 
-            self.tx.write_all(&buff[..len + 2]).await?;
+            tx.write_all(&buff[..len + 2]).await?;
             Ok(())
         }
     }
@@ -338,13 +345,13 @@ pub mod msg_operator {
     pub struct UdpMsgSocket<'a> {
         socket: &'a UdpSocket,
         rc4: Rc4,
-        buff: [u8; 2048],
-        out: [u8; 2048],
+        buff: [u8; UDP_BUFF_SIZE],
+        out: [u8; UDP_BUFF_SIZE],
     }
 
     impl<'a> UdpMsgSocket<'a> {
         pub fn new(socket: &'a UdpSocket, rc4: Rc4) -> Self {
-            UdpMsgSocket { socket, rc4, buff: [0u8; 2048], out: [0u8; 2048] }
+            UdpMsgSocket { socket, rc4, buff: [0u8; UDP_BUFF_SIZE], out: [0u8; UDP_BUFF_SIZE] }
         }
 
         pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr), Box<dyn Error>> {
