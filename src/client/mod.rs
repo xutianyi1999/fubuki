@@ -23,7 +23,8 @@ use tokio::time;
 
 use crate::{ClientConfig, TunAdapter};
 use crate::common::net::get_interface_addr;
-use crate::common::net::proto::{HeartbeatType, MTU, Node, NodeId, TcpMsg, UdpMsg};
+use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
+use crate::common::net::proto::{HeartbeatType, MsgResult, MTU, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::proto;
 use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
@@ -89,40 +90,40 @@ pub(super) async fn start(
     let (to_tun, from_handler) = mpsc::unbounded_channel::<Box<[u8]>>();
     let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(10);
 
+    let mut node = Node {
+        id: node_id,
+        tun_addr,
+        lan_udp_addr: None,
+        source_udp_addr: None,
+        register_time: String::new(),
+    };
+
+    info!("Tun adapter ip address: {}", tun_addr);
+
     if is_direct {
         let lan_ip = get_interface_addr(server_addr).await?;
         let udp_socket = UdpSocket::bind((lan_ip, 0)).await?;
         let (to_udp_handler, from_tun1) = mpsc::channel::<(Box<[u8]>, SocketAddr)>(10);
 
-        let node = Node {
-            id: node_id,
-            tun_addr,
-            lan_udp_addr: Some(udp_socket.local_addr()?),
-            source_udp_addr: None,
-            register_time: String::new(),
-        };
+        node.lan_udp_addr = Some(udp_socket.local_addr()?);
 
-        // async move {}
+        tokio::select! {
+            res = direct_node_list_schedule() => res?,
+            res = mpsc_to_tun(from_handler, tun_tx) => res??,
+            res = tun_to_mpsc(tun_addr, to_tcp_handler, Some(to_udp_handler), tun_rx) => res??,
+            res = udp_handler(from_tun1, to_tun.clone(),  server_addr, rc4) => res?,
+            res = tcp_handler(node, from_tun2, to_tun, server_addr, rc4) => res?,
+            res = signal::ctrl_c() => res?
+        }
     } else {
-        let node = Node {
-            id: node_id,
-            tun_addr,
-            lan_udp_addr: None,
-            source_udp_addr: None,
-            register_time: String::new(),
-        };
-    }
-
-    info!("Tun adapter ip address: {}", tun_addr);
-
-    let r = tokio::select! {
-        res = direct_node_list_schedule() => res?,
-        res = mpsc_to_tun(from_handler, tun_tx) => res??,
-        // res = tun_to_mpsc(tun_addr, to_tcp_handler, to_udp_handler, tun_rx) => res??,
-        // res = udp_handler(from_tun1, to_tun.clone(),  server_addr, rc4) => res?,
-        // res = tcp_handler(from_tun2, to_tun, server_addr, rc4) => res?,
-        res = signal::ctrl_c() => res?
+        tokio::select! {
+            res = mpsc_to_tun(from_handler, tun_tx) => res??,
+            res = tun_to_mpsc(tun_addr, to_tcp_handler, None, tun_rx) => res??,
+            res = tcp_handler(node, from_tun2, to_tun, server_addr, rc4) => res?,
+            res = signal::ctrl_c() => res?
+        }
     };
+
     Ok(())
 }
 
@@ -168,7 +169,7 @@ fn mpsc_to_tun(
 fn tun_to_mpsc(
     local_tun_addr: Ipv4Addr,
     tcp_handler_tx: Sender<(Box<[u8]>, NodeId)>,
-    udp_handler_tx: Sender<(Box<[u8]>, SocketAddr)>,
+    udp_handler_tx_opt: Option<Sender<(Box<[u8]>, SocketAddr)>>,
     mut tun_rx: Box<dyn Rx>,
 ) -> JoinHandle<io::Result<()>> {
     tokio::task::spawn_blocking(move || {
@@ -185,15 +186,19 @@ fn tun_to_mpsc(
             let peer_tun_addr = Ipv4Addr::from(octets);
 
             let guard = MAPPING.map.read();
+            let node_opt = guard.get(&peer_tun_addr);
 
-            let res = match guard.get(&peer_tun_addr) {
-                Some(
-                    Node {
-                        id: node_id,
-                        source_udp_addr: Some(peer_addr),
-                        lan_udp_addr: Some(peer_lan_addr),
-                        ..
-                    }
+            let res = match (node_opt, &udp_handler_tx_opt) {
+                (
+                    Some(
+                        Node {
+                            id: node_id,
+                            source_udp_addr: Some(peer_addr),
+                            lan_udp_addr: Some(peer_lan_addr),
+                            ..
+                        }
+                    ),
+                    Some(udp_handler_tx)
                 ) if DIRECT_NODE_LIST.contain(node_id) => {
                     let dest_addr = match guard.get(&local_tun_addr) {
                         Some(Node { source_udp_addr: Some(local_addr), .. }) if local_addr.ip() == peer_addr.ip() => {
@@ -209,7 +214,7 @@ fn tun_to_mpsc(
                         }
                     })
                 }
-                Some(Node { id, .. }) => {
+                (Some(Node { id, .. }), _) => {
                     tcp_handler_tx.try_send((data.into(), *id)).map_err(|e| {
                         match e {
                             TrySendError::Full(_) => TrySendError::Full(()),
@@ -229,29 +234,18 @@ fn tun_to_mpsc(
 
 async fn heartbeat_schedule(
     server_addr: SocketAddr,
-    udp_socket: &UdpSocket,
-    rc4: Rc4,
+    msg_socket: &mut UdpMsgSocket<'_>,
     seq: &AtomicU32,
 ) -> Result<(), Box<dyn Error>> {
-    let mut buff = [0u8; 2048];
-    let mut out = [0u8; 2048];
-
-    let data = Heartbeat(0, 0, HeartbeatType::Resp).encode(&mut buff)?;
-    let mut temp_rc4 = rc4;
-    let server_heartbeat_packet: Box<[u8]> = proto::crypto(data, &mut out, &mut temp_rc4)?.into();
-
     loop {
-        udp_socket.send_to(&server_heartbeat_packet, server_addr).await?;
-
+        let msg = UdpMsg::Heartbeat(0, 0, HeartbeatType::Req);
+        msg_socket.write(&msg, server_addr).await?;
         let temp_seq = seq.load(Ordering::SeqCst);
 
         for (_, node) in MAPPING.get_all() {
             if let Node { id: node_id, source_udp_addr: Some(dest_addr), .. } = node {
-                let mut inner_rc4 = rc4;
-
-                let heartbeat_packet = Heartbeat(node_id, temp_seq, HeartbeatType::Req).encode(&mut buff)?;
-                let packet = proto::crypto(heartbeat_packet, &mut out, &mut inner_rc4)?;
-                udp_socket.send_to(packet, dest_addr).await?;
+                let heartbeat_packet = UdpMsg::Heartbeat(node_id, temp_seq, HeartbeatType::Req);
+                msg_socket.write(&heartbeat_packet, dest_addr).await?;
             }
             time::sleep(Duration::from_secs(5)).await
         }
@@ -316,31 +310,24 @@ async fn udp_handler(
     rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
     let udp_socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), 0)).await?;
+    let mut msg_socket = UdpMsgSocket::new(&udp_socket, rc4);
     let seq = AtomicU32::new(0);
 
     tokio::select! {
-        res = heartbeat_schedule(server_addr, &udp_socket, rc4, &seq) => res,
+        res = heartbeat_schedule(server_addr, &msg_socket, rc4, &seq) => res,
         res = udp_receiver(&udp_socket, channel_tx, rc4, &seq) => res,
         res = udp_sender(&udp_socket, channel_rx, rc4) => res
     }
 }
 
 async fn tcp_receiver<Rx: AsyncRead + Unpin>(
-    mut tcp_rx: Rx,
+    msg_reader: &mut TcpMsgReader<'_, Rx>,
     to_tun: &UnboundedSender<Box<[u8]>>,
-    mut rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
-    let mut buff = vec![0u8; 65535];
-    let mut out = vec![0u8; 65535];
-
     loop {
-        let len = tcp_rx.read_u16().await?;
-        let data = &mut buff[..len as usize];
-        tcp_rx.read_exact(data).await?;
+        let msg = msg_reader.read().await?;
 
-        let data = proto::crypto(data, &mut out, &mut rc4)?;
-
-        match TcpMsg::decode(data)? {
+        match msg {
             TcpMsg::NodeList(node_list) => {
                 let mapping: HashMap<Ipv4Addr, Node> = node_list.into_iter()
                     .map(|node| (node.tun_addr, node))
@@ -355,22 +342,12 @@ async fn tcp_receiver<Rx: AsyncRead + Unpin>(
 }
 
 async fn tcp_sender<Tx: AsyncWrite + Unpin>(
-    mut tcp_tx: Tx,
+    msg_writer: &mut TcpMsgWriter<'_, Tx>,
     from_tun: &mut Receiver<(Box<[u8]>, NodeId)>,
-    mut rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
-    let mut buff = vec![0u8; 65535];
-    let mut out = vec![0u8; 65535];
-
     while let Some((data, dest_node_id)) = from_tun.recv().await {
-        let data = TcpMsg::Forward(&data, dest_node_id).encode(&mut buff)?;
-        let packet = proto::crypto(data, &mut out, &mut rc4)?;
-
-        let len = packet.len();
-        buff[..2].copy_from_slice(&len.to_be_bytes());
-        buff[2..len + 2].copy_from_slice(packet);
-
-        tcp_tx.write_all(&buff[..len + 2]).await?;
+        let msg = TcpMsg::Forward(&data, dest_node_id);
+        msg_writer.write(&msg).await?;
     }
     Ok(())
 }
@@ -382,41 +359,35 @@ async fn tcp_handler(
     server_addr: SocketAddr,
     rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
-    let mut tx_rc4 = rc4;
-    let mut rx_rc4 = rc4;
-
-    let mut buff = vec![0u8; 65535];
-    let mut out = vec![0u8; 65535];
-
     loop {
         let inner_channel_tx = &channel_tx;
         let inner_channel_rx = &mut channel_rx;
         let inner_node = &mut node;
-        let inner_buff = &mut buff;
-        let inner_out = &mut out;
+        let mut tx_rc4 = rc4;
+        let mut rx_rc4 = rc4;
 
         let process = async move {
             let mut stream = TcpStream::connect(server_addr).await?;
+            let (mut rx, mut tx) = stream.split();
+            let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_rc4);
+            let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
+
             inner_node.register_time = Utc::now().to_string();
 
-            let data = TcpMsg::Register(inner_node.clone()).encode(inner_buff)?;
-            let packet = proto::crypto(data, inner_out, &mut tx_rc4)?;
-            let len = packet.len();
+            msg_writer.write(&TcpMsg::Register(inner_node.clone())).await?;
+            let msg = msg_reader.read().await?;
 
-            inner_buff[..2].copy_from_slice(&len.to_be_bytes());
-            inner_buff[2..len + 2].copy_from_slice(packet);
+            let res = match msg {
+                TcpMsg::Result(MsgResult::Success) => Ok(()),
+                TcpMsg::Result(MsgResult::Timeout) => Err(Box::new(io::Error::new(io::ErrorKind::TimedOut, "Node register timeout"))),
+                _ => Err(Box::new(io::Error::new(io::ErrorKind::TimedOut, "Node register error")))
+            };
 
-            stream.write_all(&inner_buff[..len + 2]).await?;
-
-            let len = stream.read_u16().await?;
-            let mut buff = vec![0u8; len as usize];
-            stream.read_exact(&mut buff).await?;
-            // proto::crypto()
-            let (rx, tx) = stream.split();
+            res?;
 
             tokio::select! {
-                res = tcp_receiver(rx, inner_channel_tx, rx_rc4) => res,
-                res = tcp_sender(tx,inner_channel_rx, tx_rc4) => res
+                res = tcp_receiver(&mut msg_reader, inner_channel_tx) => res,
+                res = tcp_sender(&mut msg_writer, inner_channel_rx) => res
             }
         };
 
