@@ -8,14 +8,11 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::mpsc::error::TrySendError;
 
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
-use crate::common::net::proto;
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::ServerConfig;
 
@@ -52,12 +49,6 @@ impl NodeDb {
 
         let bridge = Bridge { channel_rx: rx, watch_rx: watch_rx.clone() };
         Ok(bridge)
-    }
-
-    fn remove(&self, id: &NodeId) -> Result<Option<NodeHandle>, Box<dyn Error>> {
-        let op = self.mapping.write().remove(id);
-        self.sync()?;
-        Ok(op)
     }
 
     fn get<R, F: FnOnce(Option<&NodeHandle>) -> R>(&self, id: &NodeId, f: F) -> R {
@@ -135,7 +126,7 @@ async fn udp_handler(
                 if let Some(NodeHandle { node, .. }) = v {
                     node.source_udp_addr = Some(peer_addr)
                 }
-            });
+            })?;
         }
     }
 }
@@ -211,7 +202,9 @@ async fn tunnel(
             if let TcpMsg::Forward(data, node_id) = msg {
                 inner_node_db.get(&node_id, |op| {
                     if let Some(NodeHandle { tx: channel_tx, .. }) = op {
-                        channel_tx.try_send((data.into(), node_id));
+                        if let Err(e) = channel_tx.try_send((data.into(), node_id)) {
+                            error!("Node channel error -> {}", e)
+                        }
                     }
                 });
             }

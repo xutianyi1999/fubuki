@@ -59,9 +59,7 @@ pub mod proto {
     use std::error::Error;
     use std::io;
     use std::net::{Ipv4Addr, SocketAddr};
-    use std::str::FromStr;
 
-    use chrono::{DateTime, Utc};
     use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
     use crypto::rc4::Rc4;
     use crypto::symmetriccipher::Encryptor;
@@ -250,7 +248,7 @@ pub mod proto {
                         RESP => HeartbeatType::Resp,
                         _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")))
                     };
-                    Ok((UdpMsg::Heartbeat(node_id, seq, heartbeat_type)))
+                    Ok(UdpMsg::Heartbeat(node_id, seq, heartbeat_type))
                 }
                 _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")))
             }
@@ -342,6 +340,7 @@ pub mod msg_operator {
         }
     }
 
+    #[derive(Clone)]
     pub struct UdpMsgSocket<'a> {
         socket: &'a UdpSocket,
         rc4: Rc4,

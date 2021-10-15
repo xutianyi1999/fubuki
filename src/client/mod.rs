@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::MAIN_SEPARATOR;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -12,7 +11,7 @@ use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
@@ -25,7 +24,6 @@ use crate::{ClientConfig, TunAdapter};
 use crate::common::net::get_interface_addr;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, MTU, Node, NodeId, TcpMsg, UdpMsg};
-use crate::common::net::proto;
 use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
 use crate::tun::{create_device, Rx, Tx};
@@ -100,6 +98,9 @@ pub(super) async fn start(
 
     info!("Tun adapter ip address: {}", tun_addr);
 
+    tokio::task::spawn_blocking(|| if let Err(e) = stdin() { error!("{}", e) });
+    info!("Client start");
+
     if is_direct {
         let lan_ip = get_interface_addr(server_addr).await?;
         let udp_socket = UdpSocket::bind((lan_ip, 0)).await?;
@@ -111,7 +112,7 @@ pub(super) async fn start(
             res = direct_node_list_schedule() => res?,
             res = mpsc_to_tun(from_handler, tun_tx) => res??,
             res = tun_to_mpsc(tun_addr, to_tcp_handler, Some(to_udp_handler), tun_rx) => res??,
-            res = udp_handler(from_tun1, to_tun.clone(),  server_addr, rc4) => res?,
+            res = udp_handler(from_tun1, to_tun.clone(), server_addr, rc4) => res?,
             res = tcp_handler(node, from_tun2, to_tun, server_addr, rc4) => res?,
             res = signal::ctrl_c() => res?
         }
@@ -134,7 +135,7 @@ fn direct_node_list_schedule() -> JoinHandle<()> {
                 let guard = DIRECT_NODE_LIST.list.read();
 
                 let node_id_list: Vec<NodeId> = guard.iter()
-                    .filter(|(node_id, update_time)| update_time.elapsed() > Duration::from_secs(30))
+                    .filter(|(_, update_time)| update_time.elapsed() > Duration::from_secs(30))
                     .map(|(node_id, _)| *node_id)
                     .collect();
 
@@ -234,7 +235,7 @@ fn tun_to_mpsc(
 
 async fn heartbeat_schedule(
     server_addr: SocketAddr,
-    msg_socket: &mut UdpMsgSocket<'_>,
+    mut msg_socket: UdpMsgSocket<'_>,
     seq: &AtomicU32,
 ) -> Result<(), Box<dyn Error>> {
     loop {
@@ -254,51 +255,34 @@ async fn heartbeat_schedule(
 }
 
 async fn udp_receiver(
-    udp_socket: &UdpSocket,
+    mut msg_socket: UdpMsgSocket<'_>,
     to_tun: UnboundedSender<Box<[u8]>>,
-    rc4: Rc4,
     heartbeat_seq: &AtomicU32,
 ) -> Result<(), Box<dyn Error>> {
-    let mut buff = [0u8; 2048];
-    let mut out = [0u8; 2048];
-
     loop {
-        let mut inner_rc4 = rc4;
-        let (len, peer_addr) = udp_socket.recv_from(&mut buff).await?;
-        let data = &buff[..len];
-
-        let packet = proto::crypto(data, &mut out, &mut inner_rc4)?;
-
-        match UdpMsg::decode(packet)? {
-            Heartbeat(node_id, seq, HeartbeatType::Req) => {
-                let resp = Heartbeat(node_id, seq, HeartbeatType::Resp).encode(&mut buff)?;
-                let packet = proto::crypto(resp, &mut out, &mut inner_rc4)?;
-                udp_socket.send_to(packet, peer_addr).await?;
+        if let Ok((msg, peer_addr)) = msg_socket.read().await {
+            match msg {
+                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
+                    let resp = Heartbeat(node_id, seq, HeartbeatType::Resp);
+                    msg_socket.write(&resp, peer_addr).await?;
+                }
+                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp) if seq == heartbeat_seq.load(Ordering::SeqCst) => {
+                    DIRECT_NODE_LIST.update(node_id);
+                }
+                UdpMsg::Data(data) => to_tun.send(data.into())?,
+                _ => continue
             }
-            Heartbeat(node_id, seq, HeartbeatType::Resp) if seq == heartbeat_seq.load(Ordering::SeqCst) => {
-                DIRECT_NODE_LIST.update(node_id);
-            }
-            UdpMsg::Data(data) => to_tun.send(data.into())?,
-            _ => continue
         }
     }
 }
 
 async fn udp_sender(
-    udp_socket: &UdpSocket,
+    mut msg_socket: UdpMsgSocket<'_>,
     mut from_tun: Receiver<(Box<[u8]>, SocketAddr)>,
-    rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
-    let mut buff = vec![0u8; 65535];
-    let mut out = vec![0u8; 65535];
-
     while let Some((data, dest_addr)) = from_tun.recv().await {
-        let mut inner_rc4 = rc4;
-
-        let data = UdpMsg::Data(&data).encode(&mut buff)?;
-        let out = proto::crypto(data, &mut out, &mut inner_rc4)?;
-
-        udp_socket.send_to(out, dest_addr).await?;
+        let data = UdpMsg::Data(&data);
+        msg_socket.write(&data, dest_addr).await?;
     }
     Ok(())
 }
@@ -310,13 +294,13 @@ async fn udp_handler(
     rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
     let udp_socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), 0)).await?;
-    let mut msg_socket = UdpMsgSocket::new(&udp_socket, rc4);
+    let msg_socket = UdpMsgSocket::new(&udp_socket, rc4);
     let seq = AtomicU32::new(0);
 
     tokio::select! {
-        res = heartbeat_schedule(server_addr, &msg_socket, rc4, &seq) => res,
-        res = udp_receiver(&udp_socket, channel_tx, rc4, &seq) => res,
-        res = udp_sender(&udp_socket, channel_rx, rc4) => res
+        res = heartbeat_schedule(server_addr, msg_socket.clone(), &seq) => res,
+        res = udp_receiver(msg_socket.clone(), channel_tx, &seq) => res,
+        res = udp_sender(msg_socket, channel_rx) => res
     }
 }
 
