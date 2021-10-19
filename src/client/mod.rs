@@ -9,7 +9,6 @@ use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use smoltcp::wire::Ipv4Packet;
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -82,7 +81,6 @@ pub async fn start(
         res = mpsc_to_socket(from_tun, MsgSocket::new(&udp_socket, rc4), tun_addr) => res?,
         res = client_heartbeat_schedule(MsgSocket::new(&udp_socket, rc4), node_id, server_addr, tun_addr) => res?,
         res = client_handler(server_addr, rc4, node) => res?,
-        res = signal::ctrl_c() => res?
     }
 
     Ok(())
