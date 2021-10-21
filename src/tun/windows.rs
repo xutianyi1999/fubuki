@@ -85,7 +85,7 @@ impl TunDevice for Wintun {
         let wintun_tx = WintunTx { wintun: wintun.clone() };
         let wintun_rx = WintunRx { wintun };
 
-        (Box::new(wintun_rx), Box::new(wintun_tx))
+        (Box::new(wintun_tx), Box::new(wintun_rx))
     }
 }
 
@@ -97,7 +97,7 @@ struct WintunRx {
     wintun: Arc<Wintun>,
 }
 
-impl Tx for WintunRx {
+impl Tx for WintunTx {
     fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         let p_wintun: *const Wintun = &*self.wintun;
         let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };
@@ -105,7 +105,7 @@ impl Tx for WintunRx {
     }
 }
 
-impl Rx for WintunTx {
+impl Rx for WintunRx {
     fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         let p_wintun: *const Wintun = &*self.wintun;
         let ref_wintun = unsafe { &mut *(p_wintun as *mut Wintun) };

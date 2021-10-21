@@ -89,8 +89,8 @@ pub mod proto {
         pub id: NodeId,
         pub tun_addr: Ipv4Addr,
         pub lan_udp_addr: Option<SocketAddr>,
-        pub source_udp_addr: Option<SocketAddr>,
-        pub register_time: String,
+        pub wan_udp_addr: Option<SocketAddr>,
+        pub register_time: i64,
     }
 
     pub enum HeartbeatType {

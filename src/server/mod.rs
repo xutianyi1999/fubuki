@@ -2,19 +2,21 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::io;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::ServerConfig;
+
+const CHANNEL_SIZE: usize = 10;
 
 struct NodeHandle {
     node: Node,
@@ -42,7 +44,7 @@ impl NodeDb {
     fn insert(&self, node: Node) -> Result<Bridge, Box<dyn Error>> {
         let node_id = node.id;
         let (_, watch_rx) = &self.watch;
-        let (tx, rx) = mpsc::channel::<(Box<[u8]>, NodeId)>(10);
+        let (tx, rx) = mpsc::channel::<(Box<[u8]>, NodeId)>(CHANNEL_SIZE);
 
         self.mapping.write().insert(node_id, NodeHandle { node, tx });
         self.sync()?;
@@ -74,8 +76,10 @@ impl NodeDb {
 }
 
 pub(super) async fn start(server_config: Vec<ServerConfig>) {
+    let mut list = Vec::with_capacity(server_config.len());
+
     for ServerConfig { listen_addr, key } in server_config {
-        tokio::spawn(async move {
+        let join = tokio::spawn(async move {
             let rc4 = Rc4::new(key.as_bytes());
             let node_db = Arc::new(NodeDb::new());
 
@@ -88,7 +92,9 @@ pub(super) async fn start(server_config: Vec<ServerConfig>) {
                 error!("Server execute error -> {}", e)
             };
         });
+        list.push(join);
     }
+    futures_util::future::join_all(list).await;
 }
 
 async fn udp_handler(
@@ -102,32 +108,41 @@ async fn udp_handler(
     let mut msg_socket = UdpMsgSocket::new(&socket, rc4);
 
     loop {
-        let (msg, peer_addr) = msg_socket.read().await?;
+        let msg = match msg_socket.read().await {
+            Ok(v) => v,
+            Err(e) => {
+                error!("UDP msg read error -> {}", e);
+                continue;
+            }
+        };
 
-        if let UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) = msg {
-            let heartbeat = UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
-            msg_socket.write(&heartbeat, peer_addr).await?;
+        match msg {
+            (UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req), peer_addr) => {
+                let heartbeat = UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
+                msg_socket.write(&heartbeat, peer_addr).await?;
 
-            let res = node_db.get(&node_id, |v| {
-                match v {
-                    Some(NodeHandle { node, .. }) => {
-                        match node.source_udp_addr {
-                            Some(addr) if addr == peer_addr => false,
-                            _ => true
+                let res = node_db.get(&node_id, |v| {
+                    match v {
+                        Some(NodeHandle { node, .. }) => {
+                            match node.wan_udp_addr {
+                                Some(addr) if addr == peer_addr => false,
+                                _ => true
+                            }
                         }
+                        None => false
                     }
-                    None => false
-                }
-            });
+                });
 
-            if !res { continue; }
+                if !res { continue; }
 
-            node_db.get_mut(&node_id, |v| {
-                if let Some(NodeHandle { node, .. }) = v {
-                    node.source_udp_addr = Some(peer_addr)
-                }
-            })?;
-        }
+                node_db.get_mut(&node_id, |v| {
+                    if let Some(NodeHandle { node, .. }) = v {
+                        node.wan_udp_addr = Some(peer_addr)
+                    }
+                })?;
+            }
+            _ => error!("Invalid UDP msg"),
+        };
     }
 }
 
@@ -141,11 +156,11 @@ async fn tcp_handler(
 
     loop {
         let node_db = node_db.clone();
-        let (stream, _) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await?;
 
         tokio::spawn(async move {
             if let Err(e) = tunnel(stream, rc4, node_db).await {
-                error!("Tunnel error -> {}", e)
+                error!("{:?} tunnel error -> {}", peer_addr, e)
             }
         });
     }
@@ -165,7 +180,6 @@ async fn tunnel(
     let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
 
     let msg = msg_reader.read().await?;
-
     let (
         node_id,
         register_time,
@@ -176,9 +190,9 @@ async fn tunnel(
     ) = match msg {
         TcpMsg::Register(node) => {
             let node_id = node.id;
-            let register_time = DateTime::<Utc>::from_str(&node.register_time)?;
+            let register_time = node.register_time;
 
-            let remain = (Utc::now() - register_time).num_seconds();
+            let remain = Utc::now().timestamp() - register_time;
 
             if (remain > 10) || (remain < -10) {
                 msg_writer.write(&TcpMsg::Result(MsgResult::Timeout)).await?;
@@ -197,17 +211,18 @@ async fn tunnel(
 
     let fut1 = async move {
         loop {
-            let msg = msg_reader.read().await?;
-
-            if let TcpMsg::Forward(data, node_id) = msg {
-                inner_node_db.get(&node_id, |op| {
-                    if let Some(NodeHandle { tx: channel_tx, .. }) = op {
-                        if let Err(e) = channel_tx.try_send((data.into(), node_id)) {
-                            error!("Node channel error -> {}", e)
+            match msg_reader.read().await? {
+                TcpMsg::Forward(data, dest_node_id) => {
+                    inner_node_db.get(&dest_node_id, |op| {
+                        if let Some(NodeHandle { tx: channel_tx, .. }) = op {
+                            if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
+                                error!("Channel closed")
+                            }
                         }
-                    }
-                });
-            }
+                    });
+                }
+                _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid TCP msg"))?
+            };
         }
     };
 
@@ -237,7 +252,7 @@ async fn tunnel(
     let mut guard = node_db.mapping.write();
 
     if let Some(NodeHandle { node, .. }) = guard.get(&node_id) {
-        if DateTime::<Utc>::from_str(&node.register_time)? == register_time {
+        if node.register_time == register_time {
             guard.remove(&node_id);
             drop(guard);
             node_db.sync()?;

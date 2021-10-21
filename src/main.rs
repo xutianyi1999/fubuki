@@ -38,7 +38,7 @@ struct ClientConfig {
     server_addr: SocketAddr,
     tun: TunAdapter,
     key: String,
-    is_direct: bool,
+    direct: bool,
 }
 
 #[tokio::main]
