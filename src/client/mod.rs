@@ -30,6 +30,9 @@ use crate::tun::{create_device, Rx, Tx};
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
 static DIRECT_NODE_LIST: Lazy<DirectNodeList> = Lazy::new(|| DirectNodeList::new());
+static LOCAL_NODE: Lazy<RwLock<Node>> = Lazy::new(|| RwLock::new(
+    Node { id: 0, tun_addr: Ipv4Addr::from([0, 0, 0, 0]), lan_udp_addr: None, wan_udp_addr: None, register_time: 0 }
+));
 
 struct DirectNodeList {
     list: RwLock<HashMap<NodeId, Instant>>,
@@ -107,19 +110,22 @@ pub(super) async fn start(
         let (to_udp_handler, from_tun1) = mpsc::channel::<(Box<[u8]>, SocketAddr)>(10);
 
         node.lan_udp_addr = Some(udp_socket.local_addr()?);
+        *LOCAL_NODE.write() = node;
 
         tokio::select! {
             res = direct_node_list_schedule() => res?,
             res = mpsc_to_tun(from_handler, tun_tx) => res??,
-            res = tun_to_mpsc(tun_addr, to_tcp_handler, Some(to_udp_handler), tun_rx) => res??,
-            res = udp_handler(tun_addr, from_tun1, to_tun.clone(), server_addr, rc4) => res?,
-            res = tcp_handler(node, from_tun2, to_tun, server_addr, rc4) => res?,
+            res = tun_to_mpsc(to_tcp_handler, Some(to_udp_handler), tun_rx) => res??,
+            res = udp_handler(udp_socket, from_tun1, to_tun.clone(), server_addr, rc4) => res?,
+            res = tcp_handler(from_tun2, to_tun, server_addr, rc4) => res?,
         }
     } else {
+        *LOCAL_NODE.write() = node;
+
         tokio::select! {
             res = mpsc_to_tun(from_handler, tun_tx) => res??,
-            res = tun_to_mpsc(tun_addr, to_tcp_handler, None, tun_rx) => res??,
-            res = tcp_handler(node, from_tun2, to_tun, server_addr, rc4) => res?,
+            res = tun_to_mpsc(to_tcp_handler, None, tun_rx) => res??,
+            res = tcp_handler(from_tun2, to_tun, server_addr, rc4) => res?,
         }
     };
 
@@ -162,7 +168,6 @@ fn mpsc_to_tun(
 }
 
 fn tun_to_mpsc(
-    local_tun_addr: Ipv4Addr,
     tcp_handler_tx: Sender<(Box<[u8]>, NodeId)>,
     udp_handler_tx_opt: Option<Sender<(Box<[u8]>, SocketAddr)>>,
     mut tun_rx: Box<dyn Rx>,
@@ -195,8 +200,8 @@ fn tun_to_mpsc(
                     ),
                     Some(udp_handler_tx)
                 ) if DIRECT_NODE_LIST.contain(node_id) => {
-                    let dest_addr = match guard.get(&local_tun_addr) {
-                        Some(Node { wan_udp_addr: Some(local_wan_addr), .. }) if local_wan_addr.ip() == peer_wan_addr.ip() => {
+                    let dest_addr = match LOCAL_NODE.read().wan_udp_addr {
+                        Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
                             *peer_lan_addr
                         }
                         _ => *peer_wan_addr
@@ -218,7 +223,6 @@ fn tun_to_mpsc(
 }
 
 async fn heartbeat_schedule(
-    local_tun_addr: Ipv4Addr,
     server_addr: SocketAddr,
     mut msg_socket: UdpMsgSocket<'_>,
     seq: &AtomicU32,
@@ -227,20 +231,21 @@ async fn heartbeat_schedule(
         let msg = UdpMsg::Heartbeat(0, 0, HeartbeatType::Req);
         msg_socket.write(&msg, server_addr).await?;
         let temp_seq = seq.load(Ordering::SeqCst);
-
+        let local_wan_addr = LOCAL_NODE.read().wan_udp_addr;
         let mapping = MAPPING.get_all();
-        let opt = mapping.get(&local_tun_addr).cloned();
 
         for (_, node) in mapping {
             if let Node {
                 id: node_id,
-                wan_udp_addr: Some(dest_wan_addr),
-                lan_udp_addr: Some(dest_lan_addr),
+                wan_udp_addr: Some(peer_wan_addr),
+                lan_udp_addr: Some(peer_lan_addr),
                 ..
             } = node {
-                let dest_addr = match &opt {
-                    Some(node) if node.wan_udp_addr == Some(dest_wan_addr) => dest_lan_addr,
-                    _ => dest_wan_addr
+                let dest_addr = match local_wan_addr {
+                    Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
+                        peer_lan_addr
+                    }
+                    _ => peer_wan_addr
                 };
 
                 let heartbeat_packet = UdpMsg::Heartbeat(node_id, temp_seq, HeartbeatType::Req);
@@ -258,14 +263,22 @@ async fn udp_receiver(
     to_tun: UnboundedSender<Box<[u8]>>,
     heartbeat_seq: &AtomicU32,
 ) -> Result<(), Box<dyn Error>> {
+    let local_node_id = LOCAL_NODE.read().id;
+
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.read().await {
             match msg {
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
+                    if local_node_id != node_id {
+                        continue;
+                    }
+
                     let resp = Heartbeat(node_id, seq, HeartbeatType::Resp);
                     msg_socket.write(&resp, peer_addr).await?;
                 }
-                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp) if seq == heartbeat_seq.load(Ordering::SeqCst) => {
+                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
+                if seq == heartbeat_seq.load(Ordering::SeqCst) &&
+                    node_id != 0 => {
                     DIRECT_NODE_LIST.update(node_id);
                 }
                 UdpMsg::Data(data) => to_tun.send(data.into())?,
@@ -287,19 +300,17 @@ async fn udp_sender(
 }
 
 async fn udp_handler(
-    local_tun_addr: Ipv4Addr,
+    udp_socket: UdpSocket,
     channel_rx: Receiver<(Box<[u8]>, SocketAddr)>,
     channel_tx: UnboundedSender<Box<[u8]>>,
     server_addr: SocketAddr,
     rc4: Rc4,
 ) -> Result<(), Box<dyn Error>> {
-    // TODO
-    let udp_socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), 0)).await?;
     let msg_socket = UdpMsgSocket::new(&udp_socket, rc4);
     let seq = AtomicU32::new(0);
 
     tokio::select! {
-        res = heartbeat_schedule(local_tun_addr, server_addr, msg_socket.clone(), &seq) => res,
+        res = heartbeat_schedule(server_addr, msg_socket.clone(), &seq) => res,
         res = udp_receiver(msg_socket.clone(), channel_tx, &seq) => res,
         res = udp_sender(msg_socket, channel_rx) => res
     }
@@ -309,13 +320,19 @@ async fn tcp_receiver<Rx: AsyncRead + Unpin>(
     msg_reader: &mut TcpMsgReader<'_, Rx>,
     to_tun: &UnboundedSender<Box<[u8]>>,
 ) -> Result<(), Box<dyn Error>> {
+    let local_node_id = LOCAL_NODE.read().id;
+
     loop {
         let msg = msg_reader.read().await?;
 
         match msg {
-            TcpMsg::NodeList(node_list) => {
-                let mapping: HashMap<Ipv4Addr, Node> = node_list.into_iter()
-                    .map(|node| (node.tun_addr, node))
+            TcpMsg::NodeMap(node_map) => {
+                if let Some(node) = node_map.get(&local_node_id) {
+                    LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
+                }
+
+                let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
+                    .map(|(_, node)| (node.tun_addr, node))
                     .collect();
 
                 MAPPING.update_all(mapping);
@@ -338,7 +355,6 @@ async fn tcp_sender<Tx: AsyncWrite + Unpin>(
 }
 
 async fn tcp_handler(
-    mut node: Node,
     mut channel_rx: Receiver<(Box<[u8]>, NodeId)>,
     channel_tx: UnboundedSender<Box<[u8]>>,
     server_addr: SocketAddr,
@@ -347,7 +363,6 @@ async fn tcp_handler(
     loop {
         let inner_channel_tx = &channel_tx;
         let inner_channel_rx = &mut channel_rx;
-        let inner_node = &mut node;
         let mut tx_rc4 = rc4;
         let mut rx_rc4 = rc4;
 
@@ -357,9 +372,13 @@ async fn tcp_handler(
             let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_rc4);
             let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
 
-            inner_node.register_time = Utc::now().timestamp();
+            let msg = {
+                let mut node_guard = LOCAL_NODE.write();
+                node_guard.register_time = Utc::now().timestamp();
+                TcpMsg::Register((*node_guard).clone())
+            };
 
-            msg_writer.write(&TcpMsg::Register(inner_node.clone())).await?;
+            msg_writer.write(&msg).await?;
             let msg = msg_reader.read().await?;
 
             let res = match msg {

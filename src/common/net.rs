@@ -56,6 +56,7 @@ pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr, Box<dyn
 }
 
 pub mod proto {
+    use std::collections::HashMap;
     use std::error::Error;
     use std::io;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -71,7 +72,7 @@ pub mod proto {
 
     const MAGIC_NUM: u8 = 0x99;
     const REGISTER: u8 = 0x00;
-    const NODE_LIST: u8 = 0x01;
+    const NODE_MAP: u8 = 0x01;
     const HEARTBEAT: u8 = 0x02;
     const DATA: u8 = 0x03;
     const FORWARD: u8 = 0x04;
@@ -106,7 +107,7 @@ pub mod proto {
     pub enum TcpMsg<'a> {
         Register(Node),
         Result(MsgResult),
-        NodeList(Vec<Node>),
+        NodeMap(HashMap<NodeId, Node>),
         Forward(&'a [u8], NodeId),
     }
 
@@ -116,9 +117,9 @@ pub mod proto {
             let slice = &mut buff[1..];
 
             let len = match self {
-                TcpMsg::NodeList(node_list) => {
-                    let data = node_list.to_json_vec()?;
-                    slice[0] = NODE_LIST;
+                TcpMsg::NodeMap(node_map) => {
+                    let data = node_map.to_json_vec()?;
+                    slice[0] = NODE_MAP;
                     slice[1..data.len() + 1].copy_from_slice(&data);
                     data.len() + 1
                 }
@@ -168,9 +169,9 @@ pub mod proto {
                         _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")))
                     }
                 }
-                NODE_LIST => {
-                    let node_list: Vec<Node> = serde_json::from_slice(data)?;
-                    TcpMsg::NodeList(node_list)
+                NODE_MAP => {
+                    let node_map: HashMap<NodeId, Node> = serde_json::from_slice(data)?;
+                    TcpMsg::NodeMap(node_map)
                 }
                 FORWARD => {
                     let mut node_id_buff = [0u8; 4];

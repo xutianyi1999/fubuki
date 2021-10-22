@@ -25,19 +25,19 @@ struct NodeHandle {
 
 struct Bridge {
     channel_rx: Receiver<(Box<[u8]>, NodeId)>,
-    watch_rx: watch::Receiver<Vec<Node>>,
+    watch_rx: watch::Receiver<HashMap<NodeId, Node>>,
 }
 
 struct NodeDb {
     mapping: RwLock<HashMap<NodeId, NodeHandle>>,
-    watch: (watch::Sender<Vec<Node>>, watch::Receiver<Vec<Node>>),
+    watch: (watch::Sender<HashMap<NodeId, Node>>, watch::Receiver<HashMap<NodeId, Node>>),
 }
 
 impl NodeDb {
     fn new() -> Self {
         NodeDb {
             mapping: RwLock::new(HashMap::new()),
-            watch: watch::channel(vec![]),
+            watch: watch::channel(HashMap::new()),
         }
     }
 
@@ -66,8 +66,8 @@ impl NodeDb {
     fn sync(&self) -> Result<(), Box<dyn Error>> {
         let (tx, _) = &self.watch;
 
-        let node_list: Vec<Node> = self.mapping.read().iter()
-            .map(|(_, handle)| handle.node.clone())
+        let node_list: HashMap<NodeId, Node> = self.mapping.read().iter()
+            .map(|(node_id, handle)| (*node_id, handle.node.clone()))
             .collect();
 
         tx.send(node_list)?;
@@ -232,7 +232,7 @@ async fn tunnel(
                 res = watch.changed() => {
                     res?;
                     let node_list = watch.borrow().clone();
-                    let msg = TcpMsg::NodeList(node_list);
+                    let msg = TcpMsg::NodeMap(node_list);
                     msg_writer.write(&msg).await?;
                 }
                 res = channel_rx.recv() => {
