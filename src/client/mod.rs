@@ -84,7 +84,6 @@ pub(super) async fn start(
     }: ClientConfig
 ) -> Result<(), Box<dyn Error>> {
     let rc4 = Rc4::new(key.as_bytes());
-    let node_id: NodeId = rand::random();
     let device = create_device(tun_addr, tun_netmask)?;
     let (tun_tx, tun_rx) = device.split();
 
@@ -92,7 +91,7 @@ pub(super) async fn start(
     let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(10);
 
     let mut node = Node {
-        id: node_id,
+        id: rand::random(),
         tun_addr,
         lan_udp_addr: None,
         wan_udp_addr: None,
@@ -102,7 +101,7 @@ pub(super) async fn start(
     info!("Tun adapter ip address: {}", tun_addr);
     info!("Client start");
 
-    tokio::task::spawn_blocking(move || if let Err(e) = stdin(node_id) { error!("{}", e) });
+    tokio::task::spawn_blocking(move || if let Err(e) = stdin() { error!("{}", e) });
 
     if direct {
         let lan_ip = get_interface_addr(server_addr).await?;
@@ -113,7 +112,7 @@ pub(super) async fn start(
         *LOCAL_NODE.write() = node;
 
         tokio::select! {
-            res = direct_node_list_schedule() => res?,
+            _ = direct_node_list_schedule() => (),
             res = mpsc_to_tun(from_handler, tun_tx) => res??,
             res = tun_to_mpsc(to_tcp_handler, Some(to_udp_handler), tun_rx) => res??,
             res = udp_handler(udp_socket, from_tun1, to_tun.clone(), server_addr, rc4) => res?,
@@ -132,27 +131,21 @@ pub(super) async fn start(
     Ok(())
 }
 
-fn direct_node_list_schedule() -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            {
-                let map = DIRECT_NODE_LIST.list.read().clone();
+async fn direct_node_list_schedule() {
+    loop {
+        {
+            let mut guard = DIRECT_NODE_LIST.list.write();
 
-                let expire_node_id_list: Vec<NodeId> = map.into_iter()
-                    .filter(|(_, update_time)| update_time.elapsed() > Duration::from_secs(30))
-                    .map(|(node_id, _)| node_id)
-                    .collect();
+            let new_list: HashMap<NodeId, Instant> = guard.iter()
+                .filter(|(_, update_time)| update_time.elapsed() <= Duration::from_secs(30))
+                .map(|(node_id, instant)| (*node_id, *instant))
+                .collect();
 
-                let mut writer_guard = DIRECT_NODE_LIST.list.write();
-
-                for node_id in expire_node_id_list {
-                    writer_guard.remove(&node_id);
-                }
-            }
-
-            time::sleep(Duration::from_secs(30)).await;
+            *guard = new_list;
         }
-    })
+
+        time::sleep(Duration::from_secs(30)).await;
+    }
 }
 
 fn mpsc_to_tun(
@@ -268,11 +261,7 @@ async fn udp_receiver(
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.read().await {
             match msg {
-                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
-                    if local_node_id != node_id {
-                        continue;
-                    }
-
+                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) if local_node_id == node_id => {
                     let resp = Heartbeat(node_id, seq, HeartbeatType::Resp);
                     msg_socket.write(&resp, peer_addr).await?;
                 }
@@ -381,13 +370,11 @@ async fn tcp_handler(
             msg_writer.write(&msg).await?;
             let msg = msg_reader.read().await?;
 
-            let res = match msg {
-                TcpMsg::Result(MsgResult::Success) => Ok(()),
-                TcpMsg::Result(MsgResult::Timeout) => Err(Box::new(io::Error::new(io::ErrorKind::TimedOut, "Node register timeout"))),
-                _ => Err(Box::new(io::Error::new(io::ErrorKind::TimedOut, "Node register error")))
+            match msg {
+                TcpMsg::Result(MsgResult::Success) => (),
+                TcpMsg::Result(MsgResult::Timeout) => Err(io::Error::new(io::ErrorKind::TimedOut, "Node register timeout"))?,
+                _ => Err(io::Error::new(io::ErrorKind::TimedOut, "Node register error"))?
             };
-
-            res?;
 
             tokio::select! {
                 res = tcp_receiver(&mut msg_reader, inner_channel_tx) => res,
@@ -434,7 +421,7 @@ fn node_to_node_info(
     }
 }
 
-fn stdin(local_node_id: NodeId) -> io::Result<()> {
+fn stdin() -> io::Result<()> {
     let stdin = std::io::stdin();
 
     loop {
@@ -447,10 +434,11 @@ fn stdin(local_node_id: NodeId) -> io::Result<()> {
 
         match cmd.trim() {
             "show" => {
+                let local_node_id = LOCAL_NODE.read().id;
                 let map = MAPPING.get_all();
 
                 let node_list: Vec<NodeInfo> = map.into_iter()
-                    .map(|node| node_to_node_info(node, local_node_id))
+                    .map(|v| node_to_node_info(v, local_node_id))
                     .collect();
 
                 let json = node_list.to_json_string_pretty()?;
