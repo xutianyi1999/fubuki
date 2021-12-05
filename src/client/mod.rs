@@ -218,8 +218,10 @@ async fn heartbeat_schedule(
     mut msg_socket: UdpMsgSocket<'_>,
     seq: &AtomicU32,
 ) -> Result<(), Box<dyn Error>> {
+    let node_id = LOCAL_NODE.read().id;
+
     loop {
-        let msg = UdpMsg::Heartbeat(0, 0, HeartbeatType::Req);
+        let msg = UdpMsg::Heartbeat(node_id, 0, HeartbeatType::Req);
         msg_socket.write(&msg, server_addr).await?;
 
         let temp_seq = seq.load(Ordering::SeqCst);
