@@ -13,6 +13,7 @@ use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::Deserialize;
 use tokio::fs;
+use tokio::runtime::Runtime;
 
 use crate::common::Either;
 
@@ -41,21 +42,26 @@ struct ClientConfig {
     direct: bool,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = launch().await {
+fn main() {
+    if let Err(e) = launch() {
         error!("Process error -> {}", e)
     };
 }
 
-async fn launch() -> Result<(), Box<dyn Error>> {
-    logger_init().unwrap();
+fn launch() -> Result<(), Box<dyn Error>> {
+    logger_init()?;
+    let rt = Runtime::new()?;
 
-    match load_config().await? {
-        Either::Right(config) => client::start(config).await?,
-        Either::Left(config) => server::start(config).await
-    };
-    Ok(())
+    let res = rt.block_on(async move {
+        match load_config().await? {
+            Either::Right(config) => client::start(config).await?,
+            Either::Left(config) => server::start(config).await
+        }
+        Ok(())
+    });
+
+    rt.shutdown_background();
+    res
 }
 
 const INVALID_COMMAND: &str = "Invalid command";

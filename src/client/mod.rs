@@ -90,7 +90,7 @@ pub(super) async fn start(
     let (to_tun, from_handler) = mpsc::unbounded_channel::<Box<[u8]>>();
     let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(10);
 
-    let mut node = Node {
+    let node = Node {
         id: rand::random(),
         tun_addr,
         lan_udp_addr: None,
@@ -98,6 +98,7 @@ pub(super) async fn start(
         register_time: 0,
     };
 
+    *LOCAL_NODE.write() = node;
     info!("Tun adapter ip address: {}", tun_addr);
     info!("Client start");
 
@@ -108,8 +109,7 @@ pub(super) async fn start(
         let udp_socket = UdpSocket::bind((lan_ip, 0)).await?;
         let (to_udp_handler, from_tun1) = mpsc::channel::<(Box<[u8]>, SocketAddr)>(10);
 
-        node.lan_udp_addr = Some(udp_socket.local_addr()?);
-        *LOCAL_NODE.write() = node;
+        LOCAL_NODE.write().lan_udp_addr = Some(udp_socket.local_addr()?);
 
         tokio::select! {
             _ = direct_node_list_schedule() => (),
@@ -119,8 +119,6 @@ pub(super) async fn start(
             res = tcp_handler(from_tun2, to_tun, server_addr, rc4) => res?,
         }
     } else {
-        *LOCAL_NODE.write() = node;
-
         tokio::select! {
             res = mpsc_to_tun(from_handler, tun_tx) => res??,
             res = tun_to_mpsc(to_tcp_handler, None, tun_rx) => res??,
@@ -223,6 +221,7 @@ async fn heartbeat_schedule(
     loop {
         let msg = UdpMsg::Heartbeat(0, 0, HeartbeatType::Req);
         msg_socket.write(&msg, server_addr).await?;
+
         let temp_seq = seq.load(Ordering::SeqCst);
         let local_wan_addr = LOCAL_NODE.read().wan_udp_addr;
         let mapping = MAPPING.get_all();
@@ -266,8 +265,8 @@ async fn udp_receiver(
                     msg_socket.write(&resp, peer_addr).await?;
                 }
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
-                if seq == heartbeat_seq.load(Ordering::SeqCst) &&
-                    node_id != 0 => {
+                if node_id != 0 && seq == heartbeat_seq.load(Ordering::SeqCst)
+                => {
                     DIRECT_NODE_LIST.update(node_id);
                 }
                 UdpMsg::Data(data) => to_tun.send(data.into())?,
@@ -385,6 +384,8 @@ async fn tcp_handler(
         if let Err(e) = process.await {
             error!("{}", e)
         }
+
+        time::sleep(Duration::from_secs(3)).await;
     }
 }
 
