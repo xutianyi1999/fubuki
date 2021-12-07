@@ -13,6 +13,7 @@ use tokio::sync::mpsc::error::TrySendError;
 
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
+use crate::common::net::TcpSocketExt;
 use crate::ServerConfig;
 
 const CHANNEL_SIZE: usize = 10;
@@ -169,6 +170,7 @@ async fn tunnel(
     rc4: Rc4,
     node_db: Arc<NodeDb>,
 ) -> Result<()> {
+    stream.set_keepalive()?;
     let (mut rx, mut tx) = stream.split();
 
     let mut rx_rc4 = rc4;
