@@ -1,5 +1,4 @@
-use std::error::Error;
-use std::io;
+use std::io::Result;
 use std::net::{IpAddr, SocketAddr};
 
 use socket2::{Socket, TcpKeepalive};
@@ -7,17 +6,17 @@ use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::time::Duration;
 
 pub trait TcpSocketExt {
-    fn set_keepalive(&self) -> io::Result<()>;
+    fn set_keepalive(&self) -> Result<()>;
 }
 
 impl TcpSocketExt for TcpStream {
-    fn set_keepalive(&self) -> io::Result<()> {
+    fn set_keepalive(&self) -> Result<()> {
         set_keepalive(self)
     }
 }
 
 impl TcpSocketExt for TcpSocket {
-    fn set_keepalive(&self) -> io::Result<()> {
+    fn set_keepalive(&self) -> Result<()> {
         set_keepalive(self)
     }
 }
@@ -25,7 +24,7 @@ impl TcpSocketExt for TcpSocket {
 const TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive::new().with_time(Duration::from_secs(120));
 
 #[cfg(windows)]
-fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> io::Result<()> {
+fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> Result<()> {
     use std::os::windows::io::FromRawSocket;
 
     unsafe {
@@ -37,7 +36,7 @@ fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> io::Result
 }
 
 #[cfg(unix)]
-fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> io::Result<()> {
+fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> Result<()> {
     use std::os::unix::io::FromRawFd;
 
     unsafe {
@@ -48,7 +47,7 @@ fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> io::Result<()> {
     Ok(())
 }
 
-pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr, Box<dyn Error>> {
+pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(dest_addr).await?;
     let addr = socket.local_addr()?;
@@ -57,8 +56,8 @@ pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr, Box<dyn
 
 pub mod proto {
     use std::collections::HashMap;
-    use std::error::Error;
     use std::io;
+    use std::io::Result;
     use std::net::{Ipv4Addr, SocketAddr};
 
     use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
@@ -112,7 +111,7 @@ pub mod proto {
     }
 
     impl TcpMsg<'_> {
-        pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a [u8], Box<dyn Error>> {
+        pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a [u8]> {
             buff[0] = MAGIC_NUM;
             let slice = &mut buff[1..];
 
@@ -148,13 +147,13 @@ pub mod proto {
             Ok(&buff[..len + 1])
         }
 
-        pub fn decode(packet: &[u8]) -> Result<TcpMsg, Box<dyn Error>> {
+        pub fn decode(packet: &[u8]) -> Result<TcpMsg> {
             let magic_num = packet[0];
             let mode = packet[1];
             let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"));
             }
 
             let msg = match mode {
@@ -166,7 +165,7 @@ pub mod proto {
                     match data[0] {
                         SUCCESS => TcpMsg::Result(MsgResult::Success),
                         TIMEOUT => TcpMsg::Result(MsgResult::Timeout),
-                        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")))
+                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"))
                     }
                 }
                 NODE_MAP => {
@@ -180,7 +179,7 @@ pub mod proto {
 
                     TcpMsg::Forward(&data[4..], node_id)
                 }
-                _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error")))
+                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"))
             };
             Ok(msg)
         }
@@ -192,7 +191,7 @@ pub mod proto {
     }
 
     impl<'a> UdpMsg<'a> {
-        pub fn encode(&self, buff: &'a mut [u8]) -> Result<&'a [u8], Box<dyn Error>> {
+        pub fn encode(&self, buff: &'a mut [u8]) -> Result<&'a [u8]> {
             buff[0] = MAGIC_NUM;
             let slice = &mut buff[1..];
 
@@ -220,13 +219,13 @@ pub mod proto {
             Ok(&buff[..len + 1])
         }
 
-        pub fn decode(packet: &'a [u8]) -> Result<Self, Box<dyn Error>> {
+        pub fn decode(packet: &'a [u8]) -> Result<Self> {
             let magic_num = packet[0];
             let mode = packet[1];
             let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")));
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"));
             }
 
             match mode {
@@ -247,16 +246,16 @@ pub mod proto {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")))
+                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"))
                     };
                     Ok(UdpMsg::Heartbeat(node_id, seq, heartbeat_type))
                 }
-                _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "UDP message error")))
+                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"))
             }
         }
     }
 
-    pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> io::Result<&'a [u8]> {
+    pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> Result<&'a [u8]> {
         let mut ref_read_buf = RefReadBuffer::new(input);
         let mut ref_write_buf = RefWriteBuffer::new(output);
 
@@ -267,7 +266,7 @@ pub mod proto {
 }
 
 pub mod msg_operator {
-    use std::error::Error;
+    use std::io::Result;
     use std::net::SocketAddr;
 
     use crypto::rc4::Rc4;
@@ -294,7 +293,7 @@ pub mod msg_operator {
             TcpMsgReader { rx, rc4, buff, out }
         }
 
-        pub async fn read(&mut self) -> Result<TcpMsg<'_>, Box<dyn Error>> {
+        pub async fn read(&mut self) -> Result<TcpMsg<'_>> {
             let buff = &mut self.buff;
             let out = &mut self.out;
             let rx = &mut self.rx;
@@ -323,7 +322,7 @@ pub mod msg_operator {
             TcpMsgWriter { tx, rc4, buff, out }
         }
 
-        pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<(), Box<dyn Error>> {
+        pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<()> {
             let buff = &mut self.buff;
             let out = &mut self.out;
             let tx = &mut self.tx;
@@ -354,7 +353,7 @@ pub mod msg_operator {
             UdpMsgSocket { socket, rc4, buff: [0u8; UDP_BUFF_SIZE], out: [0u8; UDP_BUFF_SIZE] }
         }
 
-        pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr), Box<dyn Error>> {
+        pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr)> {
             let socket = self.socket;
             let mut rc4 = self.rc4;
             let buff = &mut self.buff;
@@ -367,7 +366,7 @@ pub mod msg_operator {
             Ok((UdpMsg::decode(packet)?, peer_addr))
         }
 
-        pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+        pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
             let socket = self.socket;
             let mut rc4 = self.rc4;
             let buff = &mut self.buff;

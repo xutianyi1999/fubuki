@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::io;
 use std::io::{Read, Write};
+use std::io::Result;
 use std::net::Ipv4Addr;
 
 use tun::platform::Device;
@@ -14,7 +15,7 @@ pub struct Linuxtun {
 }
 
 impl Linuxtun {
-    pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Linuxtun, Box<dyn Error>> {
+    pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Linuxtun> {
         let mut config = tun::Configuration::default();
         config.address(address)
             .netmask(netmask)
@@ -24,7 +25,12 @@ impl Linuxtun {
         config.platform(|config| {
             config.packet_information(false);
         });
-        Ok(Linuxtun { fd: tun::create(&config)? })
+
+        Ok(Linuxtun {
+            fd: tun::create(&config).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, Box::<dyn Error>::from(e).to_string())
+            })?
+        })
     }
 }
 
@@ -37,33 +43,33 @@ struct LinuxtunRx {
 }
 
 impl Tx for LinuxtunTx {
-    fn send_packet(&mut self, packet: &[u8]) -> io::Result<()> {
+    fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         self.tx.write(packet)?;
         Ok(())
     }
 }
 
 impl Rx for LinuxtunRx {
-    fn recv_packet(&mut self, buff: &mut [u8]) -> io::Result<usize> {
+    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         self.rx.read(buff)
     }
 }
 
 impl Rx for Linuxtun {
-    fn recv_packet(&mut self, buff: &mut [u8]) -> io::Result<usize> {
+    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         self.fd.read(buff)
     }
 }
 
 impl Tx for Linuxtun {
-    fn send_packet(&mut self, packet: &[u8]) -> io::Result<()> {
+    fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         self.fd.write(packet)?;
         Ok(())
     }
 }
 
 impl TunDevice for Linuxtun {
-    fn split(self: Box<Self>) -> (Box<dyn Tx>, Box<dyn Rx>) {
+    fn split(self) -> (Box<dyn Tx>, Box<dyn Rx>) {
         let (rx, tx) = self.fd.split();
         (Box::new(LinuxtunTx { tx }), Box::new(LinuxtunRx { rx }))
     }

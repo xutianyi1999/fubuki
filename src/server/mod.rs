@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::error::Error;
-use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
@@ -41,11 +40,10 @@ impl NodeDb {
         }
     }
 
-    fn insert(&self, node: Node) -> Result<Bridge, Box<dyn Error>> {
+    fn insert(&self, node: Node) -> Result<Bridge> {
         let node_id = node.id;
         let (_, watch_rx) = &self.watch;
         let (tx, rx) = mpsc::channel::<(Box<[u8]>, NodeId)>(CHANNEL_SIZE);
-
         self.mapping.write().insert(node_id, NodeHandle { node, tx });
         self.sync()?;
 
@@ -57,13 +55,13 @@ impl NodeDb {
         f(self.mapping.read().get(id))
     }
 
-    fn get_mut<R, F: FnOnce(Option<&mut NodeHandle>) -> R>(&self, id: &NodeId, f: F) -> Result<R, Box<dyn Error>> {
+    fn get_mut<R, F: FnOnce(Option<&mut NodeHandle>) -> R>(&self, id: &NodeId, f: F) -> Result<R> {
         let r = f(self.mapping.write().get_mut(id));
         self.sync()?;
         Ok(r)
     }
 
-    fn sync(&self) -> Result<(), Box<dyn Error>> {
+    fn sync(&self) -> Result<()> {
         let (tx, _) = &self.watch;
 
         let node_list: HashMap<NodeId, Node> = self.mapping.read().iter()
@@ -84,12 +82,12 @@ pub(super) async fn start(server_config: Vec<ServerConfig>) {
             let node_db = Arc::new(NodeDb::new());
 
             let res = tokio::select! {
-                res = udp_handler(listen_addr, rc4, &node_db) => res,
-                res = tcp_handler(listen_addr, rc4, &node_db) => res
+                res = udp_handler(listen_addr, rc4, &node_db) => res.context("UDP handler error"),
+                res = tcp_handler(listen_addr, rc4, &node_db) => res.context("TCP handler error")
             };
 
             if let Err(e) = res {
-                error!("Server execute error -> {}", e)
+                error!("Server execute error -> {:?}", e)
             };
         };
         list.push(future);
@@ -101,8 +99,8 @@ async fn udp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
     node_db: &Arc<NodeDb>,
-) -> Result<(), Box<dyn Error>> {
-    let socket = UdpSocket::bind(listen_addr).await?;
+) -> Result<()> {
+    let socket = UdpSocket::bind(listen_addr).await.with_context(|| format!("UDP socket bind {} error", listen_addr))?;
     info!("UDP socket listening on {}", listen_addr);
 
     let mut msg_socket = UdpMsgSocket::new(&socket, rc4);
@@ -111,7 +109,7 @@ async fn udp_handler(
         let msg = match msg_socket.read().await {
             Ok(v) => v,
             Err(e) => {
-                error!("UDP msg read error -> {}", e);
+                error!("UDP msg read error -> {:?}", e);
                 continue;
             }
         };
@@ -150,17 +148,17 @@ async fn tcp_handler(
     listen_addr: SocketAddr,
     rc4: Rc4,
     node_db: &Arc<NodeDb>,
-) -> Result<(), Box<dyn Error>> {
-    let listener = TcpListener::bind(listen_addr).await?;
+) -> Result<()> {
+    let listener = TcpListener::bind(listen_addr).await.with_context(|| format!("TCP socket bind {} error", listen_addr))?;
     info!("TCP socket listening on {}", listen_addr);
 
     loop {
         let node_db = node_db.clone();
-        let (stream, peer_addr) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await.context("Accept connection error")?;
 
         tokio::spawn(async move {
             if let Err(e) = tunnel(stream, rc4, node_db).await {
-                error!("{:?} tunnel error -> {}", peer_addr, e)
+                error!("Peer addr {} tunnel error -> {:?}", peer_addr, e)
             }
         });
     }
@@ -170,7 +168,7 @@ async fn tunnel(
     mut stream: TcpStream,
     rc4: Rc4,
     node_db: Arc<NodeDb>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let (mut rx, mut tx) = stream.split();
 
     let mut rx_rc4 = rc4;
@@ -196,7 +194,7 @@ async fn tunnel(
 
             if (remain > 10) || (remain < -10) {
                 msg_writer.write(&TcpMsg::Result(MsgResult::Timeout)).await?;
-                return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register message timeout")));
+                return Err(anyhow!("Register message timeout"));
             }
 
             msg_writer.write(&TcpMsg::Result(MsgResult::Success)).await?;
@@ -204,7 +202,7 @@ async fn tunnel(
             let bridge = node_db.insert(node)?;
             (node_id, register_time, bridge)
         }
-        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidData, "Register error")))
+        _ => return Err(anyhow!("Register error"))
     };
 
     let inner_node_db = &node_db;
@@ -216,12 +214,12 @@ async fn tunnel(
                     inner_node_db.get(&dest_node_id, |op| {
                         if let Some(NodeHandle { tx: channel_tx, .. }) = op {
                             if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
-                                error!("Channel closed")
+                                error!("Dest node {} channel closed", dest_node_id)
                             }
                         }
                     });
                 }
-                _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid TCP msg"))?
+                _ => return Err(anyhow!("Invalid TCP msg"))
             };
         }
     };
@@ -236,7 +234,7 @@ async fn tunnel(
                     msg_writer.write(&msg).await?;
                 }
                 res = channel_rx.recv() => {
-                    let (data, node_id) = res.ok_or(io::Error::new(io::ErrorKind::UnexpectedEof, "MPSC closed"))?;
+                    let (data, node_id) = res.ok_or(anyhow!("Node {} channel closed", node_id))?;
                     let msg = TcpMsg::Forward(&data, node_id);
                     msg_writer.write(&msg).await?;
                 }

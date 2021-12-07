@@ -1,10 +1,9 @@
 {
-  "server_addr": "127.0.0.1:12345",
+  "server_addr": "192.168.1.10:12345",
   "tun": {
     "ip": "10.0.0.1",
     "netmask": "255.255.255.0"
   },
-  "buff_capacity": 300,
   "key": "a123",
-  "is_direct": true
+  "direct": true
 }

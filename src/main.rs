@@ -2,10 +2,9 @@
 extern crate log;
 
 use std::env;
-use std::error::Error;
-use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 
+use anyhow::{anyhow, Context, Result};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::Config;
 use log4rs::config::{Appender, Root};
@@ -44,13 +43,13 @@ struct ClientConfig {
 
 fn main() {
     if let Err(e) = launch() {
-        error!("Process error -> {}", e)
+        error!("Process error -> {:?}", e)
     };
 }
 
-fn launch() -> Result<(), Box<dyn Error>> {
+fn launch() -> Result<()> {
     logger_init()?;
-    let rt = Runtime::new()?;
+    let rt = Runtime::new().context("Failed to create tokio runtime")?;
 
     let res = rt.block_on(async move {
         match load_config().await? {
@@ -66,29 +65,34 @@ fn launch() -> Result<(), Box<dyn Error>> {
 
 const INVALID_COMMAND: &str = "Invalid command";
 
-async fn load_config() -> Result<Either<Vec<ServerConfig>, ClientConfig>, Box<dyn Error>> {
+async fn load_config() -> Result<Either<Vec<ServerConfig>, ClientConfig>> {
     let mut args = env::args();
     args.next();
 
-    let mode = args.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, INVALID_COMMAND))?;
-    let config_path = args.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, INVALID_COMMAND))?;
-    let config_json = fs::read_to_string(config_path).await?;
+    let mode = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
+    let config_path = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
+    let config_json = fs::read_to_string(&config_path).await
+        .with_context(|| format!("Failed to read config from: {}", config_path))?;
 
     let config = match mode.as_str() {
         "client" => {
-            let client_config = serde_json::from_str::<ClientConfig>(&config_json)?;
+            let client_config = serde_json::from_str::<ClientConfig>(&config_json)
+                .context("Failed to parse client config")?;
+
             Either::Right(client_config)
         }
         "server" => {
-            let server_config = serde_json::from_str::<Vec<ServerConfig>>(&config_json)?;
+            let server_config = serde_json::from_str::<Vec<ServerConfig>>(&config_json)
+                .context("Failed to pares server config")?;
+
             Either::Left(server_config)
         }
-        _ => return Err(Box::new(io::Error::new(io::ErrorKind::InvalidInput, INVALID_COMMAND)))
+        _ => Err(anyhow!(INVALID_COMMAND))?
     };
     Ok(config)
 }
 
-fn logger_init() -> Result<(), Box<dyn Error>> {
+fn logger_init() -> Result<()> {
     let stdout = ConsoleAppender::builder()
         .encoder(Box::new(PatternEncoder::new("[Console] {d(%Y-%m-%d %H:%M:%S)} - {l} - {m}{n}")))
         .build();

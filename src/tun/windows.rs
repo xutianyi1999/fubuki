@@ -80,8 +80,8 @@ impl Rx for Wintun {
 }
 
 impl TunDevice for Wintun {
-    fn split(self: Box<Self>) -> (Box<dyn Tx>, Box<dyn Rx>) {
-        let wintun = Arc::new(*self);
+    fn split(self) -> (Box<dyn Tx>, Box<dyn Rx>) {
+        let wintun = Arc::new(self);
         let wintun_tx = WintunTx { wintun: wintun.clone() };
         let wintun_rx = WintunRx { wintun };
 

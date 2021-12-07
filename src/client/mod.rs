@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use anyhow::{anyhow, Context};
+use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use crypto::rc4::Rc4;
 use once_cell::sync::Lazy;
@@ -27,6 +28,7 @@ use crate::common::net::proto::{HeartbeatType, MsgResult, MTU, Node, NodeId, Tcp
 use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
 use crate::tun::{create_device, Rx, Tx};
+use crate::tun::TunDevice;
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
 static DIRECT_NODE_LIST: Lazy<DirectNodeList> = Lazy::new(|| DirectNodeList::new());
@@ -82,7 +84,7 @@ pub(super) async fn start(
         key,
         direct,
     }: ClientConfig
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let rc4 = Rc4::new(key.as_bytes());
     let device = create_device(tun_addr, tun_netmask)?;
     let (tun_tx, tun_rx) = device.split();
@@ -102,30 +104,35 @@ pub(super) async fn start(
     info!("Tun adapter ip address: {}", tun_addr);
     info!("Client start");
 
-    tokio::task::spawn_blocking(move || if let Err(e) = stdin() { error!("{}", e) });
+    tokio::task::spawn_blocking(move || if let Err(e) = stdin() { error!("Stdin error -> {:?}", e) });
 
     if direct {
-        let lan_ip = get_interface_addr(server_addr).await?;
-        let udp_socket = UdpSocket::bind((lan_ip, 0)).await?;
+        let lan_ip = get_interface_addr(server_addr).await
+            .context("Failed to get lan address")?;
+
+        let udp_socket = UdpSocket::bind((lan_ip, 0)).await
+            .context("Failed to create UDP socket")?;
+
         let (to_udp_handler, from_tun1) = mpsc::channel::<(Box<[u8]>, SocketAddr)>(10);
 
         LOCAL_NODE.write().lan_udp_addr = Some(udp_socket.local_addr()?);
 
         tokio::select! {
             _ = direct_node_list_schedule() => (),
-            res = mpsc_to_tun(from_handler, tun_tx) => res??,
-            res = tun_to_mpsc(to_tcp_handler, Some(to_udp_handler), tun_rx) => res??,
-            res = udp_handler(udp_socket, from_tun1, to_tun.clone(), server_addr, rc4) => res?,
-            res = tcp_handler(from_tun2, to_tun, server_addr, rc4) => res?,
+            res = mpsc_to_tun(from_handler, tun_tx) => res?.context("MPSC to TUN handler error")?,
+            res = tun_to_mpsc(to_tcp_handler, Some(to_udp_handler), tun_rx) => res?.context("TUN to MPSC handler error")?,
+            res = udp_handler(udp_socket, from_tun1, to_tun.clone(), server_addr, rc4) => res.context("UDP handler error")?,
+            _ = tcp_handler(from_tun2, to_tun, server_addr, rc4) => (),
         }
     } else {
         tokio::select! {
-            res = mpsc_to_tun(from_handler, tun_tx) => res??,
-            res = tun_to_mpsc(to_tcp_handler, None, tun_rx) => res??,
-            res = tcp_handler(from_tun2, to_tun, server_addr, rc4) => res?,
+            res = mpsc_to_tun(from_handler, tun_tx) => res?.context("MPSC to TUN handler error")?,
+            res = tun_to_mpsc(to_tcp_handler, None, tun_rx) => res?.context("TUN to MPSC handler error")?,
+            _ = tcp_handler(from_tun2, to_tun, server_addr, rc4) => (),
         }
     };
 
+    warn!("Client down");
     Ok(())
 }
 
@@ -149,10 +156,10 @@ async fn direct_node_list_schedule() {
 fn mpsc_to_tun(
     mut mpsc_rx: UnboundedReceiver<Box<[u8]>>,
     mut tun_tx: Box<dyn Tx>,
-) -> JoinHandle<io::Result<()>> {
+) -> JoinHandle<Result<()>> {
     tokio::task::spawn_blocking(move || {
         while let Some(packet) = mpsc_rx.blocking_recv() {
-            tun_tx.send_packet(&packet)?;
+            tun_tx.send_packet(&packet).context("Write packet to tun error")?;
         };
         Ok(())
     })
@@ -162,12 +169,12 @@ fn tun_to_mpsc(
     tcp_handler_tx: Sender<(Box<[u8]>, NodeId)>,
     udp_handler_tx_opt: Option<Sender<(Box<[u8]>, SocketAddr)>>,
     mut tun_rx: Box<dyn Rx>,
-) -> JoinHandle<io::Result<()>> {
+) -> JoinHandle<Result<()>> {
     tokio::task::spawn_blocking(move || {
         let mut buff = [0u8; MTU];
 
         loop {
-            let data = match tun_rx.recv_packet(&mut buff)? {
+            let data = match tun_rx.recv_packet(&mut buff).context("Read tun packet error")? {
                 0 => continue,
                 len => &buff[..len]
             };
@@ -199,12 +206,12 @@ fn tun_to_mpsc(
                     };
 
                     if let Err(TrySendError::Closed(_)) = udp_handler_tx.try_send((data.into(), dest_addr)) {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Channel closed"));
+                        return Err(anyhow!("UPD handler channel closed"));
                     }
                 }
                 (Some(Node { id, .. }), _) => {
                     if let Err(TrySendError::Closed(_)) = tcp_handler_tx.try_send((data.into(), *id)) {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Channel closed"));
+                        return Err(anyhow!("TCP handler channel closed"));
                     }
                 }
                 _ => continue
@@ -217,11 +224,11 @@ async fn heartbeat_schedule(
     server_addr: SocketAddr,
     mut msg_socket: UdpMsgSocket<'_>,
     seq: &AtomicU32,
-) -> Result<(), Box<dyn Error>> {
-    let node_id = LOCAL_NODE.read().id;
+) -> Result<()> {
+    let local_node_id = LOCAL_NODE.read().id;
 
     loop {
-        let msg = UdpMsg::Heartbeat(node_id, 0, HeartbeatType::Req);
+        let msg = UdpMsg::Heartbeat(local_node_id, 0, HeartbeatType::Req);
         msg_socket.write(&msg, server_addr).await?;
 
         let temp_seq = seq.load(Ordering::SeqCst);
@@ -229,6 +236,10 @@ async fn heartbeat_schedule(
         let mapping = MAPPING.get_all();
 
         for (_, node) in mapping {
+            if node.id == local_node_id {
+                continue;
+            }
+
             if let Node {
                 id: node_id,
                 wan_udp_addr: Some(peer_wan_addr),
@@ -256,7 +267,7 @@ async fn udp_receiver(
     mut msg_socket: UdpMsgSocket<'_>,
     to_tun: UnboundedSender<Box<[u8]>>,
     heartbeat_seq: &AtomicU32,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let local_node_id = LOCAL_NODE.read().id;
 
     loop {
@@ -281,7 +292,7 @@ async fn udp_receiver(
 async fn udp_sender(
     mut msg_socket: UdpMsgSocket<'_>,
     mut from_tun: Receiver<(Box<[u8]>, SocketAddr)>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     while let Some((data, dest_addr)) = from_tun.recv().await {
         let data = UdpMsg::Data(&data);
         msg_socket.write(&data, dest_addr).await?;
@@ -295,21 +306,21 @@ async fn udp_handler(
     channel_tx: UnboundedSender<Box<[u8]>>,
     server_addr: SocketAddr,
     rc4: Rc4,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let msg_socket = UdpMsgSocket::new(&udp_socket, rc4);
     let seq = AtomicU32::new(0);
 
     tokio::select! {
-        res = heartbeat_schedule(server_addr, msg_socket.clone(), &seq) => res,
-        res = udp_receiver(msg_socket.clone(), channel_tx, &seq) => res,
-        res = udp_sender(msg_socket, channel_rx) => res
+        res = heartbeat_schedule(server_addr, msg_socket.clone(), &seq) => res.context("Heartbeat schedule error"),
+        res = udp_receiver(msg_socket.clone(), channel_tx, &seq) => res.context("UDP receiver error"),
+        res = udp_sender(msg_socket, channel_rx) => res.context("UDP sender error")
     }
 }
 
 async fn tcp_receiver<Rx: AsyncRead + Unpin>(
     msg_reader: &mut TcpMsgReader<'_, Rx>,
     to_tun: &UnboundedSender<Box<[u8]>>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     let local_node_id = LOCAL_NODE.read().id;
 
     loop {
@@ -336,7 +347,7 @@ async fn tcp_receiver<Rx: AsyncRead + Unpin>(
 async fn tcp_sender<Tx: AsyncWrite + Unpin>(
     msg_writer: &mut TcpMsgWriter<'_, Tx>,
     from_tun: &mut Receiver<(Box<[u8]>, NodeId)>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<()> {
     while let Some((data, dest_node_id)) = from_tun.recv().await {
         let msg = TcpMsg::Forward(&data, dest_node_id);
         msg_writer.write(&msg).await?;
@@ -349,7 +360,7 @@ async fn tcp_handler(
     channel_tx: UnboundedSender<Box<[u8]>>,
     server_addr: SocketAddr,
     rc4: Rc4,
-) -> Result<(), Box<dyn Error>> {
+) {
     loop {
         let inner_channel_tx = &channel_tx;
         let inner_channel_rx = &mut channel_rx;
@@ -357,7 +368,7 @@ async fn tcp_handler(
         let mut rx_rc4 = rc4;
 
         let process = async move {
-            let mut stream = TcpStream::connect(server_addr).await?;
+            let mut stream = TcpStream::connect(server_addr).await.context("Connect to server error")?;
             let (mut rx, mut tx) = stream.split();
             let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_rc4);
             let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
@@ -373,18 +384,18 @@ async fn tcp_handler(
 
             match msg {
                 TcpMsg::Result(MsgResult::Success) => (),
-                TcpMsg::Result(MsgResult::Timeout) => Err(io::Error::new(io::ErrorKind::TimedOut, "Node register timeout"))?,
-                _ => Err(io::Error::new(io::ErrorKind::TimedOut, "Node register error"))?
+                TcpMsg::Result(MsgResult::Timeout) => return Err(anyhow!("Register timeout")),
+                _ => return Err(anyhow!("Register error"))
             };
 
             tokio::select! {
-                res = tcp_receiver(&mut msg_reader, inner_channel_tx) => res,
-                res = tcp_sender(&mut msg_writer, inner_channel_rx) => res
+                res = tcp_receiver(&mut msg_reader, inner_channel_tx) => res.context("TCP receiver error"),
+                res = tcp_sender(&mut msg_writer, inner_channel_rx) => res.context("TCP sender error")
             }
         };
 
         if let Err(e) = process.await {
-            error!("{}", e)
+            error!("TCP handler error -> {:?}", e)
         }
 
         time::sleep(Duration::from_secs(3)).await;
@@ -426,6 +437,7 @@ fn node_to_node_info(
 
 fn stdin() -> io::Result<()> {
     let stdin = std::io::stdin();
+    let local_node_id = LOCAL_NODE.read().id;
 
     loop {
         let mut cmd = String::new();
@@ -437,7 +449,6 @@ fn stdin() -> io::Result<()> {
 
         match cmd.trim() {
             "show" => {
-                let local_node_id = LOCAL_NODE.read().id;
                 let map = MAPPING.get_all();
 
                 let node_list: Vec<NodeInfo> = map.into_iter()
