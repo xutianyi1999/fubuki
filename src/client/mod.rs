@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use serde::Serialize;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::mpsc;
@@ -22,13 +22,15 @@ use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::{ClientConfig, TunAdapter};
-use crate::common::net::get_interface_addr;
-use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
+use crate::common::net::{get_interface_addr, TcpSocketExt};
+use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, MTU, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
 use crate::tun::{create_device, Rx, Tx};
 use crate::tun::TunDevice;
+
+const CHANNEL_SIZE: usize = 10;
 
 static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
 static DIRECT_NODE_LIST: Lazy<DirectNodeList> = Lazy::new(|| DirectNodeList::new());
@@ -90,7 +92,7 @@ pub(super) async fn start(
     let (tun_tx, tun_rx) = device.split();
 
     let (to_tun, from_handler) = mpsc::unbounded_channel::<Box<[u8]>>();
-    let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(10);
+    let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(CHANNEL_SIZE);
 
     let node = Node {
         id: rand::random(),
@@ -369,7 +371,12 @@ async fn tcp_handler(
 
         let process = async move {
             let mut stream = TcpStream::connect(server_addr).await.context("Connect to server error")?;
-            let (mut rx, mut tx) = stream.split();
+            stream.set_keepalive()?;
+            info!("Server connected");
+
+            let (rx, mut tx) = stream.split();
+            let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
+
             let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_rc4);
             let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
 

@@ -276,8 +276,8 @@ pub mod msg_operator {
     use super::proto;
     use super::proto::{TcpMsg, UdpMsg};
 
-    const TCP_BUFF_SIZE: usize = u16::MAX as usize;
     const UDP_BUFF_SIZE: usize = 2048;
+    pub const TCP_BUFF_SIZE: usize = 65536;
 
     pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
         rx: &'a mut Rx,

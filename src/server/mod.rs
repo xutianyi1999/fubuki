@@ -6,12 +6,13 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
+use tokio::io::BufReader;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
+use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::TcpSocketExt;
 use crate::ServerConfig;
@@ -171,7 +172,8 @@ async fn tunnel(
     node_db: Arc<NodeDb>,
 ) -> Result<()> {
     stream.set_keepalive()?;
-    let (mut rx, mut tx) = stream.split();
+    let (rx, mut tx) = stream.split();
+    let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
     let mut rx_rc4 = rc4;
     let mut tx_rc4 = rc4;
