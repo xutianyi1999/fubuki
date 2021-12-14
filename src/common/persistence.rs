@@ -1,5 +1,6 @@
+use std::io::Result;
+
 use serde::Serialize;
-use tokio::io::Result;
 
 pub trait ToJson {
     fn to_json_string(&self) -> Result<String>;

@@ -9,23 +9,19 @@ use tun::platform::posix::{Reader, Writer};
 use crate::common::net::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
 
-pub struct Linuxtun {
+pub struct Mactun {
     fd: Device,
 }
 
-impl Linuxtun {
-    pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Linuxtun> {
+impl Mactun {
+    pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Mactun> {
         let mut config = tun::Configuration::default();
         config.address(address)
             .netmask(netmask)
             .mtu(MTU as i32)
             .up();
 
-        config.platform(|config| {
-            config.packet_information(false);
-        });
-
-        Ok(Linuxtun {
+        Ok(Mactun {
             fd: tun::create(&config).map_err(|e| {
                 io::Error::new(io::ErrorKind::Other, e.to_string())
             })?
@@ -33,43 +29,43 @@ impl Linuxtun {
     }
 }
 
-struct LinuxtunTx {
+struct MactunTx {
     tx: Writer,
 }
 
-struct LinuxtunRx {
+struct MactunRx {
     rx: Reader,
 }
 
-impl Tx for LinuxtunTx {
+impl Tx for MactunTx {
     fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         self.tx.write(packet)?;
         Ok(())
     }
 }
 
-impl Rx for LinuxtunRx {
+impl Rx for MactunRx {
     fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         self.rx.read(buff)
     }
 }
 
-impl Rx for Linuxtun {
+impl Rx for Mactun {
     fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
         self.fd.read(buff)
     }
 }
 
-impl Tx for Linuxtun {
+impl Tx for Mactun {
     fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         self.fd.write(packet)?;
         Ok(())
     }
 }
 
-impl TunDevice for Linuxtun {
+impl TunDevice for Mactun {
     fn split(self) -> (Box<dyn Tx>, Box<dyn Rx>) {
         let (rx, tx) = self.fd.split();
-        (Box::new(LinuxtunTx { tx }), Box::new(LinuxtunRx { rx }))
+        (Box::new(MactunTx { tx }), Box::new(MactunRx { rx }))
     }
 }

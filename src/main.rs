@@ -2,11 +2,9 @@
 extern crate log;
 
 use std::env;
-use std::error::Error;
-use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 
-use crypto::rc4::Rc4;
+use anyhow::{anyhow, Context, Result};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::Config;
 use log4rs::config::{Appender, Root};
@@ -14,73 +12,87 @@ use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::Deserialize;
 use tokio::fs;
+use tokio::runtime::Runtime;
+
+use crate::common::Either;
 
 mod tun;
 mod server;
 mod client;
-pub mod common;
+mod common;
 
-pub const COMMAND_FAILED: &str = "Command failed";
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    logger_init()?;
-
-    if let Err(e) = process().await {
-        error!("Process error -> {}", e)
-    };
-    Ok(())
+#[derive(Deserialize, Clone)]
+struct ServerConfig {
+    listen_addr: SocketAddr,
+    key: String,
 }
 
-async fn process() -> Result<(), Box<dyn Error>> {
+#[derive(Deserialize, Clone)]
+struct TunAdapter {
+    ip: Ipv4Addr,
+    netmask: Ipv4Addr,
+}
+
+#[derive(Deserialize, Clone)]
+struct ClientConfig {
+    server_addr: SocketAddr,
+    tun: TunAdapter,
+    key: String,
+    direct: bool,
+}
+
+fn main() {
+    if let Err(e) = launch() {
+        error!("Process error -> {:?}", e)
+    };
+}
+
+fn launch() -> Result<()> {
+    logger_init()?;
+    let rt = Runtime::new().context("Failed to create tokio runtime")?;
+
+    let res = rt.block_on(async move {
+        match load_config().await? {
+            Either::Right(config) => client::start(config).await?,
+            Either::Left(config) => server::start(config).await
+        }
+        Ok(())
+    });
+
+    rt.shutdown_background();
+    res
+}
+
+const INVALID_COMMAND: &str = "Invalid command";
+
+async fn load_config() -> Result<Either<Vec<ServerConfig>, ClientConfig>> {
     let mut args = env::args();
     args.next();
 
-    let mode = args.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, COMMAND_FAILED))?;
-    let config_path = args.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, COMMAND_FAILED))?;
+    let mode = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
+    let config_path = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
+    let config_json = fs::read_to_string(&config_path).await
+        .with_context(|| format!("Failed to read config from: {}", config_path))?;
 
-    let json_str = fs::read_to_string(config_path).await?;
-
-    match mode.as_str() {
+    let config = match mode.as_str() {
         "client" => {
-            let client_config: ClientConfig = serde_json::from_str(&json_str)?;
-            let rc4 = Rc4::new(client_config.key.as_bytes());
-            let tun_addr = (client_config.tun.ip, client_config.tun.netmask);
+            let client_config = serde_json::from_str::<ClientConfig>(&config_json)
+                .context("Failed to parse client config")?;
 
-            let res = client::start(
-                client_config.server_addr,
-                rc4,
-                tun_addr,
-            ).await;
-
-            info!("Client shutdown");
-            res
+            Either::Right(client_config)
         }
         "server" => {
-            let server_config_vec: Vec<ServerConfig> = serde_json::from_str(&json_str)?;
-            let mut list = Vec::with_capacity(server_config_vec.len());
+            let server_config = serde_json::from_str::<Vec<ServerConfig>>(&config_json)
+                .context("Failed to pares server config")?;
 
-            for server_config in server_config_vec {
-                list.push(serve(server_config));
-            }
-
-            futures_util::future::join_all(list).await;
-            Ok(())
+            Either::Left(server_config)
         }
-        _ => Err(Box::new(io::Error::new(io::ErrorKind::InvalidInput, COMMAND_FAILED)))
-    }
+        _ => Err(anyhow!(INVALID_COMMAND))?
+    };
+    Ok(config)
 }
 
-async fn serve(server_config: ServerConfig) {
-    let rc4 = Rc4::new(server_config.key.as_bytes());
-
-    if let Err(e) = server::start(server_config.listen_addr, rc4).await {
-        error!("Server handler -> {}", e)
-    }
-    error!("{} crashed", server_config.listen_addr);
-}
-
-fn logger_init() -> Result<(), Box<dyn Error>> {
+fn logger_init() -> Result<()> {
     let stdout = ConsoleAppender::builder()
         .encoder(Box::new(PatternEncoder::new("[Console] {d(%Y-%m-%d %H:%M:%S)} - {l} - {m}{n}")))
         .build();
@@ -91,23 +103,4 @@ fn logger_init() -> Result<(), Box<dyn Error>> {
 
     log4rs::init_config(config)?;
     Ok(())
-}
-
-#[derive(Deserialize, Clone)]
-struct ServerConfig {
-    listen_addr: SocketAddr,
-    key: String,
-}
-
-#[derive(Deserialize, Clone)]
-struct TunConfig {
-    ip: Ipv4Addr,
-    netmask: Ipv4Addr,
-}
-
-#[derive(Deserialize, Clone)]
-struct ClientConfig {
-    server_addr: SocketAddr,
-    tun: TunConfig,
-    key: String,
 }
