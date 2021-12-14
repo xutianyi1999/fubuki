@@ -1,11 +1,10 @@
 use std::io::{Error, ErrorKind, Result};
 use std::net::Ipv4Addr;
 use std::process::Command;
-use std::ptr::null_mut;
 use std::sync::Arc;
 
-use simple_wintun::{raw, ReadResult};
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
+use simple_wintun::ReadResult;
 
 use crate::common::net::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
@@ -17,24 +16,23 @@ const ADAPTER_GUID: &str = "{248B1B2B-94FA-0E20-150F-5C2D2FB4FBF9}";
 const ADAPTER_BUFF_SIZE: u32 = 1048576;
 
 pub struct Wintun {
-    adapter: WintunAdapter,
-    session: WintunStream,
+    session: WintunStream<'static>,
+    _adapter: WintunAdapter,
 }
 
 impl Wintun {
     pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Wintun> {
         let netmask_count = get_netmask_bit_count(netmask);
-        WintunAdapter::initialize();
 
-        if let Ok(adapter) = WintunAdapter::get_adapter(POOL_NAME, ADAPTER_NAME) {
-            adapter.delete_adapter()?;
-        }
+        let adapter = match WintunAdapter::open_adapter(ADAPTER_NAME) {
+            Ok(v) => v,
+            Err(_) => WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?
+        };
 
-        let adapter = WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?;
         adapter.set_ipaddr(&address.to_string(), netmask_count)?;
 
         let status = Command::new("netsh")
-            .args(vec!["interface", "ipv4", "set", "subinterface", ADAPTER_NAME, &format!("mtu={}", MTU), "store=persistent"])
+            .args(vec!["interface", "ipv4", "set", "subinterface", POOL_NAME, &format!("mtu={}", MTU), "store=persistent"])
             .output()?
             .status;
 
@@ -42,23 +40,8 @@ impl Wintun {
             return Err(Error::new(ErrorKind::Other, "Failed to set tun mtu"));
         }
 
-        let session = adapter.open_adapter(ADAPTER_BUFF_SIZE)?;
-
-        Ok(Wintun { adapter, session })
-    }
-}
-
-unsafe impl Send for Wintun {}
-
-unsafe impl Send for WintunRx {}
-
-unsafe impl Send for WintunTx {}
-
-impl Drop for Wintun {
-    fn drop(&mut self) {
-        raw::close_adapter(self.session.session);
-        self.session.session = null_mut();
-        raw::delete_adapter(self.adapter.adapter).unwrap()
+        let session: WintunStream<'static> = unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
+        Ok(Wintun { session, _adapter: adapter })
     }
 }
 

@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::io;
 use std::io::{Read, Write};
 use std::io::Result;
@@ -24,7 +23,7 @@ impl Mactun {
 
         Ok(Mactun {
             fd: tun::create(&config).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, Box::<dyn Error>::from(e).to_string())
+                io::Error::new(io::ErrorKind::Other, e.to_string())
             })?
         })
     }
