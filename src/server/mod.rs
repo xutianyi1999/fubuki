@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -11,9 +12,10 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::time;
 
 use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
-use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
+use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, Seq, TcpMsg, UdpMsg};
 use crate::common::net::TcpSocketExt;
 use crate::ServerConfig;
 
@@ -211,24 +213,13 @@ async fn tunnel(
 
     let inner_node_db = &node_db;
 
-    let fut1 = async move {
-        loop {
-            match msg_reader.read().await? {
-                TcpMsg::Forward(data, dest_node_id) => {
-                    inner_node_db.get(&dest_node_id, |op| {
-                        if let Some(NodeHandle { tx: channel_tx, .. }) = op {
-                            if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
-                                error!("Dest node {} channel closed", dest_node_id)
-                            }
-                        }
-                    });
-                }
-                _ => return Err(anyhow!("Invalid TCP msg"))
-            };
-        }
-    };
+    let res = async move {
+        let mut latest_recv_heartbeat_time = Instant::now();
+        let mut heartbeat_interval = time::interval(Duration::from_secs(5));
+        let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
-    let fut2 = async move {
+        let mut seq: Seq = 0;
+
         loop {
             tokio::select! {
                 res = watch.changed() => {
@@ -242,14 +233,47 @@ async fn tunnel(
                     let msg = TcpMsg::Forward(&data, node_id);
                     msg_writer.write(&msg).await?;
                 }
+                res = msg_reader.read() => {
+                    match res? {
+                       TcpMsg::Forward(data, dest_node_id) => {
+                            inner_node_db.get(&dest_node_id, |op| {
+                                if let Some(NodeHandle { tx: channel_tx, .. }) = op {
+                                    if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
+                                        error!("Dest node {} channel closed", dest_node_id)
+                                    }
+                                }
+                            });
+                        }
+                        TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
+                            let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
+                            msg_writer.write(&heartbeat).await?;
+                        }
+                        TcpMsg::Heartbeat(_, recv_seq, HeartbeatType::Resp) => {
+                            if seq == recv_seq {
+                                latest_recv_heartbeat_time = Instant::now();
+                            }
+                        }
+                        _ => return Err(anyhow!("Invalid TCP msg"))
+                    }
+                }
+                _ = heartbeat_interval.tick() => {
+                    if seq == Seq::MAX {
+                        seq = 0;
+                    } else {
+                        seq += 1;
+                    }
+
+                    let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req);
+                    msg_writer.write(&heartbeat).await?;
+                }
+                _ = check_heartbeat_timeout.tick() => {
+                    if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
+                        return Err(anyhow!("Heartbeat recv timeout"))
+                    }
+                }
             }
         }
-    };
-
-    let res = tokio::select! {
-        res = fut1 => res,
-        res = fut2 => res
-    };
+    }.await;
 
     let mut guard = node_db.mapping.write();
 

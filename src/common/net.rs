@@ -108,6 +108,7 @@ pub mod proto {
         Result(MsgResult),
         NodeMap(HashMap<NodeId, Node>),
         Forward(&'a [u8], NodeId),
+        Heartbeat(NodeId, Seq, HeartbeatType),
     }
 
     impl TcpMsg<'_> {
@@ -142,6 +143,19 @@ pub mod proto {
                     slice[1..5].copy_from_slice(&node_id.to_be_bytes());
                     slice[5..data.len() + 5].copy_from_slice(*data);
                     data.len() + 5
+                }
+                TcpMsg::Heartbeat(node_id, seq, heartbeat_type) => {
+                    slice[0] = HEARTBEAT;
+                    slice[1..5].copy_from_slice(&node_id.to_be_bytes());
+                    slice[5..9].copy_from_slice(&seq.to_be_bytes());
+
+                    let type_byte = match heartbeat_type {
+                        HeartbeatType::Req => REQ,
+                        HeartbeatType::Resp => RESP
+                    };
+
+                    slice[9] = type_byte;
+                    10
                 }
             };
             Ok(&buff[..len + 1])
@@ -178,6 +192,24 @@ pub mod proto {
                     let node_id = NodeId::from_be_bytes(node_id_buff);
 
                     TcpMsg::Forward(&data[4..], node_id)
+                }
+                HEARTBEAT => {
+                    let mut node_id = [0u8; 4];
+                    node_id.copy_from_slice(&data[..4]);
+                    let node_id: NodeId = u32::from_be_bytes(node_id);
+
+                    let mut seq = [0u8; 4];
+                    seq.copy_from_slice(&data[4..8]);
+                    let seq: Seq = u32::from_be_bytes(seq);
+
+                    let heartbeat_type = data[8];
+
+                    let heartbeat_type = match heartbeat_type {
+                        REQ => HeartbeatType::Req,
+                        RESP => HeartbeatType::Resp,
+                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"))
+                    };
+                    TcpMsg::Heartbeat(node_id, seq, heartbeat_type)
                 }
                 _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"))
             };
