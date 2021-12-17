@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -13,13 +14,13 @@ use parking_lot::RwLock;
 use serde::Serialize;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
+use tokio::{sync, time};
 use tokio::io::BufReader;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
-use tokio::time;
 
 use crate::{ClientConfig, TunAdapter};
 use crate::common::net::get_interface_addr;
@@ -358,65 +359,87 @@ async fn tcp_handler(
 
             let local_node_id = LOCAL_NODE.read().id;
 
-            let mut latest_recv_heartbeat_time = Instant::now();
-            let mut heartbeat_interval = time::interval(Duration::from_secs(5));
-            let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
+            let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
+            let latest_recv_heartbeat_time = Cell::new(Instant::now());
+            let latest_recv_heartbeat_time_ref1 = &latest_recv_heartbeat_time;
+            let latest_recv_heartbeat_time_ref2 = &latest_recv_heartbeat_time;
 
             let mut seq: Seq = 0;
 
-            loop {
-                tokio::select! {
-                    res = msg_reader.read() => {
-                        match res? {
-                            TcpMsg::NodeMap(node_map) => {
-                                if let Some(node) = node_map.get(&local_node_id) {
-                                    LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
+            let fut1 = async move {
+                loop {
+                    match msg_reader.read().await? {
+                        TcpMsg::NodeMap(node_map) => {
+                            if let Some(node) = node_map.get(&local_node_id) {
+                                LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
+                            }
+
+                            let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
+                                .map(|(_, node)| (node.tun_addr, node))
+                                .collect();
+
+                            MAPPING.update_all(mapping);
+                        }
+                        TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
+                        TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
+                            let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
+                            tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
+                        }
+                        TcpMsg::Heartbeat(_, recv_seq, HeartbeatType::Resp) => {
+                            if seq == recv_seq {
+                                latest_recv_heartbeat_time_ref1.set(Instant::now());
+                            }
+                        }
+                        _ => continue
+                    }
+                }
+            };
+
+            let mut heartbeat_interval = time::interval(Duration::from_secs(5));
+            let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
+
+            let fut2 = async move {
+                loop {
+                    tokio::select! {
+                        opt = rx.recv() => {
+                             match opt {
+                                Some(heartbeat) => {
+                                    msg_writer.write(&heartbeat).await?;
                                 }
-
-                                let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
-                                    .map(|(_, node)| (node.tun_addr, node))
-                                    .collect();
-
-                                MAPPING.update_all(mapping);
+                                None => return Ok(())
                             }
-                            TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
-                            TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
-                                let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
-                                msg_writer.write(&heartbeat).await?;
-                            }
-                            TcpMsg::Heartbeat(_, recv_seq, HeartbeatType::Resp) => {
-                                if seq == recv_seq {
-                                    latest_recv_heartbeat_time = Instant::now();
+                        }
+                        opt = inner_from_tun.recv() => {
+                            match opt {
+                                Some((data, dest_node_id)) => {
+                                    let msg = TcpMsg::Forward(&data, dest_node_id);
+                                    msg_writer.write(&msg).await?;
                                 }
+                                None => return Ok(())
                             }
-                            _ => continue
                         }
-                    }
-                    opt = inner_from_tun.recv() => {
-                        match opt {
-                            Some((data, dest_node_id)) => {
-                                let msg = TcpMsg::Forward(&data, dest_node_id);
-                                msg_writer.write(&msg).await?;
+                        _ = heartbeat_interval.tick() => {
+                            if seq == Seq::MAX {
+                                seq = 0;
+                            } else {
+                                seq += 1;
                             }
-                            None => return Ok(())
-                        }
-                    }
-                    _ = heartbeat_interval.tick() => {
-                        if seq == Seq::MAX {
-                            seq = 0;
-                        } else {
-                            seq += 1;
-                        }
 
-                        let heartbeat = TcpMsg::Heartbeat(local_node_id, seq, HeartbeatType::Req);
-                        msg_writer.write(&heartbeat).await?;
-                    }
-                    _ = check_heartbeat_timeout.tick() => {
-                        if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
-                            return Err(anyhow!("Heartbeat recv timeout"))
+                            let heartbeat = TcpMsg::Heartbeat(local_node_id, seq, HeartbeatType::Req);
+                            msg_writer.write(&heartbeat).await?;
+                        }
+                        _ = check_heartbeat_timeout.tick() => {
+                            if latest_recv_heartbeat_time_ref2.get().elapsed() >= Duration::from_secs(30) {
+                                return Err(anyhow!("Heartbeat recv timeout"))
+                            }
                         }
                     }
                 }
+            };
+
+            tokio::select! {
+                res = fut1 => res,
+                res = fut2 => res
             }
         };
 
