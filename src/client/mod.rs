@@ -2,7 +2,6 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
@@ -226,7 +225,7 @@ fn tun_to_mpsc(
 async fn heartbeat_schedule(
     server_addr: SocketAddr,
     mut msg_socket: UdpMsgSocket<'_>,
-    seq: &AtomicU32,
+    seq: &Cell<Seq>,
 ) -> Result<()> {
     let local_node_id = LOCAL_NODE.read().id;
 
@@ -234,7 +233,7 @@ async fn heartbeat_schedule(
         let msg = UdpMsg::Heartbeat(local_node_id, 0, HeartbeatType::Req);
         msg_socket.write(&msg, server_addr).await?;
 
-        let temp_seq = seq.load(Ordering::SeqCst);
+        let temp_seq = seq.get();
         let local_wan_addr = LOCAL_NODE.read().wan_udp_addr;
         let mapping = MAPPING.get_all();
 
@@ -262,14 +261,19 @@ async fn heartbeat_schedule(
         }
 
         time::sleep(Duration::from_secs(5)).await;
-        seq.fetch_add(1, Ordering::SeqCst);
+
+        if seq.get() == Seq::MAX {
+            seq.set(0);
+        } else {
+            seq.set(seq.get() + 1);
+        }
     }
 }
 
 async fn udp_receiver(
     mut msg_socket: UdpMsgSocket<'_>,
     to_tun: UnboundedSender<Box<[u8]>>,
-    heartbeat_seq: &AtomicU32,
+    heartbeat_seq: &Cell<Seq>,
 ) -> Result<()> {
     let local_node_id = LOCAL_NODE.read().id;
 
@@ -281,7 +285,7 @@ async fn udp_receiver(
                     msg_socket.write(&resp, peer_addr).await?;
                 }
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
-                if node_id != 0 && seq == heartbeat_seq.load(Ordering::SeqCst)
+                if node_id != 0 && seq == heartbeat_seq.get()
                 => {
                     DIRECT_NODE_LIST.update(node_id);
                 }
@@ -311,7 +315,7 @@ async fn udp_handler(
     rc4: Rc4,
 ) -> Result<()> {
     let msg_socket = UdpMsgSocket::new(&udp_socket, rc4);
-    let seq = AtomicU32::new(0);
+    let seq = Cell::new(0);
 
     tokio::select! {
         res = heartbeat_schedule(server_addr, msg_socket.clone(), &seq) => res.context("Heartbeat schedule error"),
@@ -357,55 +361,62 @@ async fn tcp_handler(
                 _ => return Err(anyhow!("Register error"))
             };
 
-            let local_node_id = LOCAL_NODE.read().id;
-
             let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
-            let latest_recv_heartbeat_time = Cell::new(Instant::now());
-            let latest_recv_heartbeat_time_ref1 = &latest_recv_heartbeat_time;
-            let latest_recv_heartbeat_time_ref2 = &latest_recv_heartbeat_time;
 
-            let mut seq: Seq = 0;
+            let seq: Cell<Seq> = Cell::new(0);
+            let inner_seq1 = &seq;
+            let inner_seq2 = &seq;
 
             let fut1 = async move {
+                let local_node_id = LOCAL_NODE.read().id;
+                let mut latest_recv_heartbeat_time = Instant::now();
+                let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
+
                 loop {
-                    match msg_reader.read().await? {
-                        TcpMsg::NodeMap(node_map) => {
-                            if let Some(node) = node_map.get(&local_node_id) {
-                                LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
-                            }
+                    tokio::select! {
+                        res = msg_reader.read() => {
+                            match res? {
+                                TcpMsg::NodeMap(node_map) => {
+                                    if let Some(node) = node_map.get(&local_node_id) {
+                                        LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
+                                    }
 
-                            let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
-                                .map(|(_, node)| (node.tun_addr, node))
-                                .collect();
+                                    let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
+                                        .map(|(_, node)| (node.tun_addr, node))
+                                        .collect();
 
-                            MAPPING.update_all(mapping);
-                        }
-                        TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
-                        TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
-                            let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
-                            tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
-                        }
-                        TcpMsg::Heartbeat(_, recv_seq, HeartbeatType::Resp) => {
-                            if seq == recv_seq {
-                                latest_recv_heartbeat_time_ref1.set(Instant::now());
+                                    MAPPING.update_all(mapping);
+                                }
+                                TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
+                                TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                                    let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
+                                    tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
+                                }
+                                TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                                    if inner_seq1.get() == recv_seq {
+                                        latest_recv_heartbeat_time = Instant::now();
+                                    }
+                                }
+                                _ => continue
                             }
                         }
-                        _ => continue
+                        _ = check_heartbeat_timeout.tick() => {
+                            if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
+                                return Err(anyhow!("Heartbeat recv timeout"))
+                            }
+                        }
                     }
                 }
             };
 
-            let mut heartbeat_interval = time::interval(Duration::from_secs(5));
-            let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
-
             let fut2 = async move {
+                let mut heartbeat_interval = time::interval(Duration::from_secs(5));
+
                 loop {
                     tokio::select! {
                         opt = rx.recv() => {
                              match opt {
-                                Some(heartbeat) => {
-                                    msg_writer.write(&heartbeat).await?;
-                                }
+                                Some(heartbeat) => msg_writer.write(&heartbeat).await?,
                                 None => return Ok(())
                             }
                         }
@@ -419,19 +430,14 @@ async fn tcp_handler(
                             }
                         }
                         _ = heartbeat_interval.tick() => {
-                            if seq == Seq::MAX {
-                                seq = 0;
+                            if inner_seq2.get() == Seq::MAX {
+                                inner_seq2.set(0);
                             } else {
-                                seq += 1;
+                                inner_seq2.set(inner_seq2.get() + 1);
                             }
 
-                            let heartbeat = TcpMsg::Heartbeat(local_node_id, seq, HeartbeatType::Req);
+                            let heartbeat = TcpMsg::Heartbeat(inner_seq2.get(), HeartbeatType::Req);
                             msg_writer.write(&heartbeat).await?;
-                        }
-                        _ = check_heartbeat_timeout.tick() => {
-                            if latest_recv_heartbeat_time_ref2.get().elapsed() >= Duration::from_secs(30) {
-                                return Err(anyhow!("Heartbeat recv timeout"))
-                            }
                         }
                     }
                 }

@@ -1,21 +1,22 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use crypto::rc4::Rc4;
 use parking_lot::RwLock;
+use tokio::{sync, time};
 use tokio::io::BufReader;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::time;
 
 use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
-use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, Seq, TcpMsg, UdpMsg};
+use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::TcpSocketExt;
 use crate::ServerConfig;
 
@@ -213,15 +214,61 @@ async fn tunnel(
 
     let inner_node_db = &node_db;
 
-    let res = async move {
-        let mut latest_recv_heartbeat_time = Instant::now();
-        let mut heartbeat_interval = time::interval(Duration::from_secs(5));
-        let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
+    let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
 
-        let mut seq: Seq = 0;
+    let seq: AtomicU32 = AtomicU32::new(0);
+    let inner_seq1 = &seq;
+    let inner_seq2 = &seq;
+
+    let fut1 = async move {
+        let mut latest_recv_heartbeat_time = Instant::now();
+        let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
         loop {
             tokio::select! {
+                res = msg_reader.read() => {
+                   match res? {
+                        TcpMsg::Forward(data, dest_node_id) => {
+                            inner_node_db.get(&dest_node_id, |op| {
+                                if let Some(NodeHandle { tx: channel_tx, .. }) = op {
+                                    if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
+                                        error!("Dest node {} channel closed", dest_node_id)
+                                    }
+                                }
+                            });
+                        }
+                        TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                            let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
+                            tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
+                        }
+                        TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                            if inner_seq1.load(Ordering::SeqCst) == recv_seq {
+                                latest_recv_heartbeat_time = Instant::now();
+                            }
+                        }
+                        _ => return Err(anyhow!("Invalid TCP msg"))
+                    }
+                }
+                _ = check_heartbeat_timeout.tick() => {
+                    if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
+                        return Err(anyhow!("Heartbeat recv timeout"))
+                    }
+                }
+            }
+        }
+    };
+
+    let fut2 = async move {
+        let mut heartbeat_interval = time::interval(Duration::from_secs(5));
+
+        loop {
+            tokio::select! {
+                 opt = rx.recv() => {
+                     match opt {
+                        Some(heartbeat) => msg_writer.write(&heartbeat).await?,
+                        None => return Ok(())
+                    }
+                }
                 res = watch.changed() => {
                     res?;
                     let node_list = watch.borrow().clone();
@@ -233,47 +280,19 @@ async fn tunnel(
                     let msg = TcpMsg::Forward(&data, node_id);
                     msg_writer.write(&msg).await?;
                 }
-                res = msg_reader.read() => {
-                    match res? {
-                       TcpMsg::Forward(data, dest_node_id) => {
-                            inner_node_db.get(&dest_node_id, |op| {
-                                if let Some(NodeHandle { tx: channel_tx, .. }) = op {
-                                    if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
-                                        error!("Dest node {} channel closed", dest_node_id)
-                                    }
-                                }
-                            });
-                        }
-                        TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) => {
-                            let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
-                            msg_writer.write(&heartbeat).await?;
-                        }
-                        TcpMsg::Heartbeat(_, recv_seq, HeartbeatType::Resp) => {
-                            if seq == recv_seq {
-                                latest_recv_heartbeat_time = Instant::now();
-                            }
-                        }
-                        _ => return Err(anyhow!("Invalid TCP msg"))
-                    }
-                }
                 _ = heartbeat_interval.tick() => {
-                    if seq == Seq::MAX {
-                        seq = 0;
-                    } else {
-                        seq += 1;
-                    }
-
-                    let heartbeat = TcpMsg::Heartbeat(node_id, seq, HeartbeatType::Req);
+                    inner_seq2.fetch_add(1, Ordering::SeqCst);
+                    let heartbeat = TcpMsg::Heartbeat(inner_seq2.load(Ordering::SeqCst), HeartbeatType::Req);
                     msg_writer.write(&heartbeat).await?;
-                }
-                _ = check_heartbeat_timeout.tick() => {
-                    if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
-                        return Err(anyhow!("Heartbeat recv timeout"))
-                    }
                 }
             }
         }
-    }.await;
+    };
+
+    let res = tokio::select! {
+        res = fut1 => res,
+        res = fut2 => res
+    };
 
     let mut guard = node_db.mapping.write();
 
