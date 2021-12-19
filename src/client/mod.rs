@@ -363,54 +363,48 @@ async fn tcp_handler(
 
             let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
 
+            let latest_recv_heartbeat_time = Cell::new(Instant::now());
+            let latest_recv_heartbeat_time_ref1 = &latest_recv_heartbeat_time;
+            let latest_recv_heartbeat_time_ref2 = &latest_recv_heartbeat_time;
+
             let seq: Cell<Seq> = Cell::new(0);
             let inner_seq1 = &seq;
             let inner_seq2 = &seq;
 
             let fut1 = async move {
                 let local_node_id = LOCAL_NODE.read().id;
-                let mut latest_recv_heartbeat_time = Instant::now();
-                let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
                 loop {
-                    tokio::select! {
-                        res = msg_reader.read() => {
-                            match res? {
-                                TcpMsg::NodeMap(node_map) => {
-                                    if let Some(node) = node_map.get(&local_node_id) {
-                                        LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
-                                    }
+                    match msg_reader.read().await? {
+                        TcpMsg::NodeMap(node_map) => {
+                            if let Some(node) = node_map.get(&local_node_id) {
+                                LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
+                            }
 
-                                    let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
-                                        .map(|(_, node)| (node.tun_addr, node))
-                                        .collect();
+                            let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
+                                .map(|(_, node)| (node.tun_addr, node))
+                                .collect();
 
-                                    MAPPING.update_all(mapping);
-                                }
-                                TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
-                                TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
-                                    let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
-                                    tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
-                                }
-                                TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                                    if inner_seq1.get() == recv_seq {
-                                        latest_recv_heartbeat_time = Instant::now();
-                                    }
-                                }
-                                _ => continue
+                            MAPPING.update_all(mapping);
+                        }
+                        TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
+                        TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                            let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
+                            tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
+                        }
+                        TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                            if inner_seq1.get() == recv_seq {
+                                latest_recv_heartbeat_time_ref1.set(Instant::now());
                             }
                         }
-                        _ = check_heartbeat_timeout.tick() => {
-                            if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
-                                return Err(anyhow!("Heartbeat recv timeout"))
-                            }
-                        }
+                        _ => continue
                     }
                 }
             };
 
             let fut2 = async move {
                 let mut heartbeat_interval = time::interval(Duration::from_secs(5));
+                let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
                 loop {
                     tokio::select! {
@@ -438,6 +432,11 @@ async fn tcp_handler(
 
                             let heartbeat = TcpMsg::Heartbeat(inner_seq2.get(), HeartbeatType::Req);
                             msg_writer.write(&heartbeat).await?;
+                        }
+                        _ = check_heartbeat_timeout.tick() => {
+                            if latest_recv_heartbeat_time_ref2.get().elapsed() > Duration::from_secs(30) {
+                                return Err(anyhow!("Heartbeat recv timeout"))
+                            }
                         }
                     }
                 }

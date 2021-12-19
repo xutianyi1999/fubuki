@@ -216,50 +216,43 @@ async fn tunnel(
 
     let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
 
+    let latest_recv_heartbeat_time = RwLock::new(Instant::now());
+    let latest_recv_heartbeat_time_ref1 = &latest_recv_heartbeat_time;
+    let latest_recv_heartbeat_time_ref2 = &latest_recv_heartbeat_time;
+
     let seq: AtomicU32 = AtomicU32::new(0);
     let inner_seq1 = &seq;
     let inner_seq2 = &seq;
 
     let fut1 = async move {
-        let mut latest_recv_heartbeat_time = Instant::now();
-        let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
-
         loop {
-            tokio::select! {
-                res = msg_reader.read() => {
-                   match res? {
-                        TcpMsg::Forward(data, dest_node_id) => {
-                            inner_node_db.get(&dest_node_id, |op| {
-                                if let Some(NodeHandle { tx: channel_tx, .. }) = op {
-                                    if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
-                                        error!("Dest node {} channel closed", dest_node_id)
-                                    }
-                                }
-                            });
-                        }
-                        TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
-                            let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
-                            tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
-                        }
-                        TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                            if inner_seq1.load(Ordering::SeqCst) == recv_seq {
-                                latest_recv_heartbeat_time = Instant::now();
+            match msg_reader.read().await? {
+                TcpMsg::Forward(data, dest_node_id) => {
+                    inner_node_db.get(&dest_node_id, |op| {
+                        if let Some(NodeHandle { tx: channel_tx, .. }) = op {
+                            if let Err(TrySendError::Closed(_)) = channel_tx.try_send((data.into(), node_id)) {
+                                error!("Dest node {} channel closed", dest_node_id)
                             }
                         }
-                        _ => return Err(anyhow!("Invalid TCP msg"))
+                    });
+                }
+                TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                    let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
+                    tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
+                }
+                TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                    if inner_seq1.load(Ordering::SeqCst) == recv_seq {
+                        *latest_recv_heartbeat_time_ref1.write() = Instant::now();
                     }
                 }
-                _ = check_heartbeat_timeout.tick() => {
-                    if latest_recv_heartbeat_time.elapsed() >= Duration::from_secs(30) {
-                        return Err(anyhow!("Heartbeat recv timeout"))
-                    }
-                }
+                _ => return Err(anyhow!("Invalid TCP msg"))
             }
         }
     };
 
     let fut2 = async move {
         let mut heartbeat_interval = time::interval(Duration::from_secs(5));
+        let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
         loop {
             tokio::select! {
@@ -284,6 +277,11 @@ async fn tunnel(
                     inner_seq2.fetch_add(1, Ordering::SeqCst);
                     let heartbeat = TcpMsg::Heartbeat(inner_seq2.load(Ordering::SeqCst), HeartbeatType::Req);
                     msg_writer.write(&heartbeat).await?;
+                }
+                _ = check_heartbeat_timeout.tick() => {
+                    if latest_recv_heartbeat_time_ref2.read().elapsed() > Duration::from_secs(30) {
+                        return Err(anyhow!("Heartbeat recv timeout"))
+                    }
                 }
             }
         }
