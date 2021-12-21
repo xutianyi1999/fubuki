@@ -2,6 +2,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::net::Ipv4Addr;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
 use simple_wintun::ReadResult;
@@ -26,7 +27,11 @@ impl Wintun {
 
         let adapter = match WintunAdapter::open_adapter(ADAPTER_NAME) {
             Ok(v) => v,
-            Err(_) => WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?
+            Err(_) => {
+                //try to fix the stuck
+                std::thread::sleep(Duration::from_millis(100));
+                WintunAdapter::create_adapter(POOL_NAME, ADAPTER_NAME, ADAPTER_GUID)?
+            }
         };
 
         adapter.set_ipaddr(&address.to_string(), netmask_count)?;
