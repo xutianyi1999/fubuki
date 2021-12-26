@@ -88,7 +88,7 @@ pub(super) async fn start(
     }: ClientConfig
 ) -> Result<()> {
     let rc4 = Rc4::new(key.as_bytes());
-    let device = create_device(tun_addr, tun_netmask)?;
+    let device = create_device(tun_addr, tun_netmask).context("Failed create tun adapter")?;
     let (tun_tx, tun_rx) = device.split();
 
     let (to_tun, from_handler) = mpsc::unbounded_channel::<Box<[u8]>>();
@@ -176,7 +176,7 @@ fn tun_to_mpsc(
         let mut buff = [0u8; MTU];
 
         loop {
-            let data = match tun_rx.recv_packet(&mut buff).context("Read tun packet error")? {
+            let data = match tun_rx.recv_packet(&mut buff).context("Read packet from tun error")? {
                 0 => continue,
                 len => &buff[..len]
             };

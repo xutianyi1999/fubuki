@@ -82,7 +82,7 @@ pub(super) async fn start(server_config: Vec<ServerConfig>) {
     let mut list = Vec::with_capacity(server_config.len());
 
     for ServerConfig { listen_addr, key } in server_config {
-        let future = async move {
+        let handle = tokio::spawn(async move {
             let rc4 = Rc4::new(key.as_bytes());
             let node_db = Arc::new(NodeDb::new());
 
@@ -94,10 +94,15 @@ pub(super) async fn start(server_config: Vec<ServerConfig>) {
             if let Err(e) = res {
                 error!("Server execute error -> {:?}", e)
             };
-        };
-        list.push(future);
+        });
+        list.push(handle);
     }
-    futures_util::future::join_all(list).await;
+
+    for h in list {
+        if let Err(e) = h.await {
+            error!("Server handler error: {:?}", e)
+        }
+    }
 }
 
 async fn udp_handler(

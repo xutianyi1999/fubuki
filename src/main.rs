@@ -49,10 +49,10 @@ fn main() {
 
 fn launch() -> Result<()> {
     logger_init()?;
-    let rt = Runtime::new().context("Failed to create tokio runtime")?;
+    let rt = Runtime::new().context("Failed to build tokio runtime")?;
 
     let res = rt.block_on(async move {
-        match load_config().await? {
+        match load_config().await.context("Failed to load config")? {
             Either::Right(config) => client::start(config).await?,
             Either::Left(config) => server::start(config).await
         }
