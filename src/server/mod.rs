@@ -27,14 +27,36 @@ struct NodeHandle {
     tx: Sender<(Box<[u8]>, NodeId)>,
 }
 
-struct Bridge {
+struct Bridge<'a> {
+    node: Node,
     channel_rx: Receiver<(Box<[u8]>, NodeId)>,
     watch_rx: watch::Receiver<HashMap<NodeId, Node>>,
+    node_db: &'a NodeDb,
 }
 
 struct NodeDb {
     mapping: RwLock<HashMap<NodeId, NodeHandle>>,
     watch: (watch::Sender<HashMap<NodeId, Node>>, watch::Receiver<HashMap<NodeId, Node>>),
+}
+
+impl Drop for Bridge<'_> {
+    fn drop(&mut self) {
+        let node_id = self.node.id;
+        let register_time = self.node.register_time;
+
+        let mut guard = self.node_db.mapping.write();
+
+        if let Some(NodeHandle { node, .. }) = guard.get(&node_id) {
+            if node.register_time == register_time {
+                guard.remove(&node_id);
+                drop(guard);
+
+                if let Err(e) = self.node_db.sync() {
+                    error!("Sync node db error: {:?}", e)
+                }
+            }
+        };
+    }
 }
 
 impl NodeDb {
@@ -49,10 +71,16 @@ impl NodeDb {
         let node_id = node.id;
         let (_, watch_rx) = &self.watch;
         let (tx, rx) = mpsc::channel::<(Box<[u8]>, NodeId)>(CHANNEL_SIZE);
-        self.mapping.write().insert(node_id, NodeHandle { node, tx });
+
+        self.mapping.write().insert(node_id, NodeHandle { node: node.clone(), tx });
         self.sync()?;
 
-        let bridge = Bridge { channel_rx: rx, watch_rx: watch_rx.clone() };
+        let bridge = Bridge {
+            node,
+            channel_rx: rx,
+            watch_rx: watch_rx.clone(),
+            node_db: self,
+        };
         Ok(bridge)
     }
 
@@ -190,18 +218,9 @@ async fn tunnel(
     let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
 
     let msg = msg_reader.read().await?;
-    let (
-        node_id,
-        register_time,
-        Bridge {
-            watch_rx: mut watch,
-            mut channel_rx
-        }
-    ) = match msg {
+    let mut bridge = match msg {
         TcpMsg::Register(node) => {
-            let node_id = node.id;
             let register_time = node.register_time;
-
             let remain = Utc::now().timestamp() - register_time;
 
             if (remain > 10) || (remain < -10) {
@@ -210,13 +229,12 @@ async fn tunnel(
             }
 
             msg_writer.write(&TcpMsg::Result(MsgResult::Success)).await?;
-
-            let bridge = node_db.insert(node)?;
-            (node_id, register_time, bridge)
+            node_db.insert(node)?
         }
         _ => return Err(anyhow!("Register error"))
     };
 
+    let node_id = bridge.node.id;
     let inner_node_db = &node_db;
 
     let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
@@ -267,13 +285,13 @@ async fn tunnel(
                         None => return Ok(())
                     }
                 }
-                res = watch.changed() => {
+                res = bridge.watch_rx.changed() => {
                     res?;
-                    let node_list = watch.borrow().clone();
+                    let node_list = bridge.watch_rx.borrow().clone();
                     let msg = TcpMsg::NodeMap(node_list);
                     msg_writer.write(&msg).await?;
                 }
-                res = channel_rx.recv() => {
+                res = bridge.channel_rx.recv() => {
                     let (data, node_id) = res.ok_or(anyhow!("Node {} channel closed", node_id))?;
                     let msg = TcpMsg::Forward(&data, node_id);
                     msg_writer.write(&msg).await?;
@@ -292,19 +310,8 @@ async fn tunnel(
         }
     };
 
-    let res = tokio::select! {
+    tokio::select! {
         res = fut1 => res,
         res = fut2 => res
-    };
-
-    let mut guard = node_db.mapping.write();
-
-    if let Some(NodeHandle { node, .. }) = guard.get(&node_id) {
-        if node.register_time == register_time {
-            guard.remove(&node_id);
-            drop(guard);
-            node_db.sync()?;
-        }
-    };
-    res
+    }
 }
