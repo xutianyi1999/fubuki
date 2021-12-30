@@ -2,7 +2,7 @@
 name = "fubuki"
 version = "0.3.0"
 authors = ["xty <853122726@qq.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,7 +11,6 @@ tokio = { version = "1", features = ["full"] }
 log4rs = "1"
 log = "0.4"
 rust-crypto = "0.2"
-once_cell = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"

@@ -23,7 +23,7 @@ impl Mactun {
 
         Ok(Mactun {
             fd: tun::create(&config).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, e.to_string())
+                io::Error::new(io::ErrorKind::Other, e)
             })?
         })
     }

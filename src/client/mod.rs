@@ -8,7 +8,6 @@ use anyhow::{anyhow, Context};
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use crypto::rc4::Rc4;
-use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::Serialize;
 use smoltcp::wire::Ipv4Address;
@@ -27,16 +26,27 @@ use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter
 use crate::common::net::proto::{HeartbeatType, MsgResult, MTU, Node, NodeId, Seq, TcpMsg, UdpMsg};
 use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
+use crate::common::PointerWrapMut;
 use crate::tun::{create_device, Rx, Tx};
 use crate::tun::TunDevice;
 
 const CHANNEL_SIZE: usize = 10;
 
-static MAPPING: Lazy<LocalMapping> = Lazy::new(|| LocalMapping::new());
-static DIRECT_NODE_LIST: Lazy<DirectNodeList> = Lazy::new(|| DirectNodeList::new());
-static LOCAL_NODE: Lazy<RwLock<Node>> = Lazy::new(|| RwLock::new(
-    Node { id: 0, tun_addr: Ipv4Addr::from([0, 0, 0, 0]), lan_udp_addr: None, wan_udp_addr: None, register_time: 0 }
-));
+static mut MAPPING: PointerWrapMut<LocalMapping> = PointerWrapMut::default();
+static mut DIRECT_NODE_LIST: PointerWrapMut<DirectNodeList> = PointerWrapMut::default();
+static mut LOCAL_NODE: PointerWrapMut<RwLock<Node>> = PointerWrapMut::default();
+
+fn get_mapping() -> &'static PointerWrapMut<LocalMapping> {
+    unsafe { &MAPPING }
+}
+
+fn get_direct_node_list() -> &'static PointerWrapMut<DirectNodeList> {
+    unsafe { &DIRECT_NODE_LIST }
+}
+
+fn get_local_node() -> &'static PointerWrapMut<RwLock<Node>> {
+    unsafe { &LOCAL_NODE }
+}
 
 struct DirectNodeList {
     list: RwLock<HashMap<NodeId, Instant>>,
@@ -76,6 +86,17 @@ impl LocalMapping {
     }
 }
 
+fn init(node: Node) {
+    let p = Box::new(LocalMapping::new());
+    get_mapping().update_ptr(Box::leak(p));
+
+    let p = Box::new(DirectNodeList::new());
+    get_direct_node_list().update_ptr(Box::leak(p));
+
+    let p = Box::new(RwLock::new(node));
+    get_local_node().update_ptr(Box::leak(p))
+}
+
 pub(super) async fn start(
     ClientConfig {
         server_addr,
@@ -102,7 +123,8 @@ pub(super) async fn start(
         register_time: 0,
     };
 
-    *LOCAL_NODE.write() = node;
+    init(node);
+
     info!("Tun adapter ip address: {}", tun_addr);
     info!("Client start");
 
@@ -117,7 +139,7 @@ pub(super) async fn start(
 
         let (to_udp_handler, from_tun1) = mpsc::channel::<(Box<[u8]>, SocketAddr)>(10);
 
-        LOCAL_NODE.write().lan_udp_addr = Some(udp_socket.local_addr()?);
+        get_local_node().write().lan_udp_addr = Some(udp_socket.local_addr()?);
 
         tokio::select! {
             _ = direct_node_list_schedule() => (),
@@ -141,7 +163,7 @@ pub(super) async fn start(
 async fn direct_node_list_schedule() {
     loop {
         {
-            let mut guard = DIRECT_NODE_LIST.list.write();
+            let mut guard = get_direct_node_list().list.write();
 
             let new_list: HashMap<NodeId, Instant> = guard.iter()
                 .filter(|(_, update_time)| update_time.elapsed() <= Duration::from_secs(30))
@@ -185,7 +207,7 @@ fn tun_to_mpsc(
             let Ipv4Address(octets) = ipv4.dst_addr();
             let peer_tun_addr = Ipv4Addr::from(octets);
 
-            let guard = MAPPING.map.read();
+            let guard = get_mapping().map.read();
             let node_opt = guard.get(&peer_tun_addr);
 
             match (node_opt, &udp_handler_tx_opt) {
@@ -199,8 +221,8 @@ fn tun_to_mpsc(
                         }
                     ),
                     Some(udp_handler_tx)
-                ) if DIRECT_NODE_LIST.contain(node_id) => {
-                    let dest_addr = match LOCAL_NODE.read().wan_udp_addr {
+                ) if get_direct_node_list().contain(node_id) => {
+                    let dest_addr = match get_local_node().read().wan_udp_addr {
                         Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
                             *peer_lan_addr
                         }
@@ -227,15 +249,15 @@ async fn heartbeat_schedule(
     mut msg_socket: UdpMsgSocket<'_>,
     seq: &Cell<Seq>,
 ) -> Result<()> {
-    let local_node_id = LOCAL_NODE.read().id;
+    let local_node_id = get_local_node().read().id;
 
     loop {
         let msg = UdpMsg::Heartbeat(local_node_id, 0, HeartbeatType::Req);
         msg_socket.write(&msg, server_addr).await?;
 
         let temp_seq = seq.get();
-        let local_wan_addr = LOCAL_NODE.read().wan_udp_addr;
-        let mapping = MAPPING.get_all();
+        let local_wan_addr = get_local_node().read().wan_udp_addr;
+        let mapping = get_mapping().get_all();
 
         for (_, node) in mapping {
             if node.id == local_node_id {
@@ -275,7 +297,7 @@ async fn udp_receiver(
     to_tun: UnboundedSender<Box<[u8]>>,
     heartbeat_seq: &Cell<Seq>,
 ) -> Result<()> {
-    let local_node_id = LOCAL_NODE.read().id;
+    let local_node_id = get_local_node().read().id;
 
     loop {
         if let Ok((msg, peer_addr)) = msg_socket.read().await {
@@ -287,7 +309,7 @@ async fn udp_receiver(
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
                 if node_id != 0 && seq == heartbeat_seq.get()
                 => {
-                    DIRECT_NODE_LIST.update(node_id);
+                    get_direct_node_list().update(node_id);
                 }
                 UdpMsg::Data(data) => to_tun.send(data.into())?,
                 _ => continue
@@ -347,7 +369,7 @@ async fn tcp_handler(
             let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_rc4);
 
             let msg = {
-                let mut node_guard = LOCAL_NODE.write();
+                let mut node_guard = get_local_node().write();
                 node_guard.register_time = Utc::now().timestamp();
                 TcpMsg::Register((*node_guard).clone())
             };
@@ -372,20 +394,20 @@ async fn tcp_handler(
             let inner_seq2 = &seq;
 
             let fut1 = async move {
-                let local_node_id = LOCAL_NODE.read().id;
+                let local_node_id = get_local_node().read().id;
 
                 loop {
                     match msg_reader.read().await? {
                         TcpMsg::NodeMap(node_map) => {
                             if let Some(node) = node_map.get(&local_node_id) {
-                                LOCAL_NODE.write().wan_udp_addr = node.wan_udp_addr
+                                get_local_node().write().wan_udp_addr = node.wan_udp_addr
                             }
 
                             let mapping: HashMap<Ipv4Addr, Node> = node_map.into_iter()
                                 .map(|(_, node)| (node.tun_addr, node))
                                 .collect();
 
-                            MAPPING.update_all(mapping);
+                            get_mapping().update_all(mapping);
                         }
                         TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
                         TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
@@ -476,7 +498,7 @@ fn node_to_node_info(
     let direct = if node.id == local_node_id {
         true
     } else {
-        DIRECT_NODE_LIST.contain(&node.id)
+        get_direct_node_list().contain(&node.id)
     };
 
     NodeInfo {
@@ -491,7 +513,7 @@ fn node_to_node_info(
 
 fn stdin() -> io::Result<()> {
     let stdin = std::io::stdin();
-    let local_node_id = LOCAL_NODE.read().id;
+    let local_node_id = get_local_node().read().id;
 
     loop {
         let mut cmd = String::new();
@@ -503,7 +525,7 @@ fn stdin() -> io::Result<()> {
 
         match cmd.trim() {
             "show" => {
-                let map = MAPPING.get_all();
+                let map = get_mapping().get_all();
 
                 let node_list: Vec<NodeInfo> = map.into_iter()
                     .map(|v| node_to_node_info(v, local_node_id))

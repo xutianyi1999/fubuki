@@ -37,7 +37,7 @@ impl Wintun {
         adapter.set_ipaddr(&address.to_string(), netmask_count)?;
 
         let status = Command::new("netsh")
-            .args(vec!["interface", "ipv4", "set", "subinterface", POOL_NAME, &format!("mtu={}", MTU), "store=persistent"])
+            .args(["interface", "ipv4", "set", "subinterface", POOL_NAME, &format!("mtu={}", MTU), "store=persistent"])
             .output()?
             .status;
 
