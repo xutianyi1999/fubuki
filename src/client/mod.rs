@@ -14,7 +14,7 @@ use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
 use tokio::{sync, time};
 use tokio::io::BufReader;
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -108,6 +108,7 @@ pub(super) async fn start(
         direct,
     }: ClientConfig
 ) -> Result<()> {
+    let server_addr = lookup_host(server_addr).await?.next().ok_or(anyhow!("Server addr not found"))?;
     let rc4 = Rc4::new(key.as_bytes());
     let device = create_device(tun_addr, tun_netmask).context("Failed create tun adapter")?;
     let (tun_tx, tun_rx) = device.split();

@@ -35,7 +35,7 @@ struct TunAdapter {
 
 #[derive(Deserialize, Clone)]
 struct ClientConfig {
-    server_addr: SocketAddr,
+    server_addr: String,
     tun: TunAdapter,
     key: String,
     direct: bool,
