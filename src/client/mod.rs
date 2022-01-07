@@ -110,7 +110,7 @@ pub(super) async fn start(
         direct,
     }: ClientConfig
 ) -> Result<()> {
-    let server_addr = lookup_host(server_addr).await?.next().ok_or(anyhow!("Server host not found"))?;
+    let server_addr = lookup_host(server_addr).await?.next().ok_or_else(|| anyhow!("Server host not found"))?;
     let rc4 = Rc4::new(key.as_bytes());
     let device = create_device(tun_addr, tun_netmask).context("Failed create tun adapter")?;
     let (tun_tx, tun_rx) = device.split();

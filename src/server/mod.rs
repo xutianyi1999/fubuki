@@ -292,7 +292,7 @@ async fn tunnel(
                     msg_writer.write(&msg).await?;
                 }
                 res = bridge.channel_rx.recv() => {
-                    let (data, node_id) = res.ok_or(anyhow!("Node {} channel closed", node_id))?;
+                    let (data, node_id) = res.ok_or_else(|| anyhow!("Node {} channel closed", node_id))?;
                     let msg = TcpMsg::Forward(&data, node_id);
                     msg_writer.write(&msg).await?;
                 }

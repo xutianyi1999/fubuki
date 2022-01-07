@@ -111,6 +111,12 @@ pub mod proto {
         Heartbeat(Seq, HeartbeatType),
     }
 
+    macro_rules! get {
+        ($slice: expr, $index: expr) => {
+             $slice.get($index).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData, "Decode error"))?
+        };
+    }
+
     impl TcpMsg<'_> {
         pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a [u8]> {
             buff[0] = MAGIC_NUM;
@@ -161,9 +167,9 @@ pub mod proto {
         }
 
         pub fn decode(packet: &[u8]) -> Result<TcpMsg> {
-            let magic_num = packet[0];
-            let mode = packet[1];
-            let data = &packet[2..];
+            let magic_num = *get!(packet, 0);
+            let mode = *get!(packet, 1);
+            let data = get!(packet, 2..);
 
             if magic_num != MAGIC_NUM {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"));
@@ -187,17 +193,17 @@ pub mod proto {
                 }
                 FORWARD => {
                     let mut node_id_buff = [0u8; 4];
-                    node_id_buff.copy_from_slice(&data[..4]);
+                    node_id_buff.copy_from_slice(get!(data, ..4));
                     let node_id = NodeId::from_be_bytes(node_id_buff);
 
-                    TcpMsg::Forward(&data[4..], node_id)
+                    TcpMsg::Forward(get!(data, 4..), node_id)
                 }
                 HEARTBEAT => {
                     let mut seq = [0u8; 4];
-                    seq.copy_from_slice(&data[..4]);
+                    seq.copy_from_slice(get!(data, ..4));
                     let seq: Seq = u32::from_be_bytes(seq);
 
-                    let heartbeat_type = data[4];
+                    let heartbeat_type = *get!(data, 4);
 
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
@@ -247,9 +253,9 @@ pub mod proto {
         }
 
         pub fn decode(packet: &'a [u8]) -> Result<Self> {
-            let magic_num = packet[0];
-            let mode = packet[1];
-            let data = &packet[2..];
+            let magic_num = *get!(packet, 0);
+            let mode = *get!(packet, 1);
+            let data = get!(packet, 2..);
 
             if magic_num != MAGIC_NUM {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"));
@@ -261,14 +267,14 @@ pub mod proto {
                 }
                 HEARTBEAT => {
                     let mut node_id = [0u8; 4];
-                    node_id.copy_from_slice(&data[..4]);
+                    node_id.copy_from_slice(get!(data, ..4));
                     let node_id: NodeId = u32::from_be_bytes(node_id);
 
                     let mut seq = [0u8; 4];
-                    seq.copy_from_slice(&data[4..8]);
+                    seq.copy_from_slice(get!(data, 4..8));
                     let seq: Seq = u32::from_be_bytes(seq);
 
-                    let heartbeat_type = data[8];
+                    let heartbeat_type = *get!(data, 8);
 
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
