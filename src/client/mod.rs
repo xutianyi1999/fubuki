@@ -87,14 +87,16 @@ impl LocalMapping {
 }
 
 fn init(node: Node) {
-    let p = Box::new(LocalMapping::new());
-    get_mapping().update_ptr(Box::leak(p));
+    unsafe {
+        let p = Box::new(LocalMapping::new());
+        MAPPING = PointerWrapMut::new(Box::leak(p));
 
-    let p = Box::new(DirectNodeList::new());
-    get_direct_node_list().update_ptr(Box::leak(p));
+        let p = Box::new(DirectNodeList::new());
+        DIRECT_NODE_LIST = PointerWrapMut::new(Box::leak(p));
 
-    let p = Box::new(RwLock::new(node));
-    get_local_node().update_ptr(Box::leak(p))
+        let p = Box::new(RwLock::new(node));
+        LOCAL_NODE = PointerWrapMut::new(Box::leak(p));
+    }
 }
 
 pub(super) async fn start(
@@ -108,7 +110,7 @@ pub(super) async fn start(
         direct,
     }: ClientConfig
 ) -> Result<()> {
-    let server_addr = lookup_host(server_addr).await?.next().ok_or(anyhow!("Server addr not found"))?;
+    let server_addr = lookup_host(server_addr).await?.next().ok_or(anyhow!("Server host not found"))?;
     let rc4 = Rc4::new(key.as_bytes());
     let device = create_device(tun_addr, tun_netmask).context("Failed create tun adapter")?;
     let (tun_tx, tun_rx) = device.split();

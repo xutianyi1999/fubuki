@@ -19,19 +19,12 @@ pub struct PointerWrapMut<T> {
 }
 
 impl<T> PointerWrapMut<T> {
-    #[allow(dead_code)]
     pub fn new(ptr: &mut T) -> Self {
         PointerWrapMut { ptr }
     }
 
     pub const fn default() -> Self {
         PointerWrapMut { ptr: null_mut() }
-    }
-
-    pub fn update_ptr(&self, ptr: &mut T) {
-        let t: *const *mut T = &self.ptr;
-        let p: *mut *mut T = t as *mut *mut T;
-        unsafe { *p = ptr }
     }
 }
 
