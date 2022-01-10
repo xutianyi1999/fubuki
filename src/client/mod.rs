@@ -134,6 +134,7 @@ pub(super) async fn start(
     tokio::task::spawn_blocking(move || if let Err(e) = stdin() { error!("Stdin error -> {:?}", e) });
 
     if direct {
+        // server_addr do not use loop address
         let lan_ip = get_interface_addr(server_addr).await
             .context("Failed to get lan address")?;
 
