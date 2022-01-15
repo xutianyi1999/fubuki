@@ -141,7 +141,7 @@ pub(super) async fn start(
         let udp_socket = UdpSocket::bind((lan_ip, 0)).await
             .context("Failed to create UDP socket")?;
 
-        let (to_udp_handler, from_tun1) = mpsc::channel::<(Box<[u8]>, SocketAddr)>(10);
+        let (to_udp_handler, from_tun1) = mpsc::unbounded_channel::<(Box<[u8]>, SocketAddr)>();
 
         get_local_node().write().lan_udp_addr = Some(udp_socket.local_addr()?);
 
@@ -195,7 +195,7 @@ fn mpsc_to_tun(
 
 fn tun_to_mpsc(
     tcp_handler_tx: Sender<(Box<[u8]>, NodeId)>,
-    udp_handler_tx_opt: Option<Sender<(Box<[u8]>, SocketAddr)>>,
+    udp_handler_tx_opt: Option<UnboundedSender<(Box<[u8]>, SocketAddr)>>,
     mut tun_rx: Box<dyn Rx>,
 ) -> JoinHandle<Result<()>> {
     tokio::task::spawn_blocking(move || {
@@ -233,9 +233,7 @@ fn tun_to_mpsc(
                         _ => *peer_wan_addr
                     };
 
-                    if let Err(TrySendError::Closed(_)) = udp_handler_tx.try_send((data.into(), dest_addr)) {
-                        return Err(anyhow!("UPD handler channel closed"));
-                    }
+                    udp_handler_tx.send((data.into(), dest_addr))?;
                 }
                 (Some(Node { id, .. }), _) => {
                     if let Err(TrySendError::Closed(_)) = tcp_handler_tx.try_send((data.into(), *id)) {
@@ -324,7 +322,7 @@ async fn udp_receiver(
 
 async fn udp_sender(
     mut msg_socket: UdpMsgSocket<'_>,
-    mut from_tun: Receiver<(Box<[u8]>, SocketAddr)>,
+    mut from_tun: UnboundedReceiver<(Box<[u8]>, SocketAddr)>,
 ) -> Result<()> {
     while let Some((data, dest_addr)) = from_tun.recv().await {
         let data = UdpMsg::Data(&data);
@@ -335,7 +333,7 @@ async fn udp_sender(
 
 async fn udp_handler(
     udp_socket: UdpSocket,
-    channel_rx: Receiver<(Box<[u8]>, SocketAddr)>,
+    channel_rx: UnboundedReceiver<(Box<[u8]>, SocketAddr)>,
     channel_tx: UnboundedSender<Box<[u8]>>,
     server_addr: SocketAddr,
     rc4: Rc4,

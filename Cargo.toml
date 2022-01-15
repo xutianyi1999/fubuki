@@ -1,7 +1,7 @@
 [package]
 name = "fubuki"
 version = "0.3.0"
-authors = ["xty <853122726@qq.com>"]
+authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -19,6 +19,7 @@ rand = "0.8"
 socket2 = "0.4"
 parking_lot = "0.11"
 anyhow = "1"
+mimalloc = { version = "*", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tun = { git = "https://github.com/xutianyi1999/rust-tun.git", branch = "custom" }

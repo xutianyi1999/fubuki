@@ -10,6 +10,7 @@ use log4rs::Config;
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
+use mimalloc::MiMalloc;
 use serde::Deserialize;
 use tokio::fs;
 use tokio::runtime::Runtime;
@@ -20,6 +21,9 @@ mod tun;
 mod server;
 mod client;
 mod common;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Deserialize, Clone)]
 struct ServerConfig {
