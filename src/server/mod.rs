@@ -20,7 +20,7 @@ use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, 
 use crate::common::net::TcpSocketExt;
 use crate::ServerConfig;
 
-const CHANNEL_SIZE: usize = 10;
+const CHANNEL_SIZE: usize = 100;
 
 struct NodeHandle {
     node: Node,

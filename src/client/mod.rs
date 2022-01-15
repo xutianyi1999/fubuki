@@ -30,7 +30,7 @@ use crate::common::PointerWrapMut;
 use crate::tun::{create_device, Rx, Tx};
 use crate::tun::TunDevice;
 
-const CHANNEL_SIZE: usize = 10;
+const CHANNEL_SIZE: usize = 100;
 
 static mut MAPPING: PointerWrapMut<LocalMapping> = PointerWrapMut::default();
 static mut DIRECT_NODE_LIST: PointerWrapMut<DirectNodeList> = PointerWrapMut::default();
@@ -306,7 +306,13 @@ async fn udp_receiver(
             match msg {
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req) if local_node_id == node_id => {
                     let resp = Heartbeat(node_id, seq, HeartbeatType::Resp);
-                    msg_socket.write(&resp, peer_addr).await?;
+                    match msg_socket.try_write(&resp, peer_addr) {
+                        Ok(_) => (),
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            continue;
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
                 }
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
                 if node_id != 0 && seq == heartbeat_seq.get()

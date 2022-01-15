@@ -410,5 +410,17 @@ pub mod msg_operator {
             socket.send_to(packet, dest_addr).await?;
             Ok(())
         }
+
+        pub fn try_write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
+            let socket = self.socket;
+            let mut rc4 = self.rc4;
+            let buff = &mut self.buff;
+            let out = &mut self.out;
+
+            let data = msg.encode(buff)?;
+            let packet = proto::crypto(data, out, &mut rc4)?;
+            socket.try_send_to(packet, dest_addr)?;
+            Ok(())
+        }
     }
 }
