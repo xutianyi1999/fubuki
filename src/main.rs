@@ -3,6 +3,8 @@ extern crate log;
 
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::AtomicI64;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use log4rs::append::console::ConsoleAppender;
@@ -32,7 +34,7 @@ struct ServerConfig {
 }
 
 #[derive(Deserialize, Clone)]
-struct TunAdapter {
+struct TunConfig {
     ip: Ipv4Addr,
     netmask: Ipv4Addr,
 }
@@ -40,7 +42,7 @@ struct TunAdapter {
 #[derive(Deserialize, Clone)]
 struct ClientConfig {
     server_addr: String,
-    tun: TunAdapter,
+    tun: TunConfig,
     key: String,
     direct: bool,
 }
@@ -69,7 +71,7 @@ fn launch() -> Result<()> {
 
 const INVALID_COMMAND: &str = "Invalid command";
 
-async fn load_config() -> Result<Either<Vec<ServerConfig>, ClientConfig>> {
+async fn load_config() -> Result<Either<Vec<ServerConfig>, Vec<ClientConfig>>> {
     let mut args = env::args();
     args.next();
 
@@ -80,7 +82,7 @@ async fn load_config() -> Result<Either<Vec<ServerConfig>, ClientConfig>> {
 
     let config = match mode.as_str() {
         "client" => {
-            let client_config = serde_json::from_str::<ClientConfig>(&config_json)
+            let client_config = serde_json::from_str::<Vec<ClientConfig>>(&config_json)
                 .context("Failed to parse client config")?;
 
             Either::Right(client_config)

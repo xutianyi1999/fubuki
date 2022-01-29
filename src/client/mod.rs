@@ -1,14 +1,21 @@
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::borrow::Borrow;
+use std::cell::{Cell, UnsafeCell};
+use std::collections::{HashMap, HashSet};
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use crossbeam_channel::crossbeam_channel_internal;
+use crossbeam_utils::atomic::AtomicCell;
 use crypto::rc4::Rc4;
-use parking_lot::RwLock;
+use parking_lot::{RawRwLock, RwLock};
+use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use serde::Serialize;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
@@ -20,100 +27,231 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 
-use crate::{ClientConfig, TunAdapter};
+use crate::{ClientConfig, TunConfig};
 use crate::common::net::get_interface_addr;
 use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, MTU, Node, NodeId, Seq, TcpMsg, UdpMsg};
 use crate::common::net::proto::UdpMsg::Heartbeat;
 use crate::common::persistence::ToJson;
-use crate::common::PointerWrapMut;
-use crate::tun::{create_device, Rx, Tx};
+use crate::common::PointerWrap;
+use crate::tun::create_device;
 use crate::tun::TunDevice;
 
 const CHANNEL_SIZE: usize = 100;
 
-static mut MAPPING: PointerWrapMut<LocalMapping> = PointerWrapMut::default();
-static mut DIRECT_NODE_LIST: PointerWrapMut<DirectNodeList> = PointerWrapMut::default();
-static mut LOCAL_NODE: PointerWrapMut<RwLock<Node>> = PointerWrapMut::default();
+static mut MAPPING: PointerWrap<NodeMapping> = PointerWrap::default();
+static mut DIRECT_NODE_LIST: PointerWrap<DirectNodeList> = PointerWrap::default();
+static mut LOCAL_NODE: PointerWrap<RwLock<Node>> = PointerWrap::default();
 
-fn get_mapping() -> &'static PointerWrapMut<LocalMapping> {
+fn get_mapping() -> &'static PointerWrap<NodeMapping> {
     unsafe { &MAPPING }
 }
 
-fn get_direct_node_list() -> &'static PointerWrapMut<DirectNodeList> {
+fn get_direct_node_list() -> &'static PointerWrap<DirectNodeList> {
     unsafe { &DIRECT_NODE_LIST }
 }
 
-fn get_local_node() -> &'static PointerWrapMut<RwLock<Node>> {
+fn get_local_node() -> &'static PointerWrap<RwLock<Node>> {
     unsafe { &LOCAL_NODE }
 }
 
+struct WanAddrMapping {
+    // tun_addr -> wan_addr
+    map: HashMap<Ipv4Addr, AtomicCell<Option<IpAddr>>>,
+    version: AtomicU8,
+}
+
+impl WanAddrMapping {
+    fn new(tun_addresses: &[Ipv4Addr]) -> Self {
+        let map: HashMap<Ipv4Addr, AtomicCell<Option<IpAddr>>> = tun_addresses.iter()
+            .map(|addr| (*addr, AtomicCell::new(None)))
+            .collect();
+
+        WanAddrMapping {
+            map,
+            version: AtomicU8::new(0),
+        }
+    }
+
+    fn version(&self) -> u8 {
+        self.version.load(Ordering::Relaxed)
+    }
+
+    fn update(&self, tun_addr: &Ipv4Addr, wan_addr: IpAddr) {
+        let v = match self.map.get(tun_addr) {
+            None => return,
+            Some(v) => v
+        };
+
+        if v.load() != Some(wan_addr) {
+            v.store(Some(wan_addr));
+            self.version.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    fn load(&self) -> HashMap<Ipv4Addr, Option<IpAddr>> {
+        self.map.iter()
+            .map(|(k, v)| (*k, v.load()))
+            .collect()
+    }
+}
+
 struct DirectNodeList {
-    list: RwLock<HashMap<NodeId, Instant>>,
+    list: RwLock<HashMap<NodeId, AtomicI64>>,
+    version: AtomicU8,
 }
 
 impl DirectNodeList {
     fn new() -> Self {
-        DirectNodeList { list: RwLock::new(HashMap::new()) }
+        DirectNodeList {
+            list: RwLock::new(HashMap::new()),
+            version: AtomicU8::new(0),
+        }
     }
 
-    fn contain(&self, node_id: &NodeId) -> bool {
-        self.list.read().contains_key(node_id)
+    fn version(&self) -> u8 {
+        self.version.load(Ordering::Relaxed)
+    }
+
+    fn try_load(&self) -> Option<HashSet<NodeId>> {
+        // TODO 可以尝试在此添加缓存
+        let guard = self.list.try_read()?;
+
+        let set: HashSet<NodeId> = guard.keys()
+            .map(|v| *v)
+            .collect();
+
+        Some(set)
     }
 
     fn update(&self, node_id: NodeId) {
-        let mut guard = self.list.write();
-        guard.insert(node_id, Instant::now());
+        let now = Utc::now().timestamp();
+
+        {
+            let guard = match self.list.try_read() {
+                Some(guard) => guard,
+                None => return
+            };
+
+            if let Some(time) = guard.get(&node_id) {
+                time.store(now, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        let option = {
+            let mut guard = match self.list.try_write() {
+                Some(guard) => guard,
+                None => return
+            };
+
+            guard.insert(node_id, AtomicI64::new(now))
+        };
+
+        if option.is_none() {
+            self.version.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    fn try_update_all(&self, map: HashMap<NodeId, AtomicI64>) {
+        match self.list.try_write() {
+            Some(mut guard) => *guard = map,
+            None => return
+        };
+
+        self.version.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-// tun_addr -> node
-struct LocalMapping {
-    map: RwLock<HashMap<Ipv4Addr, Node>>,
+async fn direct_node_list_schedule() {
+    loop {
+        time::sleep(Duration::from_secs(30)).await;
+        let now = Utc::now().timestamp();
+
+        let new_map = {
+            let guard = match get_direct_node_list().list.try_read() {
+                Some(guard) => guard,
+                None => continue
+            };
+
+            let mut new = HashMap::new();
+
+            for (k, v) in guard.iter() {
+                let time = v.load(Ordering::Relaxed);
+
+                if now - time <= 30 {
+                    new.insert(*k, AtomicI64::new(time))
+                }
+            }
+            new
+        };
+
+        get_direct_node_list().try_update_all(new_map)
+    }
 }
 
-impl LocalMapping {
-    fn new() -> Self {
-        LocalMapping { map: RwLock::new(HashMap::new()) }
+struct NodeMapping {
+    // local_addr -> (tun_addr -> node)
+    map: HashMap<Ipv4Addr, RwLock<Arc<HashMap<Ipv4Addr, Node>>>>,
+    version: AtomicU8,
+}
+
+impl NodeMapping {
+    fn new(tun_addresses: &[Ipv4Addr]) -> Self {
+        let map: HashMap<Ipv4Addr, RwLock<Arc<HashMap<Ipv4Addr, Node>>>> = tun_addresses.iter()
+            .map(|v| (*v, RwLock::new(Arc::new(HashMap::new()))))
+            .collect();
+
+        NodeMapping {
+            map,
+            version: AtomicU8::new(0),
+        }
     }
 
-    fn get_all(&self) -> HashMap<Ipv4Addr, Node> {
-        (*self.map.read()).clone()
+    fn version(&self) -> u8 {
+        self.version.load(Ordering::Relaxed)
     }
 
-    fn update_all(&self, map: HashMap<Ipv4Addr, Node>) {
-        *self.map.write() = map
+    fn update(&self, local_addr: &Ipv4Addr, map: HashMap<Ipv4Addr, Node>) {
+        let map = Arc::new(map);
+
+        if let Some(lock) = self.map.get(local_addr) {
+            *lock.write() = map;
+            self.version.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    fn try_load(&self) -> Option<HashMap<Ipv4Addr, Arc<HashMap<Ipv4Addr, Node>>>> {
+        let mut map = HashMap::new();
+
+        for (k, v) in self.map {
+            map.insert(k, v.try_read()?.clone())
+        };
+        Some(map)
     }
 }
 
 fn init(node: Node) {
     unsafe {
-        let p = Box::new(LocalMapping::new());
-        MAPPING = PointerWrapMut::new(Box::leak(p));
+        let p = Box::new(NodeMapping::new());
+        MAPPING = PointerWrap::new(Box::leak(p));
 
         let p = Box::new(DirectNodeList::new());
-        DIRECT_NODE_LIST = PointerWrapMut::new(Box::leak(p));
+        DIRECT_NODE_LIST = PointerWrap::new(Box::leak(p));
 
         let p = Box::new(RwLock::new(node));
-        LOCAL_NODE = PointerWrapMut::new(Box::leak(p));
+        LOCAL_NODE = PointerWrap::new(Box::leak(p));
     }
 }
 
-pub(super) async fn start(
-    ClientConfig {
-        server_addr,
-        tun: TunAdapter {
-            ip: tun_addr,
-            netmask: tun_netmask
-        },
-        key,
-        direct,
-    }: ClientConfig
-) -> Result<()> {
+pub(super) async fn start(configs: Vec<ClientConfig>) -> Result<()> {
+    let tun_config: Vec<TunConfig> = configs.iter()
+        .map(|v| v.tun.clone())
+        .collect();
+
     let server_addr = lookup_host(server_addr).await?.next().ok_or_else(|| anyhow!("Server host not found"))?;
     let rc4 = Rc4::new(key.as_bytes());
-    let device = create_device(tun_addr, tun_netmask).context("Failed create tun adapter")?;
-    let (tun_tx, tun_rx) = device.split();
+    let tun_device = create_device(tun_config).context("Failed create tun adapter")?;
 
     let (to_tun, from_handler) = mpsc::unbounded_channel::<Box<[u8]>>();
     let (to_tcp_handler, from_tun2) = mpsc::channel::<(Box<[u8]>, NodeId)>(CHANNEL_SIZE);
@@ -131,7 +269,7 @@ pub(super) async fn start(
     info!("Tun adapter ip address: {}", tun_addr);
     info!("Client start");
 
-    tokio::task::spawn_blocking(move || if let Err(e) = stdin() { error!("Stdin error -> {:?}", e) });
+    tokio::task::spawn_blocking(move || if let Err(e) = stdin() { error!("Stdin error -> {}", e) });
 
     if direct {
         // server_addr do not use loop address
@@ -162,23 +300,6 @@ pub(super) async fn start(
 
     warn!("Client down");
     Ok(())
-}
-
-async fn direct_node_list_schedule() {
-    loop {
-        {
-            let mut guard = get_direct_node_list().list.write();
-
-            let new_list: HashMap<NodeId, Instant> = guard.iter()
-                .filter(|(_, update_time)| update_time.elapsed() <= Duration::from_secs(30))
-                .map(|(node_id, instant)| (*node_id, *instant))
-                .collect();
-
-            *guard = new_list;
-        }
-
-        time::sleep(Duration::from_secs(30)).await;
-    }
 }
 
 fn mpsc_to_tun(
@@ -258,8 +379,8 @@ async fn heartbeat_schedule(
         msg_socket.write(&msg, server_addr).await?;
 
         let temp_seq = seq.get();
-        let local_wan_addr = get_local_node().read().wan_udp_addr;
-        let mapping = get_mapping().get_all();
+        let local_wan_addr = get_local_node().try_read().wan_udp_addr;
+        let mapping = get_mapping().get();
 
         for (_, node) in mapping {
             if node.id == local_node_id {
@@ -356,13 +477,15 @@ async fn udp_handler(
 
 async fn tcp_handler(
     mut from_tun: Receiver<(Box<[u8]>, NodeId)>,
-    to_tun: UnboundedSender<Box<[u8]>>,
-    server_addr: SocketAddr,
+    to_tun: crossbeam_channel::Sender<Box<[u8]>>,
+    server_addr: &str,
+    tun_add: Ipv4Addr,
     rc4: Rc4,
 ) {
+    let inner_to_tun = &to_tun;
+    let inner_from_tun = &mut from_tun;
+
     loop {
-        let inner_to_tun = &to_tun;
-        let inner_from_tun = &mut from_tun;
         let mut tx_rc4 = rc4;
         let mut rx_rc4 = rc4;
 
@@ -415,7 +538,7 @@ async fn tcp_handler(
                                 .map(|(_, node)| (node.tun_addr, node))
                                 .collect();
 
-                            get_mapping().update_all(mapping);
+                            get_mapping().update(mapping);
                         }
                         TcpMsg::Forward(packet, _) => inner_to_tun.send(packet.into())?,
                         TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
@@ -533,7 +656,7 @@ fn stdin() -> io::Result<()> {
 
         match cmd.trim() {
             "show" => {
-                let map = get_mapping().get_all();
+                let map = get_mapping().get();
 
                 let node_list: Vec<NodeInfo> = map.into_iter()
                     .map(|v| node_to_node_info(v, local_node_id))

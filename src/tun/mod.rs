@@ -1,6 +1,8 @@
 use std::io::Result;
 use std::net::Ipv4Addr;
 
+use crate::TunConfig;
+
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "linux")]
@@ -8,22 +10,16 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
-pub trait Tx: Send {
-    fn send_packet(&mut self, packet: &[u8]) -> Result<()>;
+pub trait TunDevice: Send + Sync {
+    fn send_packet(&self, packet: &[u8]) -> Result<()>;
+
+    fn recv_packet(&self, buff: &mut [u8]) -> Result<usize>;
 }
 
-pub trait Rx: Send {
-    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize>;
-}
-
-pub trait TunDevice: Tx + Rx + Send {
-    fn split(self) -> (Box<dyn Tx>, Box<dyn Rx>);
-}
-
-pub fn create_device(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<impl TunDevice> {
+pub fn create_device(tun_config: Vec<TunConfig>) -> Result<impl TunDevice> {
     #[cfg(target_os = "windows")]
         {
-            Ok(windows::Wintun::create(address, netmask)?)
+            Ok(windows::Wintun::create(tun_config)?)
         }
     #[cfg(target_os = "linux")]
         {

@@ -14,21 +14,21 @@ pub trait Convert<R> {
 }
 
 #[derive(Copy)]
-pub struct PointerWrapMut<T> {
+pub struct PointerWrap<T> {
     ptr: *mut T,
 }
 
-impl<T> PointerWrapMut<T> {
+impl<T> PointerWrap<T> {
     pub fn new(ptr: &mut T) -> Self {
-        PointerWrapMut { ptr }
+        PointerWrap { ptr }
     }
 
     pub const fn default() -> Self {
-        PointerWrapMut { ptr: null_mut() }
+        PointerWrap { ptr: null_mut() }
     }
 }
 
-impl<T> Deref for PointerWrapMut<T> {
+impl<T> Deref for PointerWrap<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -36,18 +36,12 @@ impl<T> Deref for PointerWrapMut<T> {
     }
 }
 
-impl<T> DerefMut for PointerWrapMut<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.ptr }
-    }
-}
-
-impl<T> Clone for PointerWrapMut<T> {
+impl<T> Clone for PointerWrap<T> {
     fn clone(&self) -> Self {
-        PointerWrapMut { ptr: self.ptr }
+        PointerWrap { ptr: self.ptr }
     }
 }
 
-unsafe impl<T> Send for PointerWrapMut<T> {}
+unsafe impl<T> Send for PointerWrap<T> {}
 
-unsafe impl<T> Sync for PointerWrapMut<T> {}
+unsafe impl<T> Sync for PointerWrap<T> {}
