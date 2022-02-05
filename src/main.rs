@@ -34,7 +34,7 @@ struct ServerConfig {
 }
 
 #[derive(Deserialize, Clone)]
-struct TunConfig {
+pub struct TunConfig {
     ip: Ipv4Addr,
     netmask: Ipv4Addr,
 }

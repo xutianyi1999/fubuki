@@ -1,5 +1,6 @@
 use std::io::Result;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use crate::TunConfig;
 
@@ -16,10 +17,20 @@ pub trait TunDevice: Send + Sync {
     fn recv_packet(&self, buff: &mut [u8]) -> Result<usize>;
 }
 
-pub fn create_device(tun_config: Vec<TunConfig>) -> Result<impl TunDevice> {
+impl<T: TunDevice> TunDevice for Arc<T> {
+    fn send_packet(&self, packet: &[u8]) -> Result<()> {
+        (**self).send_packet(packet)
+    }
+
+    fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {
+        (**self).recv_packet(buff)
+    }
+}
+
+pub fn create_device(tun_configs: Vec<TunConfig>) -> Result<impl TunDevice> {
     #[cfg(target_os = "windows")]
         {
-            Ok(windows::Wintun::create(tun_config)?)
+            Ok(windows::Wintun::create(tun_configs)?)
         }
     #[cfg(target_os = "linux")]
         {

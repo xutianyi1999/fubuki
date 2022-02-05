@@ -3,6 +3,9 @@ use std::ptr::null_mut;
 
 pub mod persistence;
 pub mod net;
+pub mod rc4;
+
+pub type HashMap<K, V> = std::collections::HashMap<K, V, ahash::RandomState>;
 
 pub enum Either<L, R> {
     Right(R),
@@ -15,11 +18,11 @@ pub trait Convert<R> {
 
 #[derive(Copy)]
 pub struct PointerWrap<T> {
-    ptr: *mut T,
+    ptr: *const T,
 }
 
 impl<T> PointerWrap<T> {
-    pub fn new(ptr: &mut T) -> Self {
+    pub fn new(ptr: &T) -> Self {
         PointerWrap { ptr }
     }
 

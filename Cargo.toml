@@ -22,6 +22,7 @@ anyhow = "1"
 mimalloc = { version = "*", default-features = false }
 crossbeam-utils = "0.8"
 crossbeam-channel = "0.5"
+ahash = "0.7"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tun = { git = "https://github.com/xutianyi1999/rust-tun.git", branch = "custom" }
