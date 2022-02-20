@@ -23,7 +23,7 @@ pub struct Wintun {
 }
 
 impl Wintun {
-    pub fn create(tun_configs: Vec<TunConfig>) -> Result<Wintun> {
+    pub(crate) fn create(tun_configs: &[TunConfig]) -> Result<Wintun> {
         // drop old wintun adapter
         { WintunAdapter::open_adapter(ADAPTER_NAME); }
 

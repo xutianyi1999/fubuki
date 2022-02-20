@@ -27,17 +27,17 @@ impl<T: TunDevice> TunDevice for Arc<T> {
     }
 }
 
-pub fn create_device(tun_configs: Vec<TunConfig>) -> Result<impl TunDevice> {
+pub(crate) fn create_device(tun_configs: &[TunConfig]) -> Result<impl TunDevice> {
     #[cfg(target_os = "windows")]
-        {
-            Ok(windows::Wintun::create(tun_configs)?)
-        }
+    {
+        Ok(windows::Wintun::create(tun_configs)?)
+    }
     #[cfg(target_os = "linux")]
-        {
-            Ok(linux::Linuxtun::create(address, netmask)?)
-        }
+    {
+        Ok(linux::Linuxtun::create(address, netmask)?)
+    }
     #[cfg(target_os = "macos")]
-        {
+    {
             Ok(macos::Mactun::create(address, netmask)?)
         }
 }

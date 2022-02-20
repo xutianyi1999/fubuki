@@ -1,6 +1,6 @@
 [package]
 name = "fubuki"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
@@ -10,7 +10,6 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 log4rs = "1"
 log = "0.4"
-rust-crypto = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
@@ -20,7 +19,6 @@ socket2 = "0.4"
 parking_lot = "0.11"
 anyhow = "1"
 mimalloc = { version = "*", default-features = false }
-crossbeam-utils = "0.8"
 crossbeam-channel = "0.5"
 ahash = "0.7"
 

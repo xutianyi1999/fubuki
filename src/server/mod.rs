@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use crypto::rc4::Rc4;
 use parking_lot::RwLock;
 use tokio::{sync, time};
 use tokio::io::BufReader;
@@ -17,7 +16,8 @@ use tokio::sync::mpsc::error::TrySendError;
 
 use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UdpMsgSocket};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
-use crate::common::net::TcpSocketExt;
+use crate::common::net::SocketExt;
+use crate::common::rc4::Rc4;
 use crate::ServerConfig;
 
 const CHANNEL_SIZE: usize = 100;
@@ -115,7 +115,7 @@ pub(super) async fn start(server_config: Vec<ServerConfig>) {
             let node_db = Arc::new(NodeDb::new());
 
             let res = tokio::select! {
-                res = udp_handler(listen_addr, rc4, &node_db) => res.context("UDP handler error"),
+                res = udp_handler(listen_addr, rc4.clone(), &node_db) => res.context("UDP handler error"),
                 res = tcp_handler(listen_addr, rc4, &node_db) => res.context("TCP handler error")
             };
 
@@ -191,6 +191,7 @@ async fn tcp_handler(
     info!("TCP socket listening on {}", listen_addr);
 
     loop {
+        let rc4 = rc4.clone();
         let node_db = node_db.clone();
         let (stream, peer_addr) = listener.accept().await.context("Accept connection error")?;
 
@@ -211,7 +212,7 @@ async fn tunnel(
     let (rx, mut tx) = stream.split();
     let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
-    let mut rx_rc4 = rc4;
+    let mut rx_rc4 = rc4.clone();
     let mut tx_rc4 = rc4;
 
     let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_rc4);

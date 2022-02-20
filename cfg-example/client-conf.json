@@ -1,11 +1,23 @@
-[
-  {
-    "server_addr": "192.168.1.10:12345",
-    "tun": {
-      "ip": "10.0.0.1",
-      "netmask": "255.255.255.0"
-    },
-    "key": "a123",
-    "direct": true
-  }
-]
+{
+  "mtu": 1450,
+  "channel_limit": 100,
+  "api_addr": "0.0.0.0:3030",
+  "tcp_heartbeat_interval_secs": 5,
+  "udp_heartbeat_interval_secs": 5,
+  "reconnect_interval_secs": 3,
+  "udp_socket_recv_buffer_size": 8192,
+  "udp_socket_send_buffer_size": 8192,
+  "network_ranges": [
+    {
+      "server_addr": "192.168.1.10:12345",
+      "tun": {
+        "ip": "10.0.0.1",
+        "netmask": "255.255.255.0"
+      },
+      "key": "a123",
+      "mode": "TCP_AND_UDP",
+      "lan_ip_addr": "192.168.0.2",
+      "try_send_to_lan_addr": false
+    }
+  ]
+}

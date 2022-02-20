@@ -5,67 +5,63 @@ use socket2::{Socket, TcpKeepalive};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::time::Duration;
 
-pub trait TcpSocketExt {
+pub trait SocketExt {
     fn set_keepalive(&self) -> Result<()>;
-}
 
-impl TcpSocketExt for TcpStream {
-    fn set_keepalive(&self) -> Result<()> {
-        set_keepalive(self)
-    }
-}
+    fn set_recv_buffer_size(&self, size: usize) -> Result<()>;
 
-impl TcpSocketExt for TcpSocket {
-    fn set_keepalive(&self) -> Result<()> {
-        set_keepalive(self)
-    }
+    fn set_send_buffer_size(&self, size: usize) -> Result<()>;
 }
 
 const TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive::new().with_time(Duration::from_secs(120));
 
-#[cfg(windows)]
-fn set_keepalive<S: std::os::windows::io::AsRawSocket>(socket: &S) -> Result<()> {
-    use std::os::windows::io::FromRawSocket;
+macro_rules! build_socket_ext {
+    ($type:path) => {
+        impl<T: $type> SocketExt for T {
+            fn set_keepalive(&self) -> Result<()> {
+                let sock_ref = socket2::SockRef::from(self);
+                sock_ref.set_tcp_keepalive(&TCP_KEEPALIVE)
+            }
 
-    unsafe {
-        let socket = Socket::from_raw_socket(socket.as_raw_socket());
-        socket.set_tcp_keepalive(&TCP_KEEPALIVE)?;
-        std::mem::forget(socket);
+            fn set_recv_buffer_size(&self, size: usize) -> Result<()> {
+                let sock_ref = socket2::SockRef::from(self);
+                sock_ref.set_recv_buffer_size(size)
+            }
+
+            fn set_send_buffer_size(&self, size: usize) -> Result<()> {
+                let sock_ref = socket2::SockRef::from(self);
+                sock_ref.set_send_buffer_size(size)
+            }
+        }
     };
-    Ok(())
 }
+
+#[cfg(windows)]
+build_socket_ext!(std::os::windows::io::AsRawSocket);
 
 #[cfg(unix)]
-fn set_keepalive<S: std::os::unix::io::AsRawFd>(socket: &S) -> Result<()> {
-    use std::os::unix::io::FromRawFd;
+build_socket_ext!(std::os::unix::io::AsRawFd);
 
-    unsafe {
-        let socket = Socket::from_raw_fd(socket.as_raw_fd());
-        socket.set_tcp_keepalive(&TCP_KEEPALIVE)?;
-        std::mem::forget(socket);
-    };
-    Ok(())
-}
-
-pub async fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    socket.connect(dest_addr).await?;
+pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(dest_addr)?;
     let addr = socket.local_addr()?;
     Ok(addr.ip())
 }
 
 pub mod proto {
     use std::collections::HashMap;
+    use std::fmt::{Display, Formatter};
     use std::io;
     use std::io::Result;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::str::FromStr;
 
-    use crypto::buffer::{RefReadBuffer, RefWriteBuffer};
-    use crypto::rc4::Rc4;
-    use crypto::symmetriccipher::Encryptor;
+    use anyhow::anyhow;
     use serde::{Deserialize, Serialize};
 
     use crate::common::persistence::ToJson;
+    use crate::common::rc4::Rc4;
 
     pub const MTU: usize = 1450;
 
@@ -84,12 +80,44 @@ pub mod proto {
     pub type NodeId = u32;
     pub type Seq = u32;
 
+    #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq)]
+    pub enum ProtocolMode {
+        UdpOnly,
+        TcpOnly,
+        UdpAndTcp,
+    }
+
+    impl ProtocolMode {
+        pub fn tcp_support(self) -> bool {
+            self == ProtocolMode::TcpOnly || self == ProtocolMode::UdpAndTcp
+        }
+
+        pub fn udp_support(self) -> bool {
+            self == ProtocolMode::UdpOnly || self == ProtocolMode::UdpAndTcp
+        }
+    }
+
+    impl FromStr for ProtocolMode {
+        type Err = anyhow::Error;
+
+        fn from_str(s: &str) -> anyhow::Result<Self> {
+            let mode = match s.to_ascii_uppercase().as_str() {
+                "UDP_ONLY" => ProtocolMode::UdpOnly,
+                "TCP_ONLY" => ProtocolMode::TcpOnly,
+                "UDP_AND_TCP" => ProtocolMode::UdpAndTcp,
+                _ => return Err(anyhow!("Invalid protocol mode"))
+            };
+            Ok(mode)
+        }
+    }
+
     #[derive(Serialize, Deserialize, Clone, Debug)]
     pub struct Node {
         pub id: NodeId,
         pub tun_addr: Ipv4Addr,
         pub lan_udp_addr: Option<SocketAddr>,
         pub wan_udp_addr: Option<SocketAddr>,
+        pub mode: ProtocolMode,
         pub register_time: i64,
     }
 
@@ -118,7 +146,7 @@ pub mod proto {
     }
 
     impl TcpMsg<'_> {
-        pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a [u8]> {
+        pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a mut [u8]> {
             buff[0] = MAGIC_NUM;
             let slice = &mut buff[1..];
 
@@ -163,7 +191,7 @@ pub mod proto {
                     6
                 }
             };
-            Ok(&buff[..len + 1])
+            Ok(&mut buff[..len + 1])
         }
 
         pub fn decode(packet: &[u8]) -> Result<TcpMsg> {
@@ -224,7 +252,7 @@ pub mod proto {
     }
 
     impl<'a> UdpMsg<'a> {
-        pub fn encode(&self, buff: &'a mut [u8]) -> Result<&'a [u8]> {
+        pub fn encode(&self, buff: &'a mut [u8]) -> Result<&'a mut [u8]> {
             buff[0] = MAGIC_NUM;
             let slice = &mut buff[1..];
 
@@ -249,7 +277,7 @@ pub mod proto {
                 }
             };
 
-            Ok(&buff[..len + 1])
+            Ok(&mut buff[..len + 1])
         }
 
         pub fn decode(packet: &'a [u8]) -> Result<Self> {
@@ -287,29 +315,21 @@ pub mod proto {
             }
         }
     }
-
-    pub fn crypto<'a>(input: &[u8], output: &'a mut [u8], rc4: &mut Rc4) -> Result<&'a [u8]> {
-        let mut ref_read_buf = RefReadBuffer::new(input);
-        let mut ref_write_buf = RefWriteBuffer::new(output);
-
-        rc4.encrypt(&mut ref_read_buf, &mut ref_write_buf, false)
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Crypto error"))?;
-        Ok(&output[..input.len()])
-    }
 }
 
 pub mod msg_operator {
     use std::io::Result;
     use std::net::SocketAddr;
 
-    use crypto::rc4::Rc4;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::UdpSocket;
+
+    use crate::common::rc4::Rc4;
 
     use super::proto;
     use super::proto::{TcpMsg, UdpMsg};
 
-    const UDP_BUFF_SIZE: usize = 2048;
+    const UDP_BUFF_SIZE: usize = 65536;
     pub const TCP_BUFF_SIZE: usize = 65536;
 
     pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
@@ -336,8 +356,8 @@ pub mod msg_operator {
             let data = &mut buff[..len as usize];
             rx.read_exact(data).await?;
 
-            let out = proto::crypto(data, out, rc4)?;
-            Ok(TcpMsg::decode(out)?)
+            rc4.decrypt_slice(data);
+            Ok(TcpMsg::decode(data)?)
         }
     }
 
@@ -362,13 +382,13 @@ pub mod msg_operator {
             let rc4 = &mut self.rc4;
 
             let data = msg.encode(buff)?;
-            let out = proto::crypto(data, out, rc4)?;
+            rc4.encrypt_slice(data);
 
-            let len = out.len();
-            buff[..2].copy_from_slice(&(len as u16).to_be_bytes());
-            buff[2..len + 2].copy_from_slice(out);
+            let len = data.len();
+            out[..2].copy_from_slice(&(len as u16).to_be_bytes());
+            out[2..len + 2].copy_from_slice(data);
 
-            tx.write_all(&buff[..len + 2]).await?;
+            tx.write_all(&out[..len + 2]).await?;
             Ok(())
         }
     }
@@ -388,38 +408,25 @@ pub mod msg_operator {
 
         pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr)> {
             let socket = self.socket;
-            let mut rc4 = self.rc4;
+            let mut rc4 = self.rc4.clone();
             let buff = &mut self.buff;
             let out = &mut self.out;
 
             let (len, peer_addr) = socket.recv_from(buff).await?;
-            let data = &buff[..len];
-            let packet = proto::crypto(data, out, &mut rc4)?;
+            let data = &mut buff[..len];
+            rc4.decrypt_slice(data);
 
-            Ok((UdpMsg::decode(packet)?, peer_addr))
+            Ok((UdpMsg::decode(data)?, peer_addr))
         }
 
         pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
             let socket = self.socket;
-            let mut rc4 = self.rc4;
+            let mut rc4 = self.rc4.clone();
             let buff = &mut self.buff;
-            let out = &mut self.out;
 
             let data = msg.encode(buff)?;
-            let packet = proto::crypto(data, out, &mut rc4)?;
-            socket.send_to(packet, dest_addr).await?;
-            Ok(())
-        }
-
-        pub fn try_write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
-            let socket = self.socket;
-            let mut rc4 = self.rc4;
-            let buff = &mut self.buff;
-            let out = &mut self.out;
-
-            let data = msg.encode(buff)?;
-            let packet = proto::crypto(data, out, &mut rc4)?;
-            socket.try_send_to(packet, dest_addr)?;
+            rc4.encrypt_slice(data);
+            socket.send_to(data, dest_addr).await?;
             Ok(())
         }
     }
