@@ -1,32 +1,35 @@
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::ptr::null_mut;
 
-pub mod persistence;
 pub mod net;
+pub mod persistence;
 pub mod rc4;
 
 pub type HashMap<K, V> = std::collections::HashMap<K, V, ahash::RandomState>;
 
-pub enum Either<L, R> {
-    Right(R),
-    Left(L),
+pub trait MapInit<K, V> {
+    fn new() -> HashMap<K, V> {
+        Default::default()
+    }
+
+    fn with_capacity(capacity: usize) -> HashMap<K, V> {
+        HashMap::with_capacity_and_hasher(capacity, Default::default())
+    }
 }
 
-pub trait Convert<R> {
-    fn convert(self) -> R;
-}
+impl<K, V> MapInit<K, V> for HashMap<K, V> {}
 
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 pub struct PointerWrap<T> {
     ptr: *const T,
 }
 
 impl<T> PointerWrap<T> {
-    pub fn new(ptr: &T) -> Self {
+    pub const fn new(ptr: &T) -> Self {
         PointerWrap { ptr }
     }
 
-    pub const fn default() -> Self {
+    pub const fn null() -> Self {
         PointerWrap { ptr: null_mut() }
     }
 }
@@ -36,12 +39,6 @@ impl<T> Deref for PointerWrap<T> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.ptr }
-    }
-}
-
-impl<T> Clone for PointerWrap<T> {
-    fn clone(&self) -> Self {
-        PointerWrap { ptr: self.ptr }
     }
 }
 

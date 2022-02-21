@@ -1,10 +1,10 @@
-[
-  {
-    "listen_addr": "0.0.0.0:12345",
-    "key": "a123"
-  },
-  {
-    "listen_addr": "0.0.0.0:12347",
-    "key": "a456"
-  }
-]
+{
+  "channel_limit": 100,
+  "tcp_heartbeat_interval_secs": 5,
+  "listeners": [
+    {
+      "listen_addr": "0.0.0.0:12345",
+      "key": "a123"
+    }
+  ]
+}

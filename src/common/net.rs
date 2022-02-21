@@ -1,8 +1,7 @@
 use std::io::Result;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, ToSocketAddrs};
 
-use socket2::{Socket, TcpKeepalive};
-use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+use socket2::TcpKeepalive;
 use tokio::time::Duration;
 
 pub trait SocketExt {
@@ -42,7 +41,7 @@ build_socket_ext!(std::os::windows::io::AsRawSocket);
 #[cfg(unix)]
 build_socket_ext!(std::os::unix::io::AsRawFd);
 
-pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
+pub fn get_interface_addr<A: ToSocketAddrs>(dest_addr: A) -> Result<IpAddr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
     socket.connect(dest_addr)?;
     let addr = socket.local_addr()?;
@@ -51,7 +50,6 @@ pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
 
 pub mod proto {
     use std::collections::HashMap;
-    use std::fmt::{Display, Formatter};
     use std::io;
     use std::io::Result;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -61,7 +59,6 @@ pub mod proto {
     use serde::{Deserialize, Serialize};
 
     use crate::common::persistence::ToJson;
-    use crate::common::rc4::Rc4;
 
     pub const MTU: usize = 1450;
 
@@ -105,7 +102,7 @@ pub mod proto {
                 "UDP_ONLY" => ProtocolMode::UdpOnly,
                 "TCP_ONLY" => ProtocolMode::TcpOnly,
                 "UDP_AND_TCP" => ProtocolMode::UdpAndTcp,
-                _ => return Err(anyhow!("Invalid protocol mode"))
+                _ => return Err(anyhow!("Invalid protocol mode")),
             };
             Ok(mode)
         }
@@ -141,7 +138,9 @@ pub mod proto {
 
     macro_rules! get {
         ($slice: expr, $index: expr) => {
-             $slice.get($index).ok_or_else(||io::Error::new(io::ErrorKind::InvalidData, "Decode error"))?
+            $slice
+                .get($index)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Decode error"))?
         };
     }
 
@@ -168,7 +167,7 @@ pub mod proto {
 
                     match res {
                         MsgResult::Success => slice[1] = SUCCESS,
-                        MsgResult::Timeout => slice[1] = TIMEOUT
+                        MsgResult::Timeout => slice[1] = TIMEOUT,
                     };
                     2
                 }
@@ -184,7 +183,7 @@ pub mod proto {
 
                     let type_byte = match heartbeat_type {
                         HeartbeatType::Req => REQ,
-                        HeartbeatType::Resp => RESP
+                        HeartbeatType::Resp => RESP,
                     };
 
                     slice[5] = type_byte;
@@ -200,7 +199,10 @@ pub mod proto {
             let data = get!(packet, 2..);
 
             if magic_num != MAGIC_NUM {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "TCP Message error",
+                ));
             }
 
             let msg = match mode {
@@ -208,13 +210,16 @@ pub mod proto {
                     let node: Node = serde_json::from_slice(data)?;
                     TcpMsg::Register(node)
                 }
-                RESULT => {
-                    match data[0] {
-                        SUCCESS => TcpMsg::Result(MsgResult::Success),
-                        TIMEOUT => TcpMsg::Result(MsgResult::Timeout),
-                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"))
+                RESULT => match data[0] {
+                    SUCCESS => TcpMsg::Result(MsgResult::Success),
+                    TIMEOUT => TcpMsg::Result(MsgResult::Timeout),
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "TCP Message error",
+                        ));
                     }
-                }
+                },
                 NODE_MAP => {
                     let node_map: HashMap<NodeId, Node> = serde_json::from_slice(data)?;
                     TcpMsg::NodeMap(node_map)
@@ -236,11 +241,21 @@ pub mod proto {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"))
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "TCP Message error",
+                            ));
+                        }
                     };
                     TcpMsg::Heartbeat(seq, heartbeat_type)
                 }
-                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "TCP Message error"))
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TCP Message error",
+                    ));
+                }
             };
             Ok(msg)
         }
@@ -252,7 +267,7 @@ pub mod proto {
     }
 
     impl<'a> UdpMsg<'a> {
-        pub fn encode(&self, buff: &'a mut [u8]) -> Result<&'a mut [u8]> {
+        pub fn encode(&self, buff: &'a mut [u8]) -> &'a mut [u8] {
             buff[0] = MAGIC_NUM;
             let slice = &mut buff[1..];
 
@@ -264,7 +279,7 @@ pub mod proto {
 
                     let type_byte = match heartbeat_type {
                         HeartbeatType::Req => REQ,
-                        HeartbeatType::Resp => RESP
+                        HeartbeatType::Resp => RESP,
                     };
 
                     slice[9] = type_byte;
@@ -277,7 +292,7 @@ pub mod proto {
                 }
             };
 
-            Ok(&mut buff[..len + 1])
+            &mut buff[..len + 1]
         }
 
         pub fn decode(packet: &'a [u8]) -> Result<Self> {
@@ -286,13 +301,14 @@ pub mod proto {
             let data = get!(packet, 2..);
 
             if magic_num != MAGIC_NUM {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "UDP Message error",
+                ));
             }
 
             match mode {
-                DATA => {
-                    Ok(UdpMsg::Data(data))
-                }
+                DATA => Ok(UdpMsg::Data(data)),
                 HEARTBEAT => {
                     let mut node_id = [0u8; 4];
                     node_id.copy_from_slice(get!(data, ..4));
@@ -307,11 +323,19 @@ pub mod proto {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"))
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "UDP Message error",
+                            ));
+                        }
                     };
                     Ok(UdpMsg::Heartbeat(node_id, seq, heartbeat_type))
                 }
-                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "UDP Message error"))
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "UDP Message error",
+                )),
             }
         }
     }
@@ -326,7 +350,6 @@ pub mod msg_operator {
 
     use crate::common::rc4::Rc4;
 
-    use super::proto;
     use super::proto::{TcpMsg, UdpMsg};
 
     const UDP_BUFF_SIZE: usize = 65536;
@@ -336,19 +359,16 @@ pub mod msg_operator {
         rx: &'a mut Rx,
         rc4: &'a mut Rc4,
         buff: Box<[u8]>,
-        out: Box<[u8]>,
     }
 
     impl<'a, Rx: AsyncRead + Unpin> TcpMsgReader<'a, Rx> {
         pub fn new(rx: &'a mut Rx, rc4: &'a mut Rc4) -> Self {
             let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            let out = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            TcpMsgReader { rx, rc4, buff, out }
+            TcpMsgReader { rx, rc4, buff }
         }
 
         pub async fn read(&mut self) -> Result<TcpMsg<'_>> {
             let buff = &mut self.buff;
-            let out = &mut self.out;
             let rx = &mut self.rx;
             let rc4 = &mut self.rc4;
 
@@ -397,20 +417,22 @@ pub mod msg_operator {
     pub struct UdpMsgSocket<'a> {
         socket: &'a UdpSocket,
         rc4: Rc4,
-        buff: [u8; UDP_BUFF_SIZE],
-        out: [u8; UDP_BUFF_SIZE],
+        buff: Box<[u8]>,
     }
 
     impl<'a> UdpMsgSocket<'a> {
         pub fn new(socket: &'a UdpSocket, rc4: Rc4) -> Self {
-            UdpMsgSocket { socket, rc4, buff: [0u8; UDP_BUFF_SIZE], out: [0u8; UDP_BUFF_SIZE] }
+            UdpMsgSocket {
+                socket,
+                rc4,
+                buff: vec![0u8; UDP_BUFF_SIZE].into_boxed_slice(),
+            }
         }
 
         pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr)> {
             let socket = self.socket;
             let mut rc4 = self.rc4.clone();
             let buff = &mut self.buff;
-            let out = &mut self.out;
 
             let (len, peer_addr) = socket.recv_from(buff).await?;
             let data = &mut buff[..len];
@@ -424,7 +446,7 @@ pub mod msg_operator {
             let mut rc4 = self.rc4.clone();
             let buff = &mut self.buff;
 
-            let data = msg.encode(buff)?;
+            let data = msg.encode(buff);
             rc4.encrypt_slice(data);
             socket.send_to(data, dest_addr).await?;
             Ok(())

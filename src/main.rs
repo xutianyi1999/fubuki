@@ -2,44 +2,69 @@
 extern crate log;
 
 use std::env;
-use std::fmt::{Display, Formatter, write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
-use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use log::LevelFilter;
 use log4rs::append::console::ConsoleAppender;
-use log4rs::Config;
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
-use log::LevelFilter;
+use log4rs::Config;
 use mimalloc::MiMalloc;
-use serde::{Deserialize, Serialize};
-use tokio::fs;
+use serde::{de, Deserialize};
+
 use tokio::runtime::Runtime;
 
-use crate::common::Either;
+use crate::client::Req;
 use crate::common::net::get_interface_addr;
 use crate::common::net::proto::ProtocolMode;
 use crate::common::rc4::Rc4;
 
-mod tun;
-mod server;
 mod client;
 mod common;
+mod server;
+mod tun;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 #[derive(Deserialize, Clone)]
-struct ServerConfig {
+struct Listener {
     listen_addr: SocketAddr,
     key: String,
 }
 
 #[derive(Deserialize, Clone)]
-struct TunConfig {
+struct ServerConfig {
+    channel_limit: Option<usize>,
+    tcp_heartbeat_interval_secs: Option<u64>,
+    listeners: Vec<Listener>,
+}
+
+#[derive(Clone)]
+struct ServerConfigFinalize {
+    channel_limit: usize,
+    tcp_heartbeat_interval: Duration,
+    listeners: Vec<Listener>,
+}
+
+impl From<ServerConfig> for ServerConfigFinalize {
+    fn from(config: ServerConfig) -> Self {
+        Self {
+            channel_limit: config.channel_limit.unwrap_or(100),
+            tcp_heartbeat_interval: config
+                .tcp_heartbeat_interval_secs
+                .map(Duration::from_secs)
+                .unwrap_or(Duration::from_secs(5)),
+            listeners: config.listeners,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+struct TunIpAddr {
     ip: Ipv4Addr,
     netmask: Ipv4Addr,
 }
@@ -47,7 +72,7 @@ struct TunConfig {
 #[derive(Deserialize, Clone)]
 struct NetworkRange {
     server_addr: String,
-    tun: TunConfig,
+    tun: TunIpAddr,
     key: String,
     mode: Option<String>,
     lan_ip_addr: Option<IpAddr>,
@@ -70,7 +95,7 @@ struct ClientConfig {
 #[derive(Clone)]
 struct NetworkRangeFinalize {
     server_addr: String,
-    tun: TunConfig,
+    tun: TunIpAddr,
     key: Rc4,
     mode: ProtocolMode,
     lan_ip_addr: Option<IpAddr>,
@@ -82,9 +107,9 @@ struct ClientConfigFinalize {
     mtu: usize,
     channel_limit: usize,
     api_addr: SocketAddr,
-    tcp_heartbeat_interval_secs: Duration,
-    udp_heartbeat_interval_secs: Duration,
-    reconnect_interval_secs: Duration,
+    tcp_heartbeat_interval: Duration,
+    udp_heartbeat_interval: Duration,
+    reconnect_interval: Duration,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
     network_ranges: Vec<NetworkRangeFinalize>,
@@ -97,19 +122,25 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
         let mut ranges = Vec::with_capacity(config.network_ranges.len());
 
         for range in config.network_ranges {
-            let mode = ProtocolMode::from_str(&range.mode.unwrap_or("UDP_AND_TCP".to_string()))?;
+            let mode =
+                ProtocolMode::from_str(&range.mode.unwrap_or_else(|| "UDP_AND_TCP".to_string()))?;
 
-            let lan_ip_addr = match mode {
-                ProtocolMode::UdpOnly | ProtocolMode::UdpAndTcp => {
-                    let lan_addr = get_interface_addr(
-                        range.server_addr
-                            .to_socket_addrs()?
-                            .next()
-                            .ok_or_else(|| anyhow!("Server host not found"))?
-                    )?;
-                    Some(lan_addr)
+            let lan_ip_addr = match range.lan_ip_addr {
+                None => {
+                    if mode.udp_support() {
+                        let lan_addr = get_interface_addr(
+                            range
+                                .server_addr
+                                .to_socket_addrs()?
+                                .next()
+                                .ok_or_else(|| anyhow!("Server host not found"))?,
+                        )?;
+                        Some(lan_addr)
+                    } else {
+                        None
+                    }
                 }
-                ProtocolMode::TcpOnly => None
+                Some(v) => Some(v),
             };
 
             let range_finalize = NetworkRangeFinalize {
@@ -126,15 +157,48 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
         let config_finalize = ClientConfigFinalize {
             mtu: config.mtu.unwrap_or(1450),
             channel_limit: config.channel_limit.unwrap_or(100),
-            api_addr: config.api_addr.unwrap_or(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 3030))),
-            tcp_heartbeat_interval_secs: Duration::from_secs(config.tcp_heartbeat_interval_secs.unwrap_or(5)),
-            udp_heartbeat_interval_secs: Duration::from_secs(config.udp_heartbeat_interval_secs.unwrap_or(5)),
-            reconnect_interval_secs: Duration::from_secs(config.reconnect_interval_secs.unwrap_or(3)),
+            api_addr: config
+                .api_addr
+                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, 3030))),
+            tcp_heartbeat_interval: config
+                .tcp_heartbeat_interval_secs
+                .map(Duration::from_secs)
+                .unwrap_or(Duration::from_secs(5)),
+            udp_heartbeat_interval: config
+                .udp_heartbeat_interval_secs
+                .map(Duration::from_secs)
+                .unwrap_or(Duration::from_secs(5)),
+            reconnect_interval: Duration::from_secs(config.reconnect_interval_secs.unwrap_or(3)),
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
             network_ranges: ranges,
         };
         Ok(config_finalize)
+    }
+}
+
+const INVALID_COMMAND: &str = "Invalid command";
+
+enum Args {
+    Server(Option<String>),
+    Client(Option<String>),
+    Call(Option<String>),
+}
+
+impl Args {
+    fn parse() -> Result<Self> {
+        let mut args = env::args();
+        args.next();
+        let mode = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
+        let option = args.next();
+
+        let args = match mode.as_str() {
+            "client" => Args::Client(option),
+            "server" => Args::Server(option),
+            "call" => Args::Call(option),
+            _ => return Err(anyhow!(INVALID_COMMAND)),
+        };
+        Ok(args)
     }
 }
 
@@ -144,54 +208,49 @@ fn main() {
     };
 }
 
-fn launch() -> Result<()> {
-    logger_init()?;
-    let rt = Runtime::new().context("Failed to build tokio runtime")?;
-
-    let res = rt.block_on(async move {
-        match load_config().await.context("Failed to load config")? {
-            Either::Right(config) => client::start(config).await?,
-            Either::Left(config) => server::start(config).await
-        }
-        Ok(())
-    });
-
-    rt.shutdown_background();
-    res
+macro_rules! block_on {
+    ($expr: expr) => {{
+        let rt = Runtime::new().context("Failed to build tokio runtime")?;
+        let res = rt.block_on($expr);
+        rt.shutdown_background();
+        res
+    }};
 }
 
-const INVALID_COMMAND: &str = "Invalid command";
+fn launch() -> Result<()> {
+    logger_init()?;
 
-async fn load_config() -> Result<Either<Vec<ServerConfig>, ClientConfigFinalize>> {
-    let mut args = env::args();
-    args.next();
+    match Args::parse()? {
+        Args::Server(path) => {
+            let config: ServerConfig = load_config(path.as_deref().unwrap_or("config.json"))?;
 
-    let mode = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
-    let config_path = args.next().ok_or_else(|| anyhow!(INVALID_COMMAND))?;
-    let config_json = fs::read_to_string(&config_path).await
-        .with_context(|| format!("Failed to read config from: {}", config_path))?;
-
-    let config = match mode.as_str() {
-        "client" => {
-            let client_config = serde_json::from_str::<ClientConfig>(&config_json)
-                .context("Failed to parse client config")?;
-
-            Either::Right(ClientConfigFinalize::try_from(client_config)?)
+            block_on!(async move {
+                server::start(ServerConfigFinalize::from(config)).await;
+                Ok(())
+            })
         }
-        "server" => {
-            let server_config = serde_json::from_str::<Vec<ServerConfig>>(&config_json)
-                .context("Failed to pares server config")?;
+        Args::Client(path) => {
+            let config: ClientConfig = load_config(path.as_deref().unwrap_or("config.json"))?;
 
-            Either::Left(server_config)
+            block_on!(client::start(ClientConfigFinalize::try_from(config)?))
         }
-        _ => Err(anyhow!(INVALID_COMMAND))?
-    };
-    Ok(config)
+        Args::Call(option) => {
+            client::call(Req::NodeMap, option.as_deref().unwrap_or("127.0.0.1:3030"))
+        }
+    }
+}
+
+fn load_config<T: de::DeserializeOwned>(path: &str) -> Result<T> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to read config from: {}", path))?;
+    serde_json::from_reader(file).context("Failed to parse client config")
 }
 
 fn logger_init() -> Result<()> {
     let stdout = ConsoleAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("[Console] {d(%Y-%m-%d %H:%M:%S)} - {l} - {m}{n}")))
+        .encoder(Box::new(PatternEncoder::new(
+            "[Console] {d(%Y-%m-%d %H:%M:%S)} - {l} - {m}{n}",
+        )))
         .build();
 
     let config = Config::builder()

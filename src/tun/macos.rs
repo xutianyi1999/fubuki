@@ -1,10 +1,10 @@
 use std::io;
-use std::io::{Read, Write};
 use std::io::Result;
+use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 
-use tun::platform::Device;
 use tun::platform::posix::{Reader, Writer};
+use tun::platform::Device;
 
 use crate::common::net::proto::MTU;
 use crate::tun::{Rx, TunDevice, Tx};
@@ -16,15 +16,14 @@ pub struct Mactun {
 impl Mactun {
     pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Mactun> {
         let mut config = tun::Configuration::default();
-        config.address(address)
+        config
+            .address(address)
             .netmask(netmask)
             .mtu(MTU as i32)
             .up();
 
         Ok(Mactun {
-            fd: tun::create(&config).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, e)
-            })?
+            fd: tun::create(&config).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
         })
     }
 }

@@ -1,15 +1,14 @@
 use std::io::Result;
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use crate::TunConfig;
+use crate::TunIpAddr;
 
-#[cfg(target_os = "windows")]
-mod windows;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 pub trait TunDevice: Send + Sync {
     fn send_packet(&self, packet: &[u8]) -> Result<()>;
@@ -27,10 +26,10 @@ impl<T: TunDevice> TunDevice for Arc<T> {
     }
 }
 
-pub(crate) fn create_device(tun_configs: &[TunConfig]) -> Result<impl TunDevice> {
+pub(crate) fn create_device(ip_addrs: &[TunIpAddr]) -> Result<impl TunDevice> {
     #[cfg(target_os = "windows")]
     {
-        Ok(windows::Wintun::create(tun_configs)?)
+        windows::Wintun::create(ip_addrs)
     }
     #[cfg(target_os = "linux")]
     {
@@ -38,6 +37,6 @@ pub(crate) fn create_device(tun_configs: &[TunConfig]) -> Result<impl TunDevice>
     }
     #[cfg(target_os = "macos")]
     {
-            Ok(macos::Mactun::create(address, netmask)?)
-        }
+        Ok(macos::Mactun::create(address, netmask)?)
+    }
 }

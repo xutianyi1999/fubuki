@@ -61,9 +61,9 @@ impl Rc4 {
 
     #[inline]
     fn in_place(&mut self, data: &mut [u8]) {
-        let mut xor_index = 0u8;
+        let mut xor_index;
 
-        for counter in 0..data.len() {
+        for v in data {
             self.x = self.x.wrapping_add(1);
             self.y = self.y.wrapping_add(self.state[self.x as usize]);
 
@@ -73,7 +73,7 @@ impl Rc4 {
             let b = self.state[self.y as usize];
             xor_index = a.wrapping_add(b);
 
-            data[counter] ^= self.state[xor_index as usize];
+            *v ^= self.state[xor_index as usize];
         }
     }
 

@@ -2,17 +2,7 @@ use std::io::Result;
 
 use serde::Serialize;
 
-pub trait ToJson {
-    fn to_json_string(&self) -> Result<String>;
-
-    fn to_json_string_pretty(&self) -> Result<String>;
-
-    fn to_json_vec(&self) -> Result<Vec<u8>>;
-}
-
-impl<T> ToJson for T
-    where T: Serialize
-{
+pub trait ToJson: Serialize {
     fn to_json_string(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
     }
@@ -25,3 +15,5 @@ impl<T> ToJson for T
         Ok(serde_json::to_vec(self)?)
     }
 }
+
+impl<T> ToJson for T where T: Serialize {}

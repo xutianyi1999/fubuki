@@ -1,7 +1,5 @@
 use std::io::{Error, ErrorKind, Result};
-use std::net::Ipv4Addr;
 use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
@@ -9,7 +7,7 @@ use simple_wintun::ReadResult;
 
 use crate::common::net::proto::MTU;
 use crate::tun::TunDevice;
-use crate::TunConfig;
+use crate::TunIpAddr;
 
 const ADAPTER_NAME: &str = "Wintun";
 const TUNNEL_TYPE: &str = "proxy";
@@ -23,17 +21,27 @@ pub struct Wintun {
 }
 
 impl Wintun {
-    pub(crate) fn create(tun_configs: &[TunConfig]) -> Result<Wintun> {
+    pub(crate) fn create(ip_addrs: &[TunIpAddr]) -> Result<Wintun> {
         // drop old wintun adapter
-        { WintunAdapter::open_adapter(ADAPTER_NAME); }
+        {
+            let _ = WintunAdapter::open_adapter(ADAPTER_NAME);
+        }
 
         //try to fix the stuck
         std::thread::sleep(Duration::from_millis(100));
         let adapter = WintunAdapter::create_adapter(ADAPTER_NAME, TUNNEL_TYPE, ADAPTER_GUID)?;
 
-        for TunConfig { ip, netmask } in tun_configs {
+        for TunIpAddr { ip, netmask } in ip_addrs {
             let status = Command::new("netsh")
-                .args(["interface", "ip", "add", "address", ADAPTER_NAME, ip.to_string().as_str(), netmask.to_string().as_str()])
+                .args([
+                    "interface",
+                    "ip",
+                    "add",
+                    "address",
+                    ADAPTER_NAME,
+                    ip.to_string().as_str(),
+                    netmask.to_string().as_str(),
+                ])
                 .output()?
                 .status;
 
@@ -43,7 +51,15 @@ impl Wintun {
         }
 
         let status = Command::new("netsh")
-            .args(["interface", "ipv4", "set", "subinterface", ADAPTER_NAME, &format!("mtu={}", MTU), "store=persistent"])
+            .args([
+                "interface",
+                "ipv4",
+                "set",
+                "subinterface",
+                ADAPTER_NAME,
+                &format!("mtu={}", MTU),
+                "store=persistent",
+            ])
             .output()?
             .status;
 
@@ -51,8 +67,12 @@ impl Wintun {
             return Err(Error::new(ErrorKind::Other, "Failed to set tun mtu"));
         }
 
-        let session: WintunStream<'static> = unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
-        Ok(Wintun { session, _adapter: adapter })
+        let session: WintunStream<'static> =
+            unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
+        Ok(Wintun {
+            session,
+            _adapter: adapter,
+        })
     }
 }
 
@@ -66,7 +86,7 @@ impl TunDevice for Wintun {
 
         match res {
             ReadResult::Success(len) => Ok(len),
-            ReadResult::NotEnoughSize(_) => Ok(0)
+            ReadResult::NotEnoughSize(_) => Ok(0),
         }
     }
 }
