@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use crate::client::{get_direct_node_list, get_interface_map};
+use crate::client::{get_direct_node_list, get_interface_map, get_local_node_id};
 use crate::common::net::proto::NodeId;
 use crate::common::{HashMap, MapInit};
 
@@ -68,7 +68,8 @@ pub async fn api_start(listen_addr: SocketAddr) -> Result<()> {
                                     wan_udp_addr: node.wan_udp_addr,
                                     mode: node.mode,
                                     register_time: node.register_time,
-                                    direct: direct_list.contains(&node.id),
+                                    direct: get_local_node_id() == node.id ||
+                                        direct_list.contains(&node.id),
                                 })
                                 .collect();
 

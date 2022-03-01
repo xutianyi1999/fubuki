@@ -60,8 +60,6 @@ pub mod proto {
 
     use crate::common::persistence::ToJson;
 
-    pub const MTU: usize = 1450;
-
     const MAGIC_NUM: u8 = 0x99;
     const REGISTER: u8 = 0x00;
     const NODE_MAP: u8 = 0x01;
@@ -352,7 +350,7 @@ pub mod msg_operator {
 
     use super::proto::{TcpMsg, UdpMsg};
 
-    const UDP_BUFF_SIZE: usize = 65536;
+    pub const UDP_BUFF_SIZE: usize = 65536;
     pub const TCP_BUFF_SIZE: usize = 65536;
 
     pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
@@ -416,38 +414,38 @@ pub mod msg_operator {
     #[derive(Clone)]
     pub struct UdpMsgSocket<'a> {
         socket: &'a UdpSocket,
-        rc4: Rc4,
+        key: Rc4,
         buff: Box<[u8]>,
     }
 
     impl<'a> UdpMsgSocket<'a> {
-        pub fn new(socket: &'a UdpSocket, rc4: Rc4) -> Self {
+        pub fn new(socket: &'a UdpSocket, key: Rc4) -> Self {
             UdpMsgSocket {
                 socket,
-                rc4,
+                key,
                 buff: vec![0u8; UDP_BUFF_SIZE].into_boxed_slice(),
             }
         }
 
         pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr)> {
             let socket = self.socket;
-            let mut rc4 = self.rc4.clone();
+            let mut key = self.key.clone();
             let buff = &mut self.buff;
 
             let (len, peer_addr) = socket.recv_from(buff).await?;
             let data = &mut buff[..len];
-            rc4.decrypt_slice(data);
+            key.decrypt_slice(data);
 
             Ok((UdpMsg::decode(data)?, peer_addr))
         }
 
         pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
             let socket = self.socket;
-            let mut rc4 = self.rc4.clone();
+            let mut key = self.key.clone();
             let buff = &mut self.buff;
 
             let data = msg.encode(buff);
-            rc4.encrypt_slice(data);
+            key.encrypt_slice(data);
             socket.send_to(data, dest_addr).await?;
             Ok(())
         }

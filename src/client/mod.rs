@@ -19,7 +19,7 @@ use tokio::time;
 pub use api::{call, Req};
 
 use crate::client::api::api_start;
-use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE};
+use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::SocketExt;
 use crate::common::rc4::Rc4;
@@ -86,14 +86,14 @@ impl InterfaceMap {
     fn new(map: HashMap<Ipv4Addr, InterfaceInfo<()>>) -> Self {
         let map = map
             .into_iter()
-            .map(|(tun_addr, node_map)| {
+            .map(|(tun_addr, info)| {
                 let network_segment = InterfaceInfo {
-                    server_addr: node_map.server_addr,
+                    server_addr: info.server_addr,
                     node_map: RwLock::new(Arc::new(HashMap::new())),
-                    tcp_handler_channel: node_map.tcp_handler_channel,
-                    udp_socket: node_map.udp_socket,
-                    key: node_map.key,
-                    try_send_to_lan_addr: node_map.try_send_to_lan_addr,
+                    tcp_handler_channel: info.tcp_handler_channel,
+                    udp_socket: info.udp_socket,
+                    key: info.key,
+                    try_send_to_lan_addr: info.try_send_to_lan_addr,
                 };
                 (tun_addr, network_segment)
             })
@@ -269,7 +269,7 @@ macro_rules! init_local_direct_node_list {
 
 fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
     let mut buff = vec![0u8; get_config().mtu];
-    let mut out = vec![0u8; get_config().mtu];
+    let mut out = vec![0u8; UDP_BUFF_SIZE];
     init_interface_map!();
     init_local_direct_node_list!();
 
@@ -318,11 +318,10 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
 
                 if direct_node_list.contains(node_id) {
                     let peer_addr = if interface_info.try_send_to_lan_addr {
-                        match interface_info.node_map.get(&src_addr) {
-                            Some(Node {
-                                wan_udp_addr: Some(local_wan_addr),
-                                ..
-                            }) if local_wan_addr.ip() == peer_wan_addr.ip() => *peer_lan_addr,
+                        match local_node.wan_udp_addr {
+                            Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
+                                *peer_lan_addr
+                            }
                             _ => *peer_wan_addr,
                         }
                     } else {
@@ -335,7 +334,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                     };
 
                     let msg = UdpMsg::Data(data).encode(&mut out);
-                    (interface_info.key).clone().encrypt_slice(msg);
+                    interface_info.key.clone().encrypt_slice(msg);
                     socket.send_to(msg, peer_addr)?;
                     continue;
                 }
@@ -361,7 +360,7 @@ fn udp_handler_inner<T: TunDevice>(
     key: &Rc4,
     heartbeat_seq: &AtomicU32,
 ) -> Result<()> {
-    let mut buff = vec![0u8; get_config().mtu];
+    let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
     loop {
         let (len, peer_addr) = socket.recv_from(&mut buff)?;
@@ -491,24 +490,30 @@ async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
     let map = get_interface_map();
     let seq = Arc::new(AtomicU32::new(0));
 
-    let mut handle_list = Vec::with_capacity(map.map.len());
+    let count = get_config().udp_handler_thread_count;
+    let mut handle_list = Vec::with_capacity(map.map.len() * count);
 
     for (_, info) in map.map.iter() {
-        let socket = match info.udp_socket {
-            Some(ref socket) => socket.clone(),
-            None => continue,
-        };
+        for _ in 0..count {
+            let socket = match info.udp_socket {
+                Some(ref socket) => socket.clone(),
+                None => continue,
+            };
 
-        let tun = tun.clone();
-        let key = info.key.clone();
-        let seq = seq.clone();
+            let tun = tun.clone();
+            let key = info.key.clone();
+            let seq = seq.clone();
 
-        let h =
-            tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &*socket, &key, &*seq));
-        handle_list.push(h);
+            let h =
+                tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &*socket, &key, &*seq));
+            handle_list.push(h);
+        }
     }
 
-    let fut1 = async { futures_util::future::select_all(handle_list).await.0? };
+    let fut1 = async {
+        futures_util::future::try_join_all(handle_list).await?;
+        Ok(())
+    };
     let fut2 = async { tokio::task::spawn_blocking(move || heartbeat_schedule(&*seq)).await? };
     let fut3 = async {
         tokio::spawn(direct_node_list_schedule()).await?;
@@ -526,7 +531,8 @@ async fn tcp_handler_inner(
     network_range_info: &NetworkRangeFinalize,
 ) {
     loop {
-        let node = init_node.clone();
+        let mut node = init_node.clone();
+        node.register_time = Utc::now().timestamp();
         let inner_to_tun = &to_tun;
         let inner_from_tun = &mut from_tun;
         let mut tx_key = network_range_info.key.clone();
@@ -536,6 +542,7 @@ async fn tcp_handler_inner(
             let mut stream = TcpStream::connect(&network_range_info.server_addr)
                 .await
                 .context("Connect to server error")?;
+
             info!("Server connected");
 
             let (rx, mut tx) = stream.split();
@@ -582,9 +589,11 @@ async fn tcp_handler_inner(
                         }
                         TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                             let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
-                            let res: Result<()> =
-                                tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()));
-                            return res;
+                            let res = tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()));
+
+                            if res.is_err() {
+                                return res;
+                            }
                         }
                         TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
                             if inner_seq1.load(Ordering::Relaxed) == recv_seq {
@@ -599,8 +608,7 @@ async fn tcp_handler_inner(
 
             let fut2 = async move {
                 let mut heartbeat_interval = time::interval(get_config().tcp_heartbeat_interval);
-                let mut check_heartbeat_timeout =
-                    time::interval(get_config().tcp_heartbeat_interval);
+                let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
                 loop {
                     tokio::select! {
@@ -672,10 +680,8 @@ async fn tcp_handler<T: TunDevice + 'static>(
     ) {
         for range in &get_config().network_ranges {
             if range.mode.tcp_support() {
-                return {
-                    let (tx, rx) = crossbeam_channel::unbounded();
-                    (Some(tx), Some(rx))
-                };
+                let (tx, rx) = crossbeam_channel::unbounded();
+                return (Some(tx), Some(rx));
             }
         }
         (None, None)
@@ -728,7 +734,7 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
         }
 
         let opt = match range.lan_ip_addr {
-            Some(lan_ip_addr) => {
+            Some(lan_ip_addr) if range.mode.udp_support() => {
                 let udp_socket =
                     UdpSocket::bind((lan_ip_addr, 0)).context("Failed to create UDP socket")?;
 
@@ -741,7 +747,7 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
                 }
                 Some(udp_socket)
             }
-            None => None,
+            _ => None,
         };
 
         let (tx, rx) = if range.mode.tcp_support() {
@@ -786,12 +792,24 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
         .map(|range| range.tun.clone())
         .collect();
 
-    let tun_device = create_device(&tun_addrs).context("Failed create tun adapter")?;
+    let tun_device =
+        create_device(get_config().mtu, &tun_addrs).context("Failed create tun adapter")?;
     let tun_device = Arc::new(tun_device);
-
     let inner_tun_device = tun_device.clone();
-    let tun_handle =
-        async { tokio::task::spawn_blocking(move || tun_handler(&inner_tun_device)).await? };
+
+    let tun_handle = async {
+        let count = get_config().tun_handler_thread_count;
+        let mut handles = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let inner_tun_device = inner_tun_device.clone();
+            let handle= tokio::task::spawn_blocking(move || tun_handler(&inner_tun_device));
+            handles.push(handle)
+        }
+
+        futures_util::future::try_join_all(handles).await?;
+        Ok(())
+    };
     let tcp_handle = tcp_handler(tcp_handler_initialize, tun_device.clone());
     let udp_handle = async {
         if udp_support {

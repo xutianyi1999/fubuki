@@ -89,6 +89,8 @@ struct ClientConfig {
     reconnect_interval_secs: Option<u64>,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
+    tun_handler_thread_count: Option<usize>,
+    udp_handler_thread_count: Option<usize>,
     network_ranges: Vec<NetworkRange>,
 }
 
@@ -112,6 +114,8 @@ struct ClientConfigFinalize {
     reconnect_interval: Duration,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
+    tun_handler_thread_count: usize,
+    udp_handler_thread_count: usize,
     network_ranges: Vec<NetworkRangeFinalize>,
 }
 
@@ -122,8 +126,7 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
         let mut ranges = Vec::with_capacity(config.network_ranges.len());
 
         for range in config.network_ranges {
-            let mode =
-                ProtocolMode::from_str(&range.mode.unwrap_or_else(|| "UDP_AND_TCP".to_string()))?;
+            let mode = ProtocolMode::from_str(range.mode.as_deref().unwrap_or("UDP_AND_TCP"))?;
 
             let lan_ip_addr = match range.lan_ip_addr {
                 None => {
@@ -144,7 +147,7 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
             };
 
             let range_finalize = NetworkRangeFinalize {
-                server_addr: range.server_addr.clone(),
+                server_addr: range.server_addr,
                 tun: range.tun,
                 key: Rc4::new(range.key.as_bytes()),
                 mode,
@@ -159,7 +162,7 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
             channel_limit: config.channel_limit.unwrap_or(100),
             api_addr: config
                 .api_addr
-                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, 3030))),
+                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::LOCALHOST, 3030))),
             tcp_heartbeat_interval: config
                 .tcp_heartbeat_interval_secs
                 .map(Duration::from_secs)
@@ -171,6 +174,8 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
             reconnect_interval: Duration::from_secs(config.reconnect_interval_secs.unwrap_or(3)),
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
+            tun_handler_thread_count: config.tun_handler_thread_count.unwrap_or(1),
+            udp_handler_thread_count: config.udp_handler_thread_count.unwrap_or(1),
             network_ranges: ranges,
         };
         Ok(config_finalize)

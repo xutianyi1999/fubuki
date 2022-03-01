@@ -10,6 +10,8 @@
   "reconnect_interval_secs": 3,
   "udp_socket_recv_buffer_size": 8192,
   "udp_socket_send_buffer_size": 8192,
+  "tun_handler_thread_count": 1,
+  "udp_handler_thread_count": 1,
   "network_ranges": [
     {
       "server_addr": "192.168.1.10:12345",
@@ -18,7 +20,7 @@
         "netmask": "255.255.255.0"
       },
       "key": "a123",
-      "mode": "TCP_AND_UDP",
+      "mode": "UDP_AND_TCP",
       "lan_ip_addr": "192.168.0.2",
       "try_send_to_lan_addr": false
     }
@@ -34,6 +36,8 @@
 - reconnect_interval_secs(可选): 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
+- tun_handler_thread_count(可选): Tun处理器线程数，适当增加可以提高吞吐，默认1
+- udp_handler_thread_count(可选): UDP处理器线程数，适当增加可以提高吞吐，默认1
 - network_ranges 配置多网段
     - server_addr: 该网段发现服务器与中转服务器
     - tun

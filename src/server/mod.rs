@@ -127,13 +127,14 @@ impl NodeDb {
     }
 }
 
-async fn udp_handler(listen_addr: SocketAddr, rc4: Rc4, node_db: Arc<NodeDb>) -> Result<()> {
+async fn udp_handler(listen_addr: SocketAddr, key: Rc4, node_db: Arc<NodeDb>) -> Result<()> {
     let socket = UdpSocket::bind(listen_addr)
         .await
         .with_context(|| format!("UDP socket bind {} error", listen_addr))?;
+
     info!("UDP socket listening on {}", listen_addr);
 
-    let mut msg_socket = UdpMsgSocket::new(&socket, rc4);
+    let mut msg_socket = UdpMsgSocket::new(&socket, key);
 
     loop {
         let msg = match msg_socket.read().await {
@@ -171,19 +172,20 @@ async fn udp_handler(listen_addr: SocketAddr, rc4: Rc4, node_db: Arc<NodeDb>) ->
     }
 }
 
-async fn tcp_handler(listen_addr: SocketAddr, rc4: Rc4, node_db: Arc<NodeDb>) -> Result<()> {
+async fn tcp_handler(listen_addr: SocketAddr, key: Rc4, node_db: Arc<NodeDb>) -> Result<()> {
     let listener = TcpListener::bind(listen_addr)
         .await
         .with_context(|| format!("TCP socket bind {} error", listen_addr))?;
+
     info!("TCP socket listening on {}", listen_addr);
 
     loop {
-        let rc4 = rc4.clone();
+        let key = key.clone();
         let node_db = node_db.clone();
         let (stream, peer_addr) = listener.accept().await.context("Accept connection error")?;
 
         tokio::spawn(async move {
-            if let Err(e) = tunnel(stream, rc4, node_db).await {
+            if let Err(e) = tunnel(stream, key, node_db).await {
                 error!("Peer addr {} tunnel error -> {:?}", peer_addr, e)
             }
         });
@@ -311,19 +313,19 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
 
     for Listener { listen_addr, key } in &get_config().listeners {
         let handle = tokio::spawn(async move {
-            let rc4 = Rc4::new(key.as_bytes());
+            let key = Rc4::new(key.as_bytes());
             let node_db = Arc::new(NodeDb::new());
-            let rc4_ref = rc4.clone();
+            let key_ref = key.clone();
             let node_db_ref = node_db.clone();
 
             let udp_handle = async move {
-                tokio::spawn(udp_handler(*listen_addr, rc4, node_db))
+                tokio::spawn(udp_handler(*listen_addr, key, node_db))
                     .await?
                     .context("UDP handler error")
             };
 
             let tcp_handle = async move {
-                tokio::spawn(tcp_handler(*listen_addr, rc4_ref, node_db_ref))
+                tokio::spawn(tcp_handler(*listen_addr, key_ref, node_db_ref))
                     .await?
                     .context("TCP handler error")
             };

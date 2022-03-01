@@ -26,14 +26,14 @@ impl<T: TunDevice> TunDevice for Arc<T> {
     }
 }
 
-pub(crate) fn create_device(ip_addrs: &[TunIpAddr]) -> Result<impl TunDevice> {
+pub(crate) fn create_device(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<impl TunDevice> {
     #[cfg(target_os = "windows")]
     {
-        windows::Wintun::create(ip_addrs)
+        windows::Wintun::create(mtu, ip_addrs)
     }
     #[cfg(target_os = "linux")]
     {
-        Ok(linux::Linuxtun::create(address, netmask)?)
+        linux::Linuxtun::create(mtu, ip_addrs)
     }
     #[cfg(target_os = "macos")]
     {

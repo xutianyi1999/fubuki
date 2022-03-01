@@ -1,74 +1,72 @@
+use std::cell::UnsafeCell;
 use std::io;
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
 use std::io::{Read, Write};
-use std::net::Ipv4Addr;
-
-use tun::platform::posix::{Reader, Writer};
+use std::process::Command;
 use tun::platform::Device;
 
-use crate::common::net::proto::MTU;
-use crate::tun::{Rx, TunDevice, Tx};
+use crate::tun::TunDevice;
+use crate::TunIpAddr;
 
 pub struct Linuxtun {
-    fd: Device,
+    fd: UnsafeCell<Device>,
 }
 
+unsafe impl Sync for Linuxtun {}
+
 impl Linuxtun {
-    pub fn create(address: Ipv4Addr, netmask: Ipv4Addr) -> Result<Linuxtun> {
+    pub(super) fn create(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<Linuxtun> {
         let mut config = tun::Configuration::default();
         config
-            .address(address)
-            .netmask(netmask)
-            .mtu(MTU as i32)
+            .address(ip_addrs[0].ip)
+            .netmask(ip_addrs[0].netmask)
+            .mtu(mtu as i32)
+            .platform(|config| {
+                config.packet_information(false);
+            })
             .up();
 
-        config.platform(|config| {
-            config.packet_information(false);
-        });
+        let device = tun::create(&config).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
+            let mut count = 0;
+
+            for x in netmask.octets() {
+                count += x.count_ones();
+            }
+
+            let status = Command::new("netsh")
+                .args([
+                    "ip",
+                    "addr",
+                    "add",
+                    format!("{}/{}", ip, count).as_str(),
+                    "dev",
+                    "tun0",
+                ])
+                .output()?
+                .status;
+
+            if !status.success() {
+                return Err(Error::new(ErrorKind::Other, "Failed to add tun ip address"));
+            }
+        }
 
         Ok(Linuxtun {
-            fd: tun::create(&config).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+            fd: UnsafeCell::new(device),
         })
     }
 }
 
-struct LinuxtunTx {
-    tx: Writer,
-}
-
-struct LinuxtunRx {
-    rx: Reader,
-}
-
-impl Tx for LinuxtunTx {
-    fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
-        self.tx.write(packet)?;
-        Ok(())
-    }
-}
-
-impl Rx for LinuxtunRx {
-    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
-        self.rx.read(buff)
-    }
-}
-
-impl Rx for Linuxtun {
-    fn recv_packet(&mut self, buff: &mut [u8]) -> Result<usize> {
-        self.fd.read(buff)
-    }
-}
-
-impl Tx for Linuxtun {
-    fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
-        self.fd.write(packet)?;
-        Ok(())
-    }
-}
-
 impl TunDevice for Linuxtun {
-    fn split(self) -> (Box<dyn Tx>, Box<dyn Rx>) {
-        let (rx, tx) = self.fd.split();
-        (Box::new(LinuxtunTx { tx }), Box::new(LinuxtunRx { rx }))
+    fn send_packet(&self, packet: &[u8]) -> Result<()> {
+        let fd = unsafe { &mut *self.fd.get() };
+        fd.write(packet)?;
+        Ok(())
+    }
+
+    fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {
+        let fd = unsafe { &mut *self.fd.get() };
+        fd.read(buff)
     }
 }

@@ -5,7 +5,6 @@ use std::time::Duration;
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
 use simple_wintun::ReadResult;
 
-use crate::common::net::proto::MTU;
 use crate::tun::TunDevice;
 use crate::TunIpAddr;
 
@@ -21,7 +20,7 @@ pub struct Wintun {
 }
 
 impl Wintun {
-    pub(crate) fn create(ip_addrs: &[TunIpAddr]) -> Result<Wintun> {
+    pub(super) fn create(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<Wintun> {
         // drop old wintun adapter
         {
             let _ = WintunAdapter::open_adapter(ADAPTER_NAME);
@@ -57,7 +56,7 @@ impl Wintun {
                 "set",
                 "subinterface",
                 ADAPTER_NAME,
-                &format!("mtu={}", MTU),
+                &format!("mtu={}", mtu),
                 "store=persistent",
             ])
             .output()?
@@ -67,6 +66,7 @@ impl Wintun {
             return Err(Error::new(ErrorKind::Other, "Failed to set tun mtu"));
         }
 
+        // TODO self reference
         let session: WintunStream<'static> =
             unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
         Ok(Wintun {
