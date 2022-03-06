@@ -29,7 +29,7 @@ impl Linuxtun {
         let device = tun::create(&config).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
-            let mut count = netmask.octets().into_iter().sum();
+            let count: u32 = netmask.octets().into_iter().map(u8::count_ones).sum();
 
             let status = Command::new("netsh")
                 .args([
