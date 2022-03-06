@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -18,7 +17,7 @@ use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket,
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::SocketExt;
 use crate::common::rc4::Rc4;
-use crate::common::PointerWrap;
+use crate::common::{HashMap, MapInit, PointerWrap};
 use crate::{Listener, ServerConfigFinalize};
 
 static mut CONFIG: PointerWrap<ServerConfigFinalize> = PointerWrap::null();
@@ -225,7 +224,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4, node_db: Arc<NodeDb>) -> Result
     };
 
     let node_id = bridge.node.id;
-    let inner_node_db = &node_db;
+    let inner_node_db = &*node_db;
 
     let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
 
@@ -256,7 +255,7 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4, node_db: Arc<NodeDb>) -> Result
                     tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
                 }
                 TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                    if inner_seq1.load(Ordering::SeqCst) == recv_seq {
+                    if inner_seq1.load(Ordering::Relaxed) == recv_seq {
                         latest_recv_heartbeat_time_ref1
                             .store(Utc::now().timestamp(), Ordering::Relaxed)
                     }
@@ -290,8 +289,8 @@ async fn tunnel(mut stream: TcpStream, rc4: Rc4, node_db: Arc<NodeDb>) -> Result
                     msg_writer.write(&msg).await?;
                 }
                 _ = heartbeat_interval.tick() => {
-                    inner_seq2.fetch_add(1, Ordering::SeqCst);
-                    let heartbeat = TcpMsg::Heartbeat(inner_seq2.load(Ordering::SeqCst), HeartbeatType::Req);
+                    inner_seq2.fetch_add(1, Ordering::Relaxed);
+                    let heartbeat = TcpMsg::Heartbeat(inner_seq2.load(Ordering::Relaxed), HeartbeatType::Req);
                     msg_writer.write(&heartbeat).await?;
                 }
                 _ = check_heartbeat_timeout.tick() => {
@@ -312,7 +311,7 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
     let mut list = Vec::with_capacity(get_config().listeners.len());
 
     for Listener { listen_addr, key } in &get_config().listeners {
-        let handle = tokio::spawn(async move {
+        let handle = async move {
             let key = Rc4::new(key.as_bytes());
             let node_db = Arc::new(NodeDb::new());
             let key_ref = key.clone();
@@ -330,16 +329,15 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
                     .context("TCP handler error")
             };
 
+            // TODO when error occurs in one handler, the other does not end
             if let Err(e) = tokio::try_join!(udp_handle, tcp_handle) {
-                error!("Server execute error -> {:?}", e)
+                error!("Server {} execute error -> {:?}", listen_addr, e)
             };
-        });
+        };
         list.push(handle);
     }
 
     for h in list {
-        if let Err(e) = h.await {
-            error!("Server handler error: {:?}", e)
-        }
+        h.await;
     }
 }

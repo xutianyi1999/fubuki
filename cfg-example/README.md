@@ -36,7 +36,7 @@
 - reconnect_interval_secs(可选): 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
-- tun_handler_thread_count(可选): Tun处理器线程数，适当增加可以提高吞吐，默认1
+- tun_handler_thread_count(可选): TUN处理器线程数，适当增加可以提高吞吐，默认1
 - udp_handler_thread_count(可选): UDP处理器线程数，适当增加可以提高吞吐，默认1
 - network_ranges 配置多网段
     - server_addr: 该网段发现服务器与中转服务器
@@ -46,7 +46,7 @@
     - key: 预共享密钥
     - mode(可选): 模式`UDP_ONLY`, `TCP_ONLY`, `UDP_AND_TCP`, 默认为`UDP_AND_TCP`
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
-    - try_send_to_lan_addr(可选): 同一局域网内无法直接通信时可以开启此选项，默认为关闭
+    - try_send_to_lan_addr(可选): 同一局域网内无法直接通信时可以开启此选项，默认为false
 
 ### server-config.json
 

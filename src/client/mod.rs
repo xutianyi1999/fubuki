@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -23,7 +22,7 @@ use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::SocketExt;
 use crate::common::rc4::Rc4;
-use crate::common::{HashMap, MapInit, PointerWrap};
+use crate::common::{HashMap, HashSet, MapInit, PointerWrap, SetInit};
 use crate::tun::create_device;
 use crate::tun::TunDevice;
 use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
@@ -504,8 +503,10 @@ async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
             let key = info.key.clone();
             let seq = seq.clone();
 
-            let h =
-                tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &*socket, &key, &*seq));
+            let h = async {
+                tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &*socket, &key, &*seq))
+                    .await?
+            };
             handle_list.push(h);
         }
     }
@@ -803,7 +804,9 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
 
         for _ in 0..count {
             let inner_tun_device = inner_tun_device.clone();
-            let handle= tokio::task::spawn_blocking(move || tun_handler(&inner_tun_device));
+            let handle = async {
+                tokio::task::spawn_blocking(move || tun_handler(&inner_tun_device)).await?
+            };
             handles.push(handle)
         }
 
@@ -820,6 +823,7 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
     };
     let api_handle = async { tokio::spawn(api_start(get_config().api_addr)).await? };
 
+    info!("Client start");
     tokio::try_join!(tun_handle, tcp_handle, udp_handle, api_handle)?;
     Ok(())
 }

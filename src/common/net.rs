@@ -49,7 +49,6 @@ pub fn get_interface_addr<A: ToSocketAddrs>(dest_addr: A) -> Result<IpAddr> {
 }
 
 pub mod proto {
-    use std::collections::HashMap;
     use std::io;
     use std::io::Result;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -57,6 +56,7 @@ pub mod proto {
 
     use anyhow::anyhow;
     use serde::{Deserialize, Serialize};
+    use crate::common::HashMap;
 
     use crate::common::persistence::ToJson;
 
