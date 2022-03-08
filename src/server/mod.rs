@@ -337,7 +337,5 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
         list.push(handle);
     }
 
-    for h in list {
-        h.await;
-    }
+    futures_util::future::join_all(list).await;
 }
