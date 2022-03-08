@@ -31,9 +31,8 @@ impl Linuxtun {
         for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
             let count: u32 = netmask.octets().into_iter().map(u8::count_ones).sum();
 
-            let status = Command::new("netsh")
+            let status = Command::new("ip")
                 .args([
-                    "ip",
                     "addr",
                     "add",
                     format!("{}/{}", ip, count).as_str(),
