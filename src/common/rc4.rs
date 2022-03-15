@@ -29,12 +29,6 @@ pub struct Rc4 {
     state: [u8; 256],
 }
 
-impl core::fmt::Debug for Rc4 {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.debug_struct("Rc4").finish()
-    }
-}
-
 impl Rc4 {
     pub const MIN_KEY_LEN: usize = 1;
     // In bytes

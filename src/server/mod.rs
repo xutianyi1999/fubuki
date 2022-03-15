@@ -121,7 +121,7 @@ impl NodeDb {
             .map(|(node_id, handle)| (*node_id, handle.node.clone()))
             .collect();
 
-        tx.send(node_list)?;
+        tx.send(node_list).map_err(|_| anyhow!("Sync error"))?;
         Ok(())
     }
 }

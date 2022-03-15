@@ -49,6 +49,7 @@ pub fn get_interface_addr<A: ToSocketAddrs>(dest_addr: A) -> Result<IpAddr> {
 }
 
 pub mod proto {
+    use std::fmt::{Display, Formatter};
     use std::io;
     use std::io::Result;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -75,7 +76,7 @@ pub mod proto {
     pub type NodeId = u32;
     pub type Seq = u32;
 
-    #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq)]
+    #[derive(Copy, Clone, Serialize, Deserialize, PartialEq)]
     pub enum ProtocolMode {
         UdpOnly,
         TcpOnly,
@@ -106,7 +107,18 @@ pub mod proto {
         }
     }
 
-    #[derive(Serialize, Deserialize, Clone, Debug)]
+    impl Display for ProtocolMode {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            let str = match self {
+                ProtocolMode::UdpOnly => "UDP_ONLY",
+                ProtocolMode::TcpOnly => "TCP_ONLY",
+                ProtocolMode::UdpAndTcp => "UDP_AND_TCP",
+            };
+            write!(f, "{}", str)
+        }
+    }
+
+    #[derive(Serialize, Deserialize, Clone)]
     pub struct Node {
         pub id: NodeId,
         pub tun_addr: Ipv4Addr,

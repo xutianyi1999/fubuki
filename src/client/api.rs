@@ -3,25 +3,36 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 
 use anyhow::anyhow;
 use anyhow::Result;
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use crate::client::{get_direct_node_list, get_interface_map, get_local_node_id};
-use crate::common::net::proto::NodeId;
+use crate::common::net::proto::{Node, NodeId};
 use crate::common::{HashMap, MapInit};
 
 use crate::common::persistence::ToJson;
-use crate::ProtocolMode;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+struct Extends {
+    direct: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct NodeInfo {
+    node: Node,
+    extends: Extends,
+}
+
+#[derive(Clone, Serialize)]
+struct NodeInfoShow {
     id: NodeId,
     tun_addr: Ipv4Addr,
     lan_udp_addr: Option<SocketAddr>,
     wan_udp_addr: Option<SocketAddr>,
-    mode: ProtocolMode,
-    register_time: i64,
+    mode: String,
+    register_time: String,
     direct: bool,
 }
 
@@ -62,14 +73,11 @@ pub async fn api_start(listen_addr: SocketAddr) -> Result<()> {
                                 .node_map
                                 .iter()
                                 .map(|(_, node)| NodeInfo {
-                                    id: node.id,
-                                    tun_addr: node.tun_addr,
-                                    lan_udp_addr: node.lan_udp_addr,
-                                    wan_udp_addr: node.wan_udp_addr,
-                                    mode: node.mode,
-                                    register_time: node.register_time,
-                                    direct: get_local_node_id() == node.id ||
-                                        direct_list.contains(&node.id),
+                                    node: node.clone(),
+                                    extends: Extends {
+                                        direct: get_local_node_id() == node.id
+                                            || direct_list.contains(&node.id),
+                                    },
                                 })
                                 .collect();
 
@@ -107,7 +115,34 @@ pub fn call(req: Req, dest: impl ToSocketAddrs) -> Result<()> {
 
     match resp {
         Resp::Success(map) => {
-            println!("{:#?}", map);
+            let mut new_map = HashMap::with_capacity(map.len());
+
+            for (k, list) in map {
+                let show_list: Vec<NodeInfoShow> = list
+                    .into_iter()
+                    .map(|info| NodeInfoShow {
+                        id: info.node.id,
+                        tun_addr: info.node.tun_addr,
+                        lan_udp_addr: info.node.lan_udp_addr,
+                        wan_udp_addr: info.node.wan_udp_addr,
+                        mode: info.node.mode.to_string(),
+                        register_time: {
+                            let utc: DateTime<Utc> = DateTime::from_utc(
+                                NaiveDateTime::from_timestamp(info.node.register_time, 0),
+                                Utc,
+                            );
+                            let local_time: DateTime<Local> = DateTime::from(utc);
+                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
+                        },
+                        direct: info.extends.direct,
+                    })
+                    .collect();
+
+                new_map.insert(k, show_list);
+            }
+
+            let info = serde_json::to_string_pretty(&new_map)?;
+            println!("{}", info);
             Ok(())
         }
         Resp::Invalid(_) => Err(anyhow!("Invalid command")),

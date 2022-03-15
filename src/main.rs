@@ -187,7 +187,7 @@ const INVALID_COMMAND: &str = "Invalid command";
 enum Args {
     Server(Option<String>),
     Client(Option<String>),
-    Call(Option<String>),
+    Info(Option<String>),
 }
 
 impl Args {
@@ -200,7 +200,7 @@ impl Args {
         let args = match mode.as_str() {
             "client" => Args::Client(option),
             "server" => Args::Server(option),
-            "call" => Args::Call(option),
+            "info" => Args::Info(option),
             _ => return Err(anyhow!(INVALID_COMMAND)),
         };
         Ok(args)
@@ -239,7 +239,7 @@ fn launch() -> Result<()> {
 
             block_on!(client::start(ClientConfigFinalize::try_from(config)?))
         }
-        Args::Call(option) => {
+        Args::Info(option) => {
             client::call(Req::NodeMap, option.as_deref().unwrap_or("127.0.0.1:3030"))
         }
     }

@@ -542,9 +542,7 @@ async fn tcp_handler_inner(
         let process = async move {
             let mut stream = TcpStream::connect(&network_range_info.server_addr)
                 .await
-                .context("Connect to server error")?;
-
-            info!("Server connected");
+                .with_context(|| format!("Connect to {} error", &network_range_info.server_addr))?;
 
             let (rx, mut tx) = stream.split();
             let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
@@ -558,9 +556,11 @@ async fn tcp_handler_inner(
 
             match msg {
                 TcpMsg::Result(MsgResult::Success) => (),
-                TcpMsg::Result(MsgResult::Timeout) => return Err(anyhow!("Register timeout")),
-                _ => return Err(anyhow!("Register error")),
+                TcpMsg::Result(MsgResult::Timeout) => return Err(anyhow!("{} register timeout", &network_range_info.server_addr)),
+                _ => return Err(anyhow!("{} register error", &network_range_info.server_addr)),
             };
+
+            info!("{} connected", &network_range_info.server_addr);
 
             let (tx, mut rx) = unbounded_channel::<TcpMsg>();
 
