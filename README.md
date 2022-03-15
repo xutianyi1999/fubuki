@@ -17,7 +17,7 @@ fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
 ### 前置依赖
 
 #### Windows
-需要wintun.dll(https://www.wintun.net)与执行文件同目录或System32下，并且能以管理员权限运行
+需要wintun.dll(https://www.wintun.net) 与执行文件同目录或System32下，并且能以管理员权限运行
 
 #### Linux
 需要内核支持tun模块
