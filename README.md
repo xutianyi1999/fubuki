@@ -48,7 +48,7 @@ sudo ./fubuki client client-config.json
 Windows平台toolchain需要为MSVC
 
 ```shell
-git clone https://github.com/xutianyi1999/fubuki;
-cd fubuki;
-cargo build --release;
+git clone https://github.com/xutianyi1999/fubuki
+cd fubuki
+cargo build --release
 ```
