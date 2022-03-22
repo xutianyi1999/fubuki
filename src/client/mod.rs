@@ -651,7 +651,7 @@ async fn tcp_handler_inner(
         };
 
         if let Err(e) = process.await {
-            error!("TCP handler error -> {:?}", e)
+            error!("TCP {} handler error -> {:?}", &network_range_info.server_addr, e)
         }
 
         time::sleep(get_config().reconnect_interval).await;
