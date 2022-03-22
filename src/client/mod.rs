@@ -7,8 +7,6 @@ use anyhow::Result;
 use anyhow::{anyhow, Context};
 use chrono::Utc;
 use parking_lot::RwLock;
-use smoltcp::wire::Ipv4Address;
-use smoltcp::wire::Ipv4Packet;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::error::TrySendError;
@@ -20,7 +18,7 @@ pub use api::{call, Req};
 use crate::client::api::api_start;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
-use crate::common::net::SocketExt;
+use crate::common::net::{proto, SocketExt};
 use crate::common::rc4::Rc4;
 use crate::common::{HashMap, HashSet, MapInit, PointerWrap, SetInit};
 use crate::tun::create_device;
@@ -281,13 +279,8 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
             len => &buff[..len],
         };
 
-        let ipv4 = Ipv4Packet::new_unchecked(data);
-
-        let Ipv4Address(octets) = ipv4.dst_addr();
-        let dst_addr = Ipv4Addr::from(octets);
-
-        let Ipv4Address(octets) = ipv4.src_addr();
-        let src_addr = Ipv4Addr::from(octets);
+        let src_addr = proto::get_ip_src_addr(data)?;
+        let dst_addr = proto::get_ip_dst_addr(data)?;
 
         let interface_map: &HashMap<Ipv4Addr, InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>> =
             get_local_interface_map!();

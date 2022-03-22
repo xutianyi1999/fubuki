@@ -53,6 +53,7 @@ pub mod proto {
     use std::io;
     use std::io::Result;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::ops::Range;
     use std::str::FromStr;
 
     use anyhow::anyhow;
@@ -147,10 +148,13 @@ pub mod proto {
     }
 
     macro_rules! get {
-        ($slice: expr, $index: expr) => {
+        ($slice: expr, $index: expr, $error_msg: expr) => {
             $slice
                 .get($index)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Decode error"))?
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, $error_msg))?
+        };
+        ($slice: expr, $index: expr) => {
+            get!($slice, $index, "Decode error")
         };
     }
 
@@ -348,6 +352,21 @@ pub mod proto {
                 )),
             }
         }
+    }
+
+    const SRC_ADDR: Range<usize> = 12..16;
+    const DST_ADDR: Range<usize> = 16..20;
+
+    pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr>{
+        let mut buff = [0u8; 4];
+        buff.copy_from_slice(get!(ip_packet, DST_ADDR, "Get ip packet dst addr error"));
+        Ok(Ipv4Addr::from(buff))
+    }
+
+    pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr>{
+        let mut buff = [0u8; 4];
+        buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "Get ip packet src addr error"));
+        Ok(Ipv4Addr::from(buff))
     }
 }
 
