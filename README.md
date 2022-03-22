@@ -20,7 +20,7 @@ fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
 需要wintun.dll(https://www.wintun.net) 与执行文件同目录或System32下，并且能以管理员权限运行
 
 #### Linux
-需要内核支持tun模块
+需要内核支持TUN模块
 
 ### 客户端命令
 节点启动：
@@ -40,4 +40,13 @@ sudo ./fubuki client client-config.json
 服务端启动：
 ```shell
 ./fubuki server server-config.json
+```
+
+## 源码构建
+安装Rust环境
+
+Windows平台toolchain需要为MSVC
+
+```shell
+cargo build --release
 ```
