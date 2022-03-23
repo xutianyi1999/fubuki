@@ -2,7 +2,7 @@
 
 ```json
 {
-  "mtu": 1450,
+  "mtu": 1462,
   "channel_limit": 100,
   "api_addr": "127.0.0.1:3030",
   "tcp_heartbeat_interval_secs": 5,
@@ -28,11 +28,11 @@
 }
 ```
 
-- mtu(可选): MTU，默认1450
+- mtu(可选): MTU，默认1462
 - channel_limit(可选): TUN发送至Server的队列大小，超过limit丢包，默认100
 - api_addr(可选): 客户端API监听地址，默认`127.0.0.1:3030`
-- tcp_heartbeat_interval_secs(可选): TCP 心跳包发送周期，默认5秒
-- udp_heartbeat_interval_secs(可选): UDP 心跳包发送周期，默认5秒
+- tcp_heartbeat_interval_secs(可选): TCP 心跳包发送周期，最长10秒，默认5秒
+- udp_heartbeat_interval_secs(可选): UDP 心跳包发送周期，最长10秒，默认5秒
 - reconnect_interval_secs(可选): 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
@@ -64,7 +64,7 @@
 ```
 
 - channel_limit(可选): 转发队列，超过limit丢包，默认100
-- tcp_heartbeat_interval_secs(可选): TCP 心跳包发送周期，默认5秒
+- tcp_heartbeat_interval_secs(可选): TCP 心跳包发送周期，最长10秒，默认5秒
 - listeners 配置多网段
     - listen_addr: 监听地址
     - key: 预共享密钥

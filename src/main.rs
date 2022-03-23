@@ -56,7 +56,7 @@ impl From<ServerConfig> for ServerConfigFinalize {
             channel_limit: config.channel_limit.unwrap_or(100),
             tcp_heartbeat_interval: config
                 .tcp_heartbeat_interval_secs
-                .map(Duration::from_secs)
+                .map(|sec| Duration::from_secs(ternary!(sec > 10, 10, sec)))
                 .unwrap_or(Duration::from_secs(5)),
             listeners: config.listeners,
         }
@@ -165,11 +165,11 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
                 .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::LOCALHOST, 3030))),
             tcp_heartbeat_interval: config
                 .tcp_heartbeat_interval_secs
-                .map(Duration::from_secs)
+                .map(|sec| Duration::from_secs(ternary!(sec > 10, 10, sec)))
                 .unwrap_or(Duration::from_secs(5)),
             udp_heartbeat_interval: config
                 .udp_heartbeat_interval_secs
-                .map(Duration::from_secs)
+                .map(|sec| Duration::from_secs(ternary!(sec > 10, 10, sec)))
                 .unwrap_or(Duration::from_secs(5)),
             reconnect_interval: Duration::from_secs(config.reconnect_interval_secs.unwrap_or(3)),
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,

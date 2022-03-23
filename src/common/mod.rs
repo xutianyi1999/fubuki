@@ -1,9 +1,13 @@
-use std::ops::Deref;
-use std::ptr::null_mut;
-
 pub mod cipher;
 pub mod net;
 pub mod persistence;
+
+#[macro_export]
+macro_rules! ternary {
+    ($condition: expr, $_true: expr, $_false: expr) => {
+        if $condition { $_true } else { $_false }
+    };
+}
 
 pub type HashMap<K, V> = std::collections::HashMap<K, V, ahash::RandomState>;
 pub type HashSet<V> = std::collections::HashSet<V, ahash::RandomState>;
@@ -31,30 +35,3 @@ pub trait SetInit<V> {
 }
 
 impl<V> SetInit<V> for HashSet<V> {}
-
-#[derive(Copy, Clone)]
-pub struct PointerWrap<T> {
-    ptr: *const T,
-}
-
-impl<T> PointerWrap<T> {
-    pub const fn new(ptr: &T) -> Self {
-        PointerWrap { ptr }
-    }
-
-    pub const fn null() -> Self {
-        PointerWrap { ptr: null_mut() }
-    }
-}
-
-impl<T> Deref for PointerWrap<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.ptr }
-    }
-}
-
-unsafe impl<T> Send for PointerWrap<T> {}
-
-unsafe impl<T> Sync for PointerWrap<T> {}

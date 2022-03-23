@@ -1,3 +1,4 @@
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -17,17 +18,17 @@ use crate::common::cipher::Aes128Ctr;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket, TCP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::SocketExt;
-use crate::common::{HashMap, MapInit, PointerWrap};
+use crate::common::{HashMap, MapInit};
 use crate::{Listener, ServerConfigFinalize};
 
-static mut CONFIG: PointerWrap<ServerConfigFinalize> = PointerWrap::null();
+static mut CONFIG: MaybeUninit<ServerConfigFinalize> = MaybeUninit::uninit();
 
 fn set_config(config: ServerConfigFinalize) {
-    unsafe { CONFIG = PointerWrap::new(Box::leak(Box::new(config))) }
+    unsafe { CONFIG.write(config) };
 }
 
 fn get_config() -> &'static ServerConfigFinalize {
-    unsafe { &*CONFIG }
+    unsafe { CONFIG.assume_init_ref() }
 }
 
 struct NodeHandle {

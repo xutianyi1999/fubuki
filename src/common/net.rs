@@ -301,7 +301,6 @@ pub mod proto {
                 }
                 UdpMsg::Data(data) => {
                     slice[0] = DATA;
-                    slice[1..data.len() + 1].copy_from_slice(*data);
                     data.len() + 1
                 }
             };

@@ -1,3 +1,4 @@
+use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use crate::common::cipher::Aes128Ctr;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::{proto, SocketExt};
-use crate::common::{HashMap, HashSet, MapInit, PointerWrap, SetInit};
+use crate::common::{HashMap, HashSet, MapInit, SetInit};
 use crate::tun::create_device;
 use crate::tun::TunDevice;
 use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
@@ -28,24 +29,24 @@ use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
 mod api;
 
 static mut LOCAL_NODE_ID: NodeId = 0;
-static mut CONFIG: PointerWrap<ClientConfigFinalize> = PointerWrap::null();
-static mut INTERFACE_MAP: PointerWrap<InterfaceMap> = PointerWrap::null();
-static mut DIRECT_NODE_LIST: PointerWrap<DirectNodeList> = PointerWrap::null();
+static mut CONFIG: MaybeUninit<ClientConfigFinalize> = MaybeUninit::uninit();
+static mut INTERFACE_MAP: MaybeUninit<InterfaceMap> = MaybeUninit::uninit();
+static mut DIRECT_NODE_LIST: MaybeUninit<DirectNodeList> = MaybeUninit::uninit();
 
 fn set_local_node_id(id: NodeId) {
     unsafe { LOCAL_NODE_ID = id }
 }
 
 fn set_config(config: ClientConfigFinalize) {
-    unsafe { CONFIG = PointerWrap::new(Box::leak(Box::new(config))) }
+    unsafe { CONFIG.write(config) };
 }
 
 fn set_interface_map(map: InterfaceMap) {
-    unsafe { INTERFACE_MAP = PointerWrap::new(Box::leak(Box::new(map))) }
+    unsafe { INTERFACE_MAP.write(map) };
 }
 
 fn set_direct_node_list(list: DirectNodeList) {
-    unsafe { DIRECT_NODE_LIST = PointerWrap::new(Box::leak(Box::new(list))) }
+    unsafe { DIRECT_NODE_LIST.write(list) };
 }
 
 fn get_local_node_id() -> NodeId {
@@ -53,15 +54,15 @@ fn get_local_node_id() -> NodeId {
 }
 
 fn get_config() -> &'static ClientConfigFinalize {
-    unsafe { &CONFIG }
+    unsafe { CONFIG.assume_init_ref() }
 }
 
 fn get_interface_map() -> &'static InterfaceMap {
-    unsafe { &INTERFACE_MAP }
+    unsafe { INTERFACE_MAP.assume_init_ref() }
 }
 
 fn get_direct_node_list() -> &'static DirectNodeList {
-    unsafe { &DIRECT_NODE_LIST }
+    unsafe { DIRECT_NODE_LIST.assume_init_ref() }
 }
 
 struct InterfaceInfo<Map> {
@@ -265,18 +266,20 @@ macro_rules! init_local_direct_node_list {
 }
 
 fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
-    let mut buff = vec![0u8; get_config().mtu];
-    let mut out = vec![0u8; UDP_BUFF_SIZE];
+    // TODO need to be optimized
+    let mut buff = vec![0u8; UDP_BUFF_SIZE];
+    let buff = (&mut buff[..]) as *mut [u8];
+
     init_interface_map!();
     init_local_direct_node_list!();
 
     loop {
         let data = match tun
-            .recv_packet(&mut buff)
+            .recv_packet(unsafe { &mut (&mut *buff)[2..] })
             .context("Read packet from tun error")?
         {
             0 => continue,
-            len => &buff[..len],
+            len => unsafe { &(&*buff)[2..len + 2] },
         };
 
         let src_addr = proto::get_ip_src_addr(data)?;
@@ -325,7 +328,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                         None => unreachable!(),
                     };
 
-                    let msg = UdpMsg::Data(data).encode(&mut out);
+                    let msg = UdpMsg::Data(data).encode(unsafe { &mut *buff });
                     interface_info.key.clone().encrypt_slice(msg);
                     socket.send_to(msg, peer_addr)?;
                     continue;
