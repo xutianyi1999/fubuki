@@ -56,9 +56,9 @@ pub mod proto {
     use std::ops::Range;
     use std::str::FromStr;
 
+    use crate::common::HashMap;
     use anyhow::anyhow;
     use serde::{Deserialize, Serialize};
-    use crate::common::HashMap;
 
     use crate::common::persistence::ToJson;
 
@@ -357,13 +357,13 @@ pub mod proto {
     const SRC_ADDR: Range<usize> = 12..16;
     const DST_ADDR: Range<usize> = 16..20;
 
-    pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr>{
+    pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
         let mut buff = [0u8; 4];
         buff.copy_from_slice(get!(ip_packet, DST_ADDR, "Get ip packet dst addr error"));
         Ok(Ipv4Addr::from(buff))
     }
 
-    pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr>{
+    pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
         let mut buff = [0u8; 4];
         buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "Get ip packet src addr error"));
         Ok(Ipv4Addr::from(buff))
@@ -377,7 +377,7 @@ pub mod msg_operator {
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::UdpSocket;
 
-    use crate::common::rc4::Rc4;
+    use crate::common::cipher::Aes128Ctr;
 
     use super::proto::{TcpMsg, UdpMsg};
 
@@ -386,52 +386,52 @@ pub mod msg_operator {
 
     pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
         rx: &'a mut Rx,
-        rc4: &'a mut Rc4,
+        key: &'a mut Aes128Ctr,
         buff: Box<[u8]>,
     }
 
     impl<'a, Rx: AsyncRead + Unpin> TcpMsgReader<'a, Rx> {
-        pub fn new(rx: &'a mut Rx, rc4: &'a mut Rc4) -> Self {
+        pub fn new(rx: &'a mut Rx, key: &'a mut Aes128Ctr) -> Self {
             let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            TcpMsgReader { rx, rc4, buff }
+            TcpMsgReader { rx, key, buff }
         }
 
         pub async fn read(&mut self) -> Result<TcpMsg<'_>> {
             let buff = &mut self.buff;
             let rx = &mut self.rx;
-            let rc4 = &mut self.rc4;
+            let key = &mut self.key;
 
             let len = rx.read_u16().await?;
             let data = &mut buff[..len as usize];
             rx.read_exact(data).await?;
 
-            rc4.decrypt_slice(data);
+            key.decrypt_slice(data);
             Ok(TcpMsg::decode(data)?)
         }
     }
 
     pub struct TcpMsgWriter<'a, Tx: AsyncWrite + Unpin> {
         tx: &'a mut Tx,
-        rc4: &'a mut Rc4,
+        key: &'a mut Aes128Ctr,
         buff: Box<[u8]>,
         out: Box<[u8]>,
     }
 
     impl<'a, Tx: AsyncWrite + Unpin> TcpMsgWriter<'a, Tx> {
-        pub fn new(tx: &'a mut Tx, rc4: &'a mut Rc4) -> Self {
+        pub fn new(tx: &'a mut Tx, key: &'a mut Aes128Ctr) -> Self {
             let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
             let out = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            TcpMsgWriter { tx, rc4, buff, out }
+            TcpMsgWriter { tx, key, buff, out }
         }
 
         pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<()> {
             let buff = &mut self.buff;
             let out = &mut self.out;
             let tx = &mut self.tx;
-            let rc4 = &mut self.rc4;
+            let key = &mut self.key;
 
             let data = msg.encode(buff)?;
-            rc4.encrypt_slice(data);
+            key.encrypt_slice(data);
 
             let len = data.len();
             out[..2].copy_from_slice(&(len as u16).to_be_bytes());
@@ -445,12 +445,12 @@ pub mod msg_operator {
     #[derive(Clone)]
     pub struct UdpMsgSocket<'a> {
         socket: &'a UdpSocket,
-        key: Rc4,
+        key: Aes128Ctr,
         buff: Box<[u8]>,
     }
 
     impl<'a> UdpMsgSocket<'a> {
-        pub fn new(socket: &'a UdpSocket, key: Rc4) -> Self {
+        pub fn new(socket: &'a UdpSocket, key: Aes128Ctr) -> Self {
             UdpMsgSocket {
                 socket,
                 key,

@@ -21,6 +21,9 @@ mimalloc = { version = "*", default-features = false }
 crossbeam-channel = "0.5"
 ahash = "0.7"
 futures-util = "0.3"
+aes = "0.8"
+ctr = "0.9"
+md5 = "0.7"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tun = "0.5"

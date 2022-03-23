@@ -16,10 +16,10 @@ use tokio::time;
 pub use api::{call, Req};
 
 use crate::client::api::api_start;
+use crate::common::cipher::Aes128Ctr;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::{proto, SocketExt};
-use crate::common::rc4::Rc4;
 use crate::common::{HashMap, HashSet, MapInit, PointerWrap, SetInit};
 use crate::tun::create_device;
 use crate::tun::TunDevice;
@@ -69,7 +69,7 @@ struct InterfaceInfo<Map> {
     server_addr: String,
     tcp_handler_channel: Option<Sender<(Box<[u8]>, NodeId)>>,
     udp_socket: Option<Arc<UdpSocket>>,
-    key: Rc4,
+    key: Aes128Ctr,
     try_send_to_lan_addr: bool,
 }
 
@@ -349,7 +349,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
 fn udp_handler_inner<T: TunDevice>(
     tun: &T,
     socket: &UdpSocket,
-    key: &Rc4,
+    key: &Aes128Ctr,
     heartbeat_seq: &AtomicU32,
 ) -> Result<()> {
     let mut buff = vec![0u8; UDP_BUFF_SIZE];
@@ -549,8 +549,18 @@ async fn tcp_handler_inner(
 
             match msg {
                 TcpMsg::Result(MsgResult::Success) => (),
-                TcpMsg::Result(MsgResult::Timeout) => return Err(anyhow!("{} register timeout", &network_range_info.server_addr)),
-                _ => return Err(anyhow!("{} register error", &network_range_info.server_addr)),
+                TcpMsg::Result(MsgResult::Timeout) => {
+                    return Err(anyhow!(
+                        "{} register timeout",
+                        &network_range_info.server_addr
+                    ))
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "{} register error",
+                        &network_range_info.server_addr
+                    ))
+                }
             };
 
             info!("{} connected", &network_range_info.server_addr);
@@ -644,7 +654,10 @@ async fn tcp_handler_inner(
         };
 
         if let Err(e) = process.await {
-            error!("TCP {} handler error -> {:?}", &network_range_info.server_addr, e)
+            error!(
+                "TCP {} handler error -> {:?}",
+                &network_range_info.server_addr, e
+            )
         }
 
         time::sleep(get_config().reconnect_interval).await;
