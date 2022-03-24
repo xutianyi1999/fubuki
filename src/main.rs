@@ -158,7 +158,7 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
         }
 
         let config_finalize = ClientConfigFinalize {
-            mtu: config.mtu.unwrap_or(1450),
+            mtu: config.mtu.unwrap_or(1462),
             channel_limit: config.channel_limit.unwrap_or(100),
             api_addr: config
                 .api_addr
