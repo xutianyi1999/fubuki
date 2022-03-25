@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use anyhow::{anyhow, Context};
 use chrono::Utc;
+use futures_util::FutureExt;
 use parking_lot::RwLock;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
@@ -625,11 +626,9 @@ async fn tcp_handler_inner(
                                 None => return Ok(())
                             }
                         }
-                        opt = async {
-                            match inner_from_tun {
-                                Some(v) => v.recv().await,
-                                None => std::future::pending().await
-                            }
+                        opt = match inner_from_tun {
+                            Some(v) => v.recv().right_future(),
+                            None => std::future::pending().left_future()
                         } => {
                             match opt {
                                 Some((data, dest_node_id)) => {
@@ -823,12 +822,10 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
         Ok(())
     };
     let tcp_handle = tcp_handler(tcp_handler_initialize, tun_device.clone());
-    let udp_handle = async {
-        if udp_support {
-            udp_handler(tun_device).await
-        } else {
-            std::future::pending().await
-        }
+    let udp_handle = if udp_support {
+        udp_handler(tun_device).right_future()
+    } else {
+        std::future::pending().left_future()
     };
     let api_handle = async { tokio::spawn(api_start(get_config().api_addr)).await? };
 
