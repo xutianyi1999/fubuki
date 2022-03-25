@@ -413,30 +413,26 @@ pub mod msg_operator {
         tx: &'a mut Tx,
         key: &'a mut Aes128Ctr,
         buff: Box<[u8]>,
-        out: Box<[u8]>,
     }
 
     impl<'a, Tx: AsyncWrite + Unpin> TcpMsgWriter<'a, Tx> {
         pub fn new(tx: &'a mut Tx, key: &'a mut Aes128Ctr) -> Self {
             let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            let out = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            TcpMsgWriter { tx, key, buff, out }
+            TcpMsgWriter { tx, key, buff }
         }
 
         pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<()> {
             let buff = &mut self.buff;
-            let out = &mut self.out;
             let tx = &mut self.tx;
             let key = &mut self.key;
 
-            let data = msg.encode(buff)?;
+            let data = msg.encode(&mut buff[2..])?;
             key.encrypt_slice(data);
 
             let len = data.len();
-            out[..2].copy_from_slice(&(len as u16).to_be_bytes());
-            out[2..len + 2].copy_from_slice(data);
+            buff[..2].copy_from_slice(&(len as u16).to_be_bytes());
 
-            tx.write_all(&out[..len + 2]).await?;
+            tx.write_all(&buff[..len + 2]).await?;
             Ok(())
         }
     }
@@ -469,6 +465,7 @@ pub mod msg_operator {
             Ok((UdpMsg::decode(data)?, peer_addr))
         }
 
+        // TODO unsupported UdpMsg::Data type
         pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
             let socket = self.socket;
             let mut key = self.key.clone();
