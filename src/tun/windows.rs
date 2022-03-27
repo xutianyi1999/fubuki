@@ -12,7 +12,7 @@ const ADAPTER_NAME: &str = "Wintun";
 const TUNNEL_TYPE: &str = "proxy";
 const ADAPTER_GUID: &str = "{248B1B2B-94FA-0E20-150F-5C2D2FB4FBF9}";
 //1MB
-const ADAPTER_BUFF_SIZE: u32 = 1048576;
+const ADAPTER_BUFF_SIZE: u32 = 0x100000;
 
 pub struct Wintun {
     session: WintunStream<'static>,
@@ -78,7 +78,14 @@ impl Wintun {
 
 impl TunDevice for Wintun {
     fn send_packet(&self, packet: &[u8]) -> Result<()> {
-        self.session.write_packet(packet)
+        const ERROR_BUFFER_OVERFLOW: i32 = 111;
+
+        loop {
+            match self.session.write_packet(packet) {
+                Err(e) if e.raw_os_error() == Some(ERROR_BUFFER_OVERFLOW) => continue,
+                res => return res
+            }
+        }
     }
 
     fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {
