@@ -163,6 +163,7 @@ async fn udp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeD
 
                 node_db.get_mut(&node_id, |v| {
                     if let Some(NodeHandle { node, .. }) = v {
+                        debug!("Update {} wan_udp_addr to {}", node_id, peer_addr);
                         node.wan_udp_addr = Some(peer_addr)
                     }
                 })?;
@@ -285,9 +286,10 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
                     msg_writer.write(&msg).await?;
                 }
                 res = bridge.channel_rx.recv() => {
-                    let (data, node_id) = res.ok_or_else(|| anyhow!("Node {} channel closed", node_id))?;
-                    let msg = TcpMsg::Forward(&data, node_id);
+                    let (data, src_node_id) = res.ok_or_else(|| anyhow!("Node {} channel closed", node_id))?;
+                    let msg = TcpMsg::Forward(&data, src_node_id);
                     msg_writer.write(&msg).await?;
+                    debug!("Forward packet {} to {}", src_node_id, node_id)
                 }
                 _ = heartbeat_interval.tick() => {
                     inner_seq2.fetch_add(1, Ordering::Relaxed);

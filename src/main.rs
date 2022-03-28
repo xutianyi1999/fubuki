@@ -223,7 +223,7 @@ macro_rules! block_on {
 }
 
 fn launch() -> Result<()> {
-    logger_init()?;
+    logger_init().unwrap();
 
     match Args::parse()? {
         Args::Server(path) => {
@@ -260,7 +260,11 @@ fn logger_init() -> Result<()> {
 
     let config = Config::builder()
         .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .build(Root::builder().appender("stdout").build(LevelFilter::Info))?;
+        .build(
+            Root::builder().appender("stdout").build(
+                LevelFilter::from_str(&std::env::var("FUBUKI_LOG").unwrap_or(String::from("INFO")))?
+            ),
+        )?;
 
     log4rs::init_config(config)?;
     Ok(())

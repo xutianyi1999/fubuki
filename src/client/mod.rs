@@ -167,6 +167,7 @@ macro_rules! init_interface_map {
 
                 if local_interface_map_version != interface_map_version {
                     if let Some(v) = interface_map.try_load() {
+                        debug!("Update local_interface_map");
                         local_interface_map = v;
                         local_interface_map_version = interface_map_version;
                     }
@@ -256,6 +257,7 @@ macro_rules! init_local_direct_node_list {
 
                 if node_list_version != local_direct_node_list_version {
                     if let Some(v) = node_list.try_load() {
+                        debug!("Update local_direct_node_list");
                         local_direct_node_list = v;
                         local_direct_node_list_version = node_list_version
                     }
@@ -332,6 +334,8 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                     let msg = UdpMsg::Data(data).encode(unsafe { &mut *buff });
                     interface_info.key.clone().encrypt_slice(msg);
                     socket.send_to(msg, peer_addr)?;
+
+                    debug!("Send {} -> {} packet to {}", src_addr, dst_addr, peer_addr);
                     continue;
                 }
             }
@@ -343,8 +347,10 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                 None => unreachable!(),
             };
 
-            if let Err(TrySendError::Closed(_)) = tx.try_send((data.into(), dst_node.id)) {
-                return Err(anyhow!("TCP handler channel closed"));
+            match tx.try_send((data.into(), dst_node.id)) {
+                Ok(_) => debug!("Forward {} -> {} packet to {}", src_addr, dst_addr, interface_info.server_addr),
+                Err(TrySendError::Closed(_)) =>  return Err(anyhow!("TCP handler channel closed")),
+                _ => continue
             }
         }
     }
@@ -379,7 +385,10 @@ fn udp_handler_inner<T: TunDevice>(
                 {
                     get_direct_node_list().try_update(node_id);
                 }
-                UdpMsg::Data(data) => tun.send_packet(data)?,
+                UdpMsg::Data(data) => {
+                    debug!("Recv packet from {}", peer_addr);
+                    tun.send_packet(data)?
+                }
                 _ => continue,
             }
         }
@@ -600,6 +609,7 @@ async fn tcp_handler_inner(
                         }
                         TcpMsg::Forward(packet, _) => {
                             if let Some(to_tun) = inner_to_tun {
+                                debug!("Recv packet from {}", &network_range_info.server_addr);
                                 to_tun.send(packet.into())?
                             }
                         }
