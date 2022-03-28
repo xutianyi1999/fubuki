@@ -83,7 +83,7 @@ impl TunDevice for Wintun {
         loop {
             match self.session.write_packet(packet) {
                 Err(e) if e.raw_os_error() == Some(ERROR_BUFFER_OVERFLOW) => continue,
-                res => return res
+                res => return res,
             }
         }
     }

@@ -140,7 +140,7 @@ async fn udp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeD
         let msg = match msg_socket.read().await {
             Ok(v) => v,
             Err(e) => {
-                error!("UDP msg read error -> {:?}", e);
+                error!("UDP msg recv error -> {:?}", e);
                 continue;
             }
         };

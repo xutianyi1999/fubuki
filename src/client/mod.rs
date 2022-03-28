@@ -509,16 +509,24 @@ async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
     }
 
     let fut1 = async {
-        futures_util::future::try_join_all(handle_list).await?;
+        futures_util::future::try_join_all(handle_list)
+            .await
+            .context("UDP handler inner error")?;
         Ok(())
     };
-    let fut2 = async { tokio::task::spawn_blocking(move || heartbeat_schedule(&*seq)).await? };
+    let fut2 = async {
+        tokio::task::spawn_blocking(move || heartbeat_schedule(&*seq))
+            .await
+            .context("Heartbeat schedule handler error")?
+    };
     let fut3 = async {
-        tokio::spawn(direct_node_list_schedule()).await?;
+        tokio::spawn(direct_node_list_schedule())
+            .await
+            .context("Direct node list schedule error")?;
         Ok(())
     };
 
-    tokio::try_join!(fut1, fut2, fut3)?;
+    tokio::try_join!(fut1, fut2, fut3).context("UDP handler error")?;
     Ok(())
 }
 
@@ -657,7 +665,7 @@ async fn tcp_handler_inner(
 
         if let Err(e) = process.await {
             error!(
-                "TCP {} handler error -> {:?}",
+                "{} TCP node handler error -> {:?}",
                 &network_range_info.server_addr, e
             )
         }
@@ -715,7 +723,9 @@ async fn tcp_handler<T: TunDevice + 'static>(
 
     let fut1 = async {
         match from_tcp_handler {
-            Some(rx) => tokio::task::spawn_blocking(move || mpsc_to_tun(rx, &tun)).await?,
+            Some(rx) => tokio::task::spawn_blocking(move || mpsc_to_tun(rx, &tun))
+                .await
+                .context("MPSC to TUN handler error")?,
             None => std::future::pending().await,
         }
     };
@@ -725,7 +735,7 @@ async fn tcp_handler<T: TunDevice + 'static>(
         Ok(())
     };
 
-    tokio::try_join!(fut1, fut2)?;
+    tokio::try_join!(fut1, fut2).context("TCP handler error")?;
     Ok(())
 }
 
@@ -818,7 +828,9 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
             handles.push(handle)
         }
 
-        futures_util::future::try_join_all(handles).await?;
+        futures_util::future::try_join_all(handles)
+            .await
+            .context("TUN handler error")?;
         Ok(())
     };
     let tcp_handle = tcp_handler(tcp_handler_initialize, tun_device.clone());
@@ -827,7 +839,11 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
     } else {
         std::future::pending().left_future()
     };
-    let api_handle = async { tokio::spawn(api_start(get_config().api_addr)).await? };
+    let api_handle = async {
+        tokio::spawn(api_start(get_config().api_addr))
+            .await
+            .context("API handler error")?
+    };
 
     info!("Client start");
     tokio::try_join!(tun_handle, tcp_handle, udp_handle, api_handle)?;
