@@ -37,6 +37,6 @@ pub(crate) fn create_device(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<impl T
     }
     #[cfg(target_os = "macos")]
     {
-        Ok(macos::Mactun::create(address, netmask)?)
+        macos::Macostun::create(mtu, ip_addrs)
     }
 }
