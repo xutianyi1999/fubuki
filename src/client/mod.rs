@@ -404,7 +404,7 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
             get_local_interface_map!();
         let temp_seq = seq.load(Ordering::Relaxed);
 
-        for (_, interface_info) in interface_map.iter() {
+        for (local_addr, interface_info) in interface_map.iter() {
             let socket = match &interface_info.udp_socket {
                 Some(socket) => &*socket,
                 None => continue,
@@ -421,7 +421,7 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
                 )
             }
 
-            for (local_addr, dest_node) in &*interface_info.node_map {
+            for (_, dest_node) in &*interface_info.node_map {
                 if get_local_node_id() == dest_node.id {
                     continue;
                 }
