@@ -6,6 +6,7 @@ fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
 
 - Windows
 - Linux
+- macOS
 
 ## 工作机制
 
