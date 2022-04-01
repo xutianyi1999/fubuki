@@ -3,13 +3,13 @@ use std::io;
 use std::io::{Error, ErrorKind, Result};
 use std::io::{Read, Write};
 use std::process::Command;
-use tun::platform::Device;
+use tun::Device;
 
 use crate::tun::TunDevice;
 use crate::TunIpAddr;
 
 pub struct Linuxtun {
-    fd: UnsafeCell<Device>,
+    fd: UnsafeCell<tun::platform::Device>,
 }
 
 unsafe impl Sync for Linuxtun {}
@@ -27,9 +27,10 @@ impl Linuxtun {
             .up();
 
         let device = tun::create(&config).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let tun_name = device.name();
 
         for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
-            let count: u32 = netmask.octets().into_iter().map(u8::count_ones).sum();
+            let count = u32::from_be_bytes(netmask.octets()).count_ones();
 
             let status = Command::new("ip")
                 .args([
@@ -37,7 +38,7 @@ impl Linuxtun {
                     "add",
                     format!("{}/{}", ip, count).as_str(),
                     "dev",
-                    "tun0",
+                    tun_name,
                 ])
                 .output()?
                 .status;

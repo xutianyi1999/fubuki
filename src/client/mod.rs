@@ -288,6 +288,11 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
         let src_addr = proto::get_ip_src_addr(data)?;
         let dst_addr = proto::get_ip_dst_addr(data)?;
 
+        if src_addr == dst_addr {
+            tun.send_packet(data)?;
+            continue;
+        }
+
         let interface_map: &HashMap<Ipv4Addr, InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>> =
             get_local_interface_map!();
 
@@ -348,9 +353,12 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
             };
 
             match tx.try_send((data.into(), dst_node.id)) {
-                Ok(_) => debug!("Forward {} -> {} packet to {}", src_addr, dst_addr, interface_info.server_addr),
-                Err(TrySendError::Closed(_)) =>  return Err(anyhow!("TCP handler channel closed")),
-                _ => continue
+                Ok(_) => debug!(
+                    "Forward {} -> {} packet to {}",
+                    src_addr, dst_addr, interface_info.server_addr
+                ),
+                Err(TrySendError::Closed(_)) => return Err(anyhow!("TCP handler channel closed")),
+                _ => continue,
             }
         }
     }

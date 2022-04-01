@@ -57,7 +57,6 @@ impl Wintun {
                 "subinterface",
                 ADAPTER_NAME,
                 &format!("mtu={}", mtu),
-                "store=persistent",
             ])
             .output()?
             .status;
