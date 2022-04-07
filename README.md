@@ -48,6 +48,7 @@ sudo ./fubuki client client-config.json
 
 Windows平台toolchain需要为MSVC
 
+如果需要开启AES-NI指令集，添加环境变量`RUSTFLAGS="-C target-cpu=native"`
 ```shell
 git clone "https://github.com/xutianyi1999/fubuki";
 cd fubuki;
