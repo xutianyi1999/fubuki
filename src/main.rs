@@ -264,7 +264,7 @@ fn logger_init() -> Result<()> {
             Root::builder()
                 .appender("stdout")
                 .build(LevelFilter::from_str(
-                    &std::env::var("FUBUKI_LOG").unwrap_or(String::from("INFO")),
+                    &std::env::var("FUBUKI_LOG").unwrap_or_else(|_| String::from("INFO")),
                 )?),
         )?;
 

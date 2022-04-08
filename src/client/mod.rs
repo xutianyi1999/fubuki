@@ -429,7 +429,7 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
                 )
             }
 
-            for (_, dest_node) in &*interface_info.node_map {
+            for dest_node in interface_info.node_map.values() {
                 if get_local_node_id() == dest_node.id {
                     continue;
                 }
