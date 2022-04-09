@@ -405,7 +405,7 @@ pub mod msg_operator {
             rx.read_exact(data).await?;
 
             key.decrypt_slice(data);
-            Ok(TcpMsg::decode(data)?)
+            TcpMsg::decode(data)
         }
     }
 
