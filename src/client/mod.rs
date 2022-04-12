@@ -301,65 +301,83 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
             None => continue,
         };
 
-        let (local_node, dst_node) = match (
-            interface_info.node_map.get(&src_addr),
-            interface_info.node_map.get(&dst_addr),
-        ) {
-            (Some(v1), Some(v2)) => (v1, v2),
-            _ => continue,
-        };
+        macro_rules! send {
+            ($local_node: expr, $dst_node: expr) => {
+                if $local_node.mode.udp_support() && $dst_node.mode.udp_support() {
+                    if let Node {
+                        id: node_id,
+                        wan_udp_addr: Some(peer_wan_addr),
+                        lan_udp_addr: Some(peer_lan_addr),
+                        ..
+                    } = $dst_node
+                    {
+                        let direct_node_list: &HashSet<NodeId> = get_local_direct_node_list!();
 
-        if local_node.mode.udp_support() && dst_node.mode.udp_support() {
-            if let Node {
-                id: node_id,
-                wan_udp_addr: Some(peer_wan_addr),
-                lan_udp_addr: Some(peer_lan_addr),
-                ..
-            } = dst_node
-            {
-                let direct_node_list: &HashSet<NodeId> = get_local_direct_node_list!();
+                        if direct_node_list.contains(node_id) {
+                            let peer_addr = if interface_info.try_send_to_lan_addr {
+                                match $local_node.wan_udp_addr {
+                                    Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
+                                        *peer_lan_addr
+                                    }
+                                    _ => *peer_wan_addr,
+                                }
+                            } else {
+                                *peer_wan_addr
+                            };
 
-                if direct_node_list.contains(node_id) {
-                    let peer_addr = if interface_info.try_send_to_lan_addr {
-                        match local_node.wan_udp_addr {
-                            Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
-                                *peer_lan_addr
-                            }
-                            _ => *peer_wan_addr,
+                            let socket = match interface_info.udp_socket {
+                                Some(ref v) => &**v,
+                                None => unreachable!(),
+                            };
+
+                            let msg = UdpMsg::Data(data).encode(unsafe { &mut *buff });
+                            interface_info.key.clone().encrypt_slice(msg);
+                            socket.send_to(msg, peer_addr)?;
+
+                            debug!("Send {} -> {} packet to {}", src_addr, dst_addr, peer_addr);
+                            continue;
                         }
-                    } else {
-                        *peer_wan_addr
-                    };
+                    }
+                }
 
-                    let socket = match interface_info.udp_socket {
-                        Some(ref v) => &**v,
+                if $local_node.mode.tcp_support() && $dst_node.mode.tcp_support() {
+                    let tx = match interface_info.tcp_handler_channel {
+                        Some(ref v) => v,
                         None => unreachable!(),
                     };
 
-                    let msg = UdpMsg::Data(data).encode(unsafe { &mut *buff });
-                    interface_info.key.clone().encrypt_slice(msg);
-                    socket.send_to(msg, peer_addr)?;
-
-                    debug!("Send {} -> {} packet to {}", src_addr, dst_addr, peer_addr);
-                    continue;
+                    match tx.try_send((data.into(), $dst_node.id)) {
+                        Ok(_) => debug!(
+                            "Forward {} -> {} packet to {}",
+                            src_addr, dst_addr, interface_info.server_addr
+                        ),
+                        Err(TrySendError::Closed(_)) => return Err(anyhow!("TCP handler channel closed")),
+                        _ => continue,
+                    }
                 }
             }
         }
 
-        if local_node.mode.tcp_support() && dst_node.mode.tcp_support() {
-            let tx = match interface_info.tcp_handler_channel {
-                Some(ref v) => v,
-                None => unreachable!(),
+        let local_node = match interface_info.node_map.get(&src_addr) {
+            Some(v) => v,
+            None => continue
+        };
+
+        if dst_addr.is_broadcast() {
+            for dst_node in interface_info.node_map.values() {
+                if dst_node.id == get_local_node_id() {
+                    continue
+                }
+
+                send!(local_node, dst_node);
+            }
+        } else {
+            let dst_node = match interface_info.node_map.get(&dst_addr) {
+                Some(v) => v,
+                None => continue
             };
 
-            match tx.try_send((data.into(), dst_node.id)) {
-                Ok(_) => debug!(
-                    "Forward {} -> {} packet to {}",
-                    src_addr, dst_addr, interface_info.server_addr
-                ),
-                Err(TrySendError::Closed(_)) => return Err(anyhow!("TCP handler channel closed")),
-                _ => continue,
-            }
+            send!(local_node, dst_node);
         }
     }
 }
@@ -414,7 +432,7 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
 
         for (local_addr, interface_info) in interface_map.iter() {
             let socket = match &interface_info.udp_socket {
-                Some(socket) => &*socket,
+                Some(socket) => &**socket,
                 None => continue,
             };
 
