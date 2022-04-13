@@ -50,16 +50,27 @@ struct ServerConfigFinalize {
     listeners: Vec<Listener>,
 }
 
-impl From<ServerConfig> for ServerConfigFinalize {
-    fn from(config: ServerConfig) -> Self {
-        Self {
+impl TryFrom<ServerConfig> for ServerConfigFinalize {
+    type Error = anyhow::Error;
+
+    fn try_from(config: ServerConfig) -> Result<Self> {
+        let config_finalize = Self {
             channel_limit: config.channel_limit.unwrap_or(100),
             tcp_heartbeat_interval: config
                 .tcp_heartbeat_interval_secs
                 .map(|sec| Duration::from_secs(ternary!(sec > 10, 10, sec)))
                 .unwrap_or(Duration::from_secs(5)),
-            listeners: config.listeners,
-        }
+            listeners: {
+                for listener in &config.listeners {
+                    if listener.listen_addr.ip().is_loopback() {
+                        return Err(anyhow!("Listen address cannot be a loopback address"));
+                    }
+                }
+                config.listeners
+            },
+        };
+
+        Ok(config_finalize)
     }
 }
 
@@ -128,16 +139,16 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
         for range in config.network_ranges {
             let mode = ProtocolMode::from_str(range.mode.as_deref().unwrap_or("UDP_AND_TCP"))?;
 
+            let resolve_server_addr = range
+                .server_addr
+                .to_socket_addrs()?
+                .next()
+                .ok_or_else(|| anyhow!("Server host not found"))?;
+
             let lan_ip_addr = match range.lan_ip_addr {
                 None => {
                     if mode.udp_support() {
-                        let lan_addr = get_interface_addr(
-                            range
-                                .server_addr
-                                .to_socket_addrs()?
-                                .next()
-                                .ok_or_else(|| anyhow!("Server host not found"))?,
-                        )?;
+                        let lan_addr = get_interface_addr(resolve_server_addr)?;
                         Some(lan_addr)
                     } else {
                         None
@@ -147,7 +158,12 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
             };
 
             let range_finalize = NetworkRangeFinalize {
-                server_addr: range.server_addr,
+                server_addr: {
+                    if resolve_server_addr.ip().is_loopback() {
+                        return Err(anyhow!("Server address cannot be a loopback address"));
+                    }
+                    range.server_addr
+                },
                 tun: range.tun,
                 key: Aes128Ctr::new(range.key.as_bytes()),
                 mode,
@@ -230,7 +246,7 @@ fn launch() -> Result<()> {
             let config: ServerConfig = load_config(path.as_deref().unwrap_or("config.json"))?;
 
             block_on!(async move {
-                server::start(ServerConfigFinalize::from(config)).await;
+                server::start(ServerConfigFinalize::try_from(config)?).await;
                 Ok(())
             })
         }

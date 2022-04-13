@@ -316,7 +316,9 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                         if direct_node_list.contains(node_id) {
                             let peer_addr = if interface_info.try_send_to_lan_addr {
                                 match $local_node.wan_udp_addr {
-                                    Some(local_wan_addr) if local_wan_addr.ip() == peer_wan_addr.ip() => {
+                                    Some(local_wan_addr)
+                                        if local_wan_addr.ip() == peer_wan_addr.ip() =>
+                                    {
                                         *peer_lan_addr
                                     }
                                     _ => *peer_wan_addr,
@@ -351,22 +353,24 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                             "Forward {} -> {} packet to {}",
                             src_addr, dst_addr, interface_info.server_addr
                         ),
-                        Err(TrySendError::Closed(_)) => return Err(anyhow!("TCP handler channel closed")),
+                        Err(TrySendError::Closed(_)) => {
+                            return Err(anyhow!("TCP handler channel closed"))
+                        }
                         _ => continue,
                     }
                 }
-            }
+            };
         }
 
         let local_node = match interface_info.node_map.get(&src_addr) {
             Some(v) => v,
-            None => continue
+            None => continue,
         };
 
         if dst_addr.is_broadcast() {
             for dst_node in interface_info.node_map.values() {
                 if dst_node.id == get_local_node_id() {
-                    continue
+                    continue;
                 }
 
                 send!(local_node, dst_node);
@@ -374,7 +378,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
         } else {
             let dst_node = match interface_info.node_map.get(&dst_addr) {
                 Some(v) => v,
-                None => continue
+                None => continue,
             };
 
             send!(local_node, dst_node);
