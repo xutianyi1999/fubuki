@@ -278,11 +278,11 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
 
     loop {
         let data = match tun
-            .recv_packet(unsafe { &mut (&mut *buff)[2..] })
+            .recv_packet(unsafe { &mut (*buff)[2..] })
             .context("Read packet from tun error")?
         {
             0 => continue,
-            len => unsafe { &(&*buff)[2..len + 2] },
+            len => unsafe { &(*buff)[2..len + 2] },
         };
 
         let src_addr = proto::get_ip_src_addr(data)?;
