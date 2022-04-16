@@ -264,7 +264,7 @@ fn launch() -> Result<()> {
 fn load_config<T: de::DeserializeOwned>(path: &str) -> Result<T> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("Failed to read config from: {}", path))?;
-    serde_json::from_reader(file).context("Failed to parse client config")
+    serde_json::from_reader(file).context("Failed to parse config")
 }
 
 fn logger_init() -> Result<()> {
