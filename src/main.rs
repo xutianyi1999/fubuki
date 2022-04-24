@@ -154,7 +154,16 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
                         None
                     }
                 }
-                Some(v) => Some(v),
+                Some(addr) => {
+                    if addr.is_loopback() {
+                        return Err(anyhow!("LAN address cannot be a loopback address"));
+                    }
+
+                    if addr.is_unspecified() {
+                        return Err(anyhow!("LAN address cannot be unspecified address"));
+                    }
+                    Some(addr)
+                }
             };
 
             let range_finalize = NetworkRangeFinalize {

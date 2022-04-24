@@ -426,7 +426,7 @@ fn udp_handler_inner<T: TunDevice>(
 }
 
 fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
-    let mut buff = vec![0u8; get_config().mtu];
+    let mut buff = vec![0u8; 256];
     init_interface_map!();
 
     loop {
@@ -479,7 +479,10 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
                         UdpMsg::Heartbeat(*node_id, temp_seq, HeartbeatType::Req);
                     let out = heartbeat_packet.encode(&mut buff);
                     interface_info.key.clone().encrypt_slice(out);
-                    socket.send_to(out, dest_addr)?;
+
+                    if let Err(e) = socket.send_to(out, dest_addr) {
+                        error!("UDP socket send to {} error: {}", dest_addr, e)
+                    }
                 }
             }
         }
