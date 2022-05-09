@@ -289,7 +289,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
         let dst_addr = proto::get_ip_dst_addr(data)?;
 
         if src_addr == dst_addr {
-            tun.send_packet(data)?;
+            tun.send_packet(data).context("Write packet to tun error")?;
             continue;
         }
 
@@ -417,7 +417,7 @@ fn udp_handler_inner<T: TunDevice>(
                 }
                 UdpMsg::Data(data) => {
                     debug!("Recv packet from {}", peer_addr);
-                    tun.send_packet(data)?
+                    tun.send_packet(data).context("Write packet to tun error")?
                 }
                 _ => continue,
             }
