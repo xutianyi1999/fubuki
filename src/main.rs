@@ -254,7 +254,7 @@ fn launch() -> Result<()> {
         Args::Server(path) => {
             let config: ServerConfig = load_config(path.as_deref().unwrap_or("config.json"))?;
 
-            block_on!(async move {
+            block_on!(async {
                 server::start(ServerConfigFinalize::try_from(config)?).await;
                 Ok(())
             })

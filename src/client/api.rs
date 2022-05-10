@@ -55,7 +55,7 @@ pub async fn api_start(listen_addr: SocketAddr) -> Result<()> {
         let (mut stream, _) = listener.accept().await?;
 
         tokio::spawn(async move {
-            let fut = async move {
+            let fut = async {
                 let mut buff = vec![0u8; 65536];
 
                 let len = stream.read_u16().await? as usize;

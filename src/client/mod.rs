@@ -581,12 +581,10 @@ async fn tcp_handler_inner(
     loop {
         let mut node = init_node.clone();
         node.register_time = Utc::now().timestamp();
-        let inner_to_tun = &to_tun;
-        let inner_from_tun = &mut from_tun;
         let mut tx_key = network_range_info.key.clone();
         let mut rx_key = network_range_info.key.clone();
 
-        let process = async move {
+        let process = async {
             let mut stream = TcpStream::connect(&network_range_info.server_addr)
                 .await
                 .with_context(|| format!("Connect to {} error", &network_range_info.server_addr))?;
@@ -622,14 +620,9 @@ async fn tcp_handler_inner(
             let (tx, mut rx) = unbounded_channel::<TcpMsg>();
 
             let latest_recv_heartbeat_time = AtomicI64::new(Utc::now().timestamp());
-            let latest_recv_heartbeat_time_ref1 = &latest_recv_heartbeat_time;
-            let latest_recv_heartbeat_time_ref2 = &latest_recv_heartbeat_time;
-
             let seq = AtomicU32::new(0);
-            let inner_seq1 = &seq;
-            let inner_seq2 = &seq;
 
-            let fut1 = async move {
+            let fut1 = async {
                 loop {
                     match msg_reader.read().await? {
                         TcpMsg::NodeMap(node_map) => {
@@ -641,7 +634,7 @@ async fn tcp_handler_inner(
                             get_interface_map().update(&network_range_info.tun.ip, mapping);
                         }
                         TcpMsg::Forward(packet, _) => {
-                            if let Some(to_tun) = inner_to_tun {
+                            if let Some(ref to_tun) = to_tun {
                                 debug!("Recv packet from {}", &network_range_info.server_addr);
                                 to_tun.send(packet.into())?
                             }
@@ -655,8 +648,8 @@ async fn tcp_handler_inner(
                             }
                         }
                         TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                            if inner_seq1.load(Ordering::Relaxed) == recv_seq {
-                                latest_recv_heartbeat_time_ref1
+                            if seq.load(Ordering::Relaxed) == recv_seq {
+                                latest_recv_heartbeat_time
                                     .store(Utc::now().timestamp(), Ordering::Relaxed)
                             }
                         }
@@ -665,7 +658,7 @@ async fn tcp_handler_inner(
                 }
             };
 
-            let fut2 = async move {
+            let fut2 = async {
                 let mut heartbeat_interval = time::interval(get_config().tcp_heartbeat_interval);
                 let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
@@ -677,8 +670,8 @@ async fn tcp_handler_inner(
                                 None => return Ok(())
                             }
                         }
-                        opt = match inner_from_tun {
-                            Some(v) => v.recv().right_future(),
+                        opt = match from_tun {
+                            Some(ref mut v) => v.recv().right_future(),
                             None => std::future::pending().left_future()
                         } => {
                             match opt {
@@ -690,12 +683,12 @@ async fn tcp_handler_inner(
                             }
                         }
                         _ = heartbeat_interval.tick() => {
-                            let old = inner_seq2.fetch_add(1, Ordering::Relaxed);
+                            let old = seq.fetch_add(1, Ordering::Relaxed);
                             let heartbeat = TcpMsg::Heartbeat(old + 1, HeartbeatType::Req);
                             msg_writer.write(&heartbeat).await?;
                         }
                         _ = check_heartbeat_timeout.tick() => {
-                            if Utc::now().timestamp() - latest_recv_heartbeat_time_ref2.load(Ordering::Relaxed) > 30 {
+                            if Utc::now().timestamp() - latest_recv_heartbeat_time.load(Ordering::Relaxed) > 30 {
                                 return Err(anyhow!("Heartbeat recv timeout"))
                             }
                         }

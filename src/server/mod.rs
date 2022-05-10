@@ -231,14 +231,9 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
     let (tx, mut rx) = sync::mpsc::unbounded_channel::<TcpMsg>();
 
     let latest_recv_heartbeat_time = AtomicI64::new(Utc::now().timestamp());
-    let latest_recv_heartbeat_time_ref1 = &latest_recv_heartbeat_time;
-    let latest_recv_heartbeat_time_ref2 = &latest_recv_heartbeat_time;
-
     let seq: AtomicU32 = AtomicU32::new(0);
-    let inner_seq1 = &seq;
-    let inner_seq2 = &seq;
 
-    let fut1 = async move {
+    let fut1 = async {
         loop {
             match msg_reader.read().await? {
                 TcpMsg::Forward(data, dest_node_id) => {
@@ -257,9 +252,8 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
                     tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()))?;
                 }
                 TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                    if inner_seq1.load(Ordering::Relaxed) == recv_seq {
-                        latest_recv_heartbeat_time_ref1
-                            .store(Utc::now().timestamp(), Ordering::Relaxed)
+                    if seq.load(Ordering::Relaxed) == recv_seq {
+                        latest_recv_heartbeat_time.store(Utc::now().timestamp(), Ordering::Relaxed)
                     }
                 }
                 _ => return Result::<()>::Err(anyhow!("Invalid TCP msg")),
@@ -267,7 +261,7 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
         }
     };
 
-    let fut2 = async move {
+    let fut2 = async {
         let mut heartbeat_interval = time::interval(get_config().tcp_heartbeat_interval);
         let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
 
@@ -292,12 +286,12 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
                     debug!("Forward packet {} to {}", src_node_id, node_id)
                 }
                 _ = heartbeat_interval.tick() => {
-                    inner_seq2.fetch_add(1, Ordering::Relaxed);
-                    let heartbeat = TcpMsg::Heartbeat(inner_seq2.load(Ordering::Relaxed), HeartbeatType::Req);
+                    seq.fetch_add(1, Ordering::Relaxed);
+                    let heartbeat = TcpMsg::Heartbeat(seq.load(Ordering::Relaxed), HeartbeatType::Req);
                     msg_writer.write(&heartbeat).await?;
                 }
                 _ = check_heartbeat_timeout.tick() => {
-                     if Utc::now().timestamp() - latest_recv_heartbeat_time_ref2.load(Ordering::Relaxed) > 30 {
+                     if Utc::now().timestamp() - latest_recv_heartbeat_time.load(Ordering::Relaxed) > 30 {
                         return Err(anyhow!("Heartbeat recv timeout"))
                     }
                 }
@@ -320,13 +314,13 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
             let key_ref = key.clone();
             let node_db_ref = node_db.clone();
 
-            let udp_handle = async move {
+            let udp_handle = async {
                 tokio::spawn(udp_handler(*listen_addr, key, node_db))
                     .await?
                     .context("UDP handler error")
             };
 
-            let tcp_handle = async move {
+            let tcp_handle = async {
                 tokio::spawn(tcp_handler(*listen_addr, key_ref, node_db_ref))
                     .await?
                     .context("TCP handler error")
