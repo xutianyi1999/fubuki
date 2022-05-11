@@ -23,7 +23,7 @@ use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::{proto, SocketExt};
 use crate::common::{HashMap, HashSet, MapInit, SetInit};
-use crate::tun::create_device;
+use crate::tun::{create_device, skip_error};
 use crate::tun::TunDevice;
 use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
 
@@ -289,7 +289,13 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
         let dst_addr = proto::get_ip_dst_addr(data)?;
 
         if src_addr == dst_addr {
-            tun.send_packet(data).context("Write packet to tun error")?;
+            match tun.send_packet(data) {
+                Err(e) if skip_error(&e) => {
+                    error!("Write packet to tun error: {}", e);
+                    Ok(())
+                },
+                res => res
+            }.context("Write packet to tun error")?;
             continue;
         }
 
@@ -417,7 +423,14 @@ fn udp_handler_inner<T: TunDevice>(
                 }
                 UdpMsg::Data(data) => {
                     debug!("Recv packet from {}", peer_addr);
-                    tun.send_packet(data).context("Write packet to tun error")?
+
+                    match tun.send_packet(data) {
+                        Err(e) if skip_error(&e) => {
+                            error!("Write packet to tun error: {}", e);
+                            Ok(())
+                        },
+                        res => res
+                    }.context("Write packet to tun error")?;
                 }
                 _ => continue,
             }
@@ -716,8 +729,14 @@ fn mpsc_to_tun<T: TunDevice>(
 ) -> Result<()> {
     loop {
         let packet = mpsc_rx.recv()?;
-        tun.send_packet(&packet)
-            .context("Write packet to tun error")?;
+
+        match tun.send_packet(&packet) {
+            Err(e) if skip_error(&e) => {
+                error!("Write packet to tun error: {}", e);
+                Ok(())
+            },
+            res => res
+        }.context("Write packet to tun error")?;
     }
 }
 
