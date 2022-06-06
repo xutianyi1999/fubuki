@@ -8,7 +8,6 @@ use anyhow::Result;
 use anyhow::{anyhow, Context};
 use chrono::Utc;
 use futures_util::FutureExt;
-use ipnet::Ipv4Net;
 use parking_lot::RwLock;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
@@ -379,16 +378,15 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
             None => continue,
         };
 
-        fn is_broadcast(dst: Ipv4Addr, prefix_len: u8) -> bool {
-            dst.is_broadcast() || Ipv4Net::new(dst, prefix_len).unwrap().broadcast() == dst
+        fn is_broadcast(dst: Ipv4Addr, prefix_len: u32) -> bool {
+            dst.is_broadcast()
+                || Ipv4Addr::from(u32::from(dst) | u32::MAX.checked_shr(prefix_len).unwrap_or(0))
+                    == dst
         }
 
         if let Some(dst_node) = interface_info.node_map.get(&dst_addr) {
             send!(local_node, dst_node);
-        } else if is_broadcast(
-            dst_addr,
-            u32::from(interface_info.tun.netmask).count_ones() as u8,
-        ) {
+        } else if is_broadcast(dst_addr, u32::from(interface_info.tun.netmask).count_ones()) {
             for dst_node in interface_info.node_map.values() {
                 if dst_node.id == get_local_node_id() {
                     continue;
