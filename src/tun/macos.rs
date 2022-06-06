@@ -25,7 +25,7 @@ pub fn cut_addr(addr: Ipv4Addr, len: u8) -> Ipv4Addr {
 }
 
 fn add_route(ip: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
-    let len = u32::from_be_bytes(netmask.octets()).count_ones();
+    let len = u32::from(netmask).count_ones();
     let subnet_addr = cut_addr(ip, len as u8);
 
     let status = Command::new("route")
@@ -70,7 +70,7 @@ impl Macostun {
         add_route(ip_addrs[0].ip, ip_addrs[0].netmask)?;
 
         for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
-            let count = u32::from_be_bytes(netmask.octets()).count_ones();
+            let count = u32::from(*netmask).count_ones();
             let subnet = cut_addr(*ip, count as u8);
 
             let status = Command::new("ifconfig")

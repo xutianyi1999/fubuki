@@ -24,6 +24,7 @@ futures-util = "0.3"
 aes = "0.8"
 ctr = "0.9"
 md5 = "0.7"
+ipnet = "2"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tun = "0.5"

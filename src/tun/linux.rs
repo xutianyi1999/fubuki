@@ -30,7 +30,7 @@ impl Linuxtun {
         let tun_name = device.name();
 
         for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
-            let count = u32::from_be_bytes(netmask.octets()).count_ones();
+            let count = u32::from(*netmask).count_ones();
 
             let status = Command::new("ip")
                 .args([

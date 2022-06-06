@@ -8,6 +8,7 @@ use anyhow::Result;
 use anyhow::{anyhow, Context};
 use chrono::Utc;
 use futures_util::FutureExt;
+use ipnet::Ipv4Net;
 use parking_lot::RwLock;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
@@ -23,8 +24,8 @@ use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::{proto, SocketExt};
 use crate::common::{HashMap, HashSet, MapInit, SetInit};
-use crate::tun::{create_device, skip_error};
 use crate::tun::TunDevice;
+use crate::tun::{create_device, skip_error};
 use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
 
 mod api;
@@ -67,6 +68,7 @@ fn get_direct_node_list() -> &'static DirectNodeList {
 }
 
 struct InterfaceInfo<Map> {
+    tun: TunIpAddr,
     node_map: Map,
     server_addr: String,
     tcp_handler_channel: Option<Sender<(Box<[u8]>, NodeId)>>,
@@ -87,6 +89,7 @@ impl InterfaceMap {
             .into_iter()
             .map(|(tun_addr, info)| {
                 let network_segment = InterfaceInfo {
+                    tun: info.tun,
                     server_addr: info.server_addr,
                     node_map: RwLock::new(Arc::new(HashMap::new())),
                     tcp_handler_channel: info.tcp_handler_channel,
@@ -122,6 +125,7 @@ impl InterfaceMap {
 
         for (k, node_map) in &self.map {
             let range = InterfaceInfo {
+                tun: node_map.tun.clone(),
                 server_addr: node_map.server_addr.clone(),
                 node_map: node_map.node_map.try_read()?.clone(),
                 tcp_handler_channel: node_map.tcp_handler_channel.clone(),
@@ -139,6 +143,7 @@ impl InterfaceMap {
 
         for (k, node_map) in &self.map {
             let range = InterfaceInfo {
+                tun: node_map.tun.clone(),
                 server_addr: node_map.server_addr.clone(),
                 node_map: node_map.node_map.read().clone(),
                 tcp_handler_channel: node_map.tcp_handler_channel.clone(),
@@ -293,9 +298,10 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                 Err(e) if skip_error(&e) => {
                     error!("Write packet to tun error: {}", e);
                     Ok(())
-                },
-                res => res
-            }.context("Write packet to tun error")?;
+                }
+                res => res,
+            }
+            .context("Write packet to tun error")?;
             continue;
         }
 
@@ -373,7 +379,16 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
             None => continue,
         };
 
-        if dst_addr.is_broadcast() {
+        fn is_broadcast(dst: Ipv4Addr, prefix_len: u8) -> bool {
+            dst.is_broadcast() || Ipv4Net::new(dst, prefix_len).unwrap().broadcast() == dst
+        }
+
+        if let Some(dst_node) = interface_info.node_map.get(&dst_addr) {
+            send!(local_node, dst_node);
+        } else if is_broadcast(
+            dst_addr,
+            u32::from(interface_info.tun.netmask).count_ones() as u8,
+        ) {
             for dst_node in interface_info.node_map.values() {
                 if dst_node.id == get_local_node_id() {
                     continue;
@@ -381,13 +396,6 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
 
                 send!(local_node, dst_node);
             }
-        } else {
-            let dst_node = match interface_info.node_map.get(&dst_addr) {
-                Some(v) => v,
-                None => continue,
-            };
-
-            send!(local_node, dst_node);
         }
     }
 }
@@ -428,9 +436,10 @@ fn udp_handler_inner<T: TunDevice>(
                         Err(e) if skip_error(&e) => {
                             error!("Write packet to tun error: {}", e);
                             Ok(())
-                        },
-                        res => res
-                    }.context("Write packet to tun error")?;
+                        }
+                        res => res,
+                    }
+                    .context("Write packet to tun error")?;
                 }
                 _ => continue,
             }
@@ -734,9 +743,10 @@ fn mpsc_to_tun<T: TunDevice>(
             Err(e) if skip_error(&e) => {
                 error!("Write packet to tun error: {}", e);
                 Ok(())
-            },
-            res => res
-        }.context("Write packet to tun error")?;
+            }
+            res => res,
+        }
+        .context("Write packet to tun error")?;
     }
 }
 
@@ -846,6 +856,7 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
         tcp_handler_initialize.insert(range.tun.ip, (rx, init_node));
 
         let info = InterfaceInfo {
+            tun: range.tun.clone(),
             node_map: (),
             server_addr: range.server_addr.clone(),
             tcp_handler_channel: tx,
