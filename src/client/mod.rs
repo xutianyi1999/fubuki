@@ -312,6 +312,8 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
             None => continue,
         };
 
+        let direct_node_list: &HashSet<NodeId> = get_local_direct_node_list!();
+
         macro_rules! send {
             ($local_node: expr, $dst_node: expr) => {
                 if $local_node.mode.udp_support() && $dst_node.mode.udp_support() {
@@ -322,8 +324,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                         ..
                     } = $dst_node
                     {
-                        let direct_node_list: &HashSet<NodeId> = get_local_direct_node_list!();
-
+                        // TODO There will be different port with the same id
                         if direct_node_list.contains(node_id) {
                             let peer_addr = if interface_info.try_send_to_lan_addr {
                                 match $local_node.wan_udp_addr {
