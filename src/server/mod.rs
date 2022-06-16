@@ -275,6 +275,7 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
                 }
                 res = bridge.watch_rx.changed() => {
                     res?;
+                    // TODO optimize memory copy
                     let node_list = bridge.watch_rx.borrow().clone();
                     let msg = TcpMsg::NodeMap(node_list);
                     msg_writer.write(&msg).await?;

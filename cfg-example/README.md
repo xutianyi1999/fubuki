@@ -46,7 +46,7 @@
     - key: 预共享密钥
     - mode(可选): 模式`UDP_ONLY`, `TCP_ONLY`, `UDP_AND_TCP`, 默认为`UDP_AND_TCP`
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
-    - try_send_to_lan_addr(可选): 同一局域网内无法直接通信时可以开启此选项，默认为false
+    - try_send_to_lan_addr(可选): 多个节点在同一NAT之后无法直接通信时可以开启此选项，默认为false
 
 ### server-config.json
 
