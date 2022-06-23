@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 #[macro_use]
 extern crate log;
 
@@ -18,7 +20,7 @@ use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
 
 use crate::client::Req;
-use crate::common::cipher::Aes128Ctr;
+use crate::common::cipher::XorCipher;
 use crate::common::net::get_interface_addr;
 use crate::common::net::proto::ProtocolMode;
 
@@ -109,7 +111,7 @@ struct ClientConfig {
 struct NetworkRangeFinalize {
     server_addr: String,
     tun: TunIpAddr,
-    key: Aes128Ctr,
+    key: XorCipher,
     mode: ProtocolMode,
     lan_ip_addr: Option<IpAddr>,
     try_send_to_lan_addr: bool,
@@ -174,7 +176,7 @@ impl TryFrom<ClientConfig> for ClientConfigFinalize {
                     range.server_addr
                 },
                 tun: range.tun,
-                key: Aes128Ctr::new(range.key.as_bytes()),
+                key: XorCipher::new(range.key.as_bytes()),
                 mode,
                 lan_ip_addr,
                 try_send_to_lan_addr: range.try_send_to_lan_addr.unwrap_or(false),

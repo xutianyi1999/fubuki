@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{mpsc, watch};
 use tokio::{sync, time};
 
-use crate::common::cipher::Aes128Ctr;
+use crate::common::cipher::XorCipher;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, UdpMsgSocket, TCP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::SocketExt;
@@ -59,6 +59,7 @@ impl Drop for Bridge<'_> {
         let mut guard = self.node_db.mapping.write();
 
         if let Some(NodeHandle { node, .. }) = guard.get(&node_id) {
+            // TODO Consider add connection random number
             if node.register_time == register_time {
                 guard.remove(&node_id);
                 drop(guard);
@@ -127,7 +128,7 @@ impl NodeDb {
     }
 }
 
-async fn udp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeDb>) -> Result<()> {
+async fn udp_handler(listen_addr: SocketAddr, key: XorCipher, node_db: Arc<NodeDb>) -> Result<()> {
     let socket = UdpSocket::bind(listen_addr)
         .await
         .with_context(|| format!("UDP socket bind {} error", listen_addr))?;
@@ -173,7 +174,7 @@ async fn udp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeD
     }
 }
 
-async fn tcp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeDb>) -> Result<()> {
+async fn tcp_handler(listen_addr: SocketAddr, key: XorCipher, node_db: Arc<NodeDb>) -> Result<()> {
     let listener = TcpListener::bind(listen_addr)
         .await
         .with_context(|| format!("TCP socket bind {} error", listen_addr))?;
@@ -181,7 +182,6 @@ async fn tcp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeD
     info!("TCP socket listening on {}", listen_addr);
 
     loop {
-        let key = key.clone();
         let node_db = node_db.clone();
         let (stream, peer_addr) = listener.accept().await.context("Accept connection error")?;
 
@@ -193,16 +193,13 @@ async fn tcp_handler(listen_addr: SocketAddr, key: Aes128Ctr, node_db: Arc<NodeD
     }
 }
 
-async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> Result<()> {
+async fn tunnel(mut stream: TcpStream, key: XorCipher, node_db: Arc<NodeDb>) -> Result<()> {
     stream.set_keepalive()?;
     let (rx, mut tx) = stream.split();
     let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
-    let mut rx_key = key.clone();
-    let mut tx_key = key;
-
-    let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_key);
-    let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_key);
+    let mut msg_reader = TcpMsgReader::new(&mut rx, key);
+    let mut msg_writer = TcpMsgWriter::new(&mut tx, key);
 
     let msg = msg_reader.read().await?;
     let mut bridge = match msg {
@@ -210,7 +207,7 @@ async fn tunnel(mut stream: TcpStream, key: Aes128Ctr, node_db: Arc<NodeDb>) -> 
             let register_time = node.register_time;
             let remain = Utc::now().timestamp() - register_time;
 
-            if (remain > 10) || (remain < -10) {
+            if !(-10..=10).contains(&remain) {
                 msg_writer
                     .write(&TcpMsg::Result(MsgResult::Timeout))
                     .await?;
@@ -310,9 +307,8 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
 
     for Listener { listen_addr, key } in &get_config().listeners {
         let handle = async move {
-            let key = Aes128Ctr::new(key.as_bytes());
+            let key = XorCipher::new(key.as_bytes());
             let node_db = Arc::new(NodeDb::new());
-            let key_ref = key.clone();
             let node_db_ref = node_db.clone();
 
             let udp_handle = async {
@@ -322,7 +318,7 @@ pub(super) async fn start(server_config: ServerConfigFinalize) {
             };
 
             let tcp_handle = async {
-                tokio::spawn(tcp_handler(*listen_addr, key_ref, node_db_ref))
+                tokio::spawn(tcp_handler(*listen_addr, key, node_db_ref))
                     .await?
                     .context("TCP handler error")
             };

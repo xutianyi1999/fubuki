@@ -188,7 +188,7 @@ pub mod proto {
                 TcpMsg::Forward(data, node_id) => {
                     slice[0] = FORWARD;
                     slice[1..5].copy_from_slice(&node_id.to_be_bytes());
-                    slice[5..data.len() + 5].copy_from_slice(*data);
+                    slice[5..data.len() + 5].copy_from_slice(data);
                     data.len() + 5
                 }
                 TcpMsg::Heartbeat(seq, heartbeat_type) => {
@@ -376,7 +376,7 @@ pub mod msg_operator {
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::UdpSocket;
 
-    use crate::common::cipher::Aes128Ctr;
+    use crate::common::cipher::XorCipher;
 
     use super::proto::{TcpMsg, UdpMsg};
 
@@ -385,12 +385,12 @@ pub mod msg_operator {
 
     pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
         rx: &'a mut Rx,
-        key: &'a mut Aes128Ctr,
+        key: XorCipher,
         buff: Box<[u8]>,
     }
 
     impl<'a, Rx: AsyncRead + Unpin> TcpMsgReader<'a, Rx> {
-        pub fn new(rx: &'a mut Rx, key: &'a mut Aes128Ctr) -> Self {
+        pub fn new(rx: &'a mut Rx, key: XorCipher) -> Self {
             let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
             TcpMsgReader { rx, key, buff }
         }
@@ -398,25 +398,24 @@ pub mod msg_operator {
         pub async fn read(&mut self) -> Result<TcpMsg<'_>> {
             let buff = &mut self.buff;
             let rx = &mut self.rx;
-            let key = &mut self.key;
 
             let len = rx.read_u16().await?;
             let data = &mut buff[..len as usize];
             rx.read_exact(data).await?;
 
-            key.decrypt_slice(data);
+            self.key.decrypt_slice(data);
             TcpMsg::decode(data)
         }
     }
 
     pub struct TcpMsgWriter<'a, Tx: AsyncWrite + Unpin> {
         tx: &'a mut Tx,
-        key: &'a mut Aes128Ctr,
+        key: XorCipher,
         buff: Box<[u8]>,
     }
 
     impl<'a, Tx: AsyncWrite + Unpin> TcpMsgWriter<'a, Tx> {
-        pub fn new(tx: &'a mut Tx, key: &'a mut Aes128Ctr) -> Self {
+        pub fn new(tx: &'a mut Tx, key: XorCipher) -> Self {
             let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
             TcpMsgWriter { tx, key, buff }
         }
@@ -424,10 +423,9 @@ pub mod msg_operator {
         pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<()> {
             let buff = &mut self.buff;
             let tx = &mut self.tx;
-            let key = &mut self.key;
 
             let data = msg.encode(&mut buff[2..])?;
-            key.encrypt_slice(data);
+            self.key.encrypt_slice(data);
 
             let len = data.len();
             buff[..2].copy_from_slice(&(len as u16).to_be_bytes());
@@ -440,12 +438,12 @@ pub mod msg_operator {
     #[derive(Clone)]
     pub struct UdpMsgSocket<'a> {
         socket: &'a UdpSocket,
-        key: Aes128Ctr,
+        key: XorCipher,
         buff: Box<[u8]>,
     }
 
     impl<'a> UdpMsgSocket<'a> {
-        pub fn new(socket: &'a UdpSocket, key: Aes128Ctr) -> Self {
+        pub fn new(socket: &'a UdpSocket, key: XorCipher) -> Self {
             UdpMsgSocket {
                 socket,
                 key,
@@ -455,12 +453,11 @@ pub mod msg_operator {
 
         pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr)> {
             let socket = self.socket;
-            let mut key = self.key.clone();
             let buff = &mut self.buff;
 
             let (len, peer_addr) = socket.recv_from(buff).await?;
             let data = &mut buff[..len];
-            key.decrypt_slice(data);
+            self.key.decrypt_slice(data);
 
             Ok((UdpMsg::decode(data)?, peer_addr))
         }
@@ -468,11 +465,10 @@ pub mod msg_operator {
         // TODO unsupported UdpMsg::Data type
         pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
             let socket = self.socket;
-            let mut key = self.key.clone();
             let buff = &mut self.buff;
 
             let data = msg.encode(buff);
-            key.encrypt_slice(data);
+            self.key.encrypt_slice(data);
             socket.send_to(data, dest_addr).await?;
             Ok(())
         }

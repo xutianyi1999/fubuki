@@ -3,7 +3,6 @@ use std::process::Command;
 use std::time::Duration;
 
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
-use simple_wintun::ReadResult;
 
 use crate::tun::TunDevice;
 use crate::TunIpAddr;
@@ -88,11 +87,7 @@ impl TunDevice for Wintun {
     }
 
     fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {
-        let res = self.session.read_packet(buff)?;
-
-        match res {
-            ReadResult::Success(len) => Ok(len),
-            ReadResult::NotEnoughSize(_) => Ok(0),
-        }
+        let len = self.session.read_packet(buff)?;
+        Ok(len)
     }
 }

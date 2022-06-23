@@ -1,49 +1,42 @@
-use aes::cipher::{InnerIvInit, KeyInit, StreamCipher};
-use aes::Aes128;
-use ctr::{Ctr32BE, CtrCore};
+use std::simd::u8x16;
 
-pub struct Aes128Ctr {
-    inner_key: Aes128,
-    inner: ctr::Ctr32BE<aes::Aes128>,
+#[derive(Clone, Copy)]
+pub struct XorCipher {
+    key: u8x16,
 }
 
-impl Aes128Ctr {
-    pub fn new(key: &[u8]) -> Self {
-        let mut inner_key = [0u8; 16];
-        inner_key.copy_from_slice(md5::compute(key).as_slice());
+impl XorCipher {
+    pub fn new(k: &[u8]) -> Self {
+        let mut key = [0u8; 16];
+        key.copy_from_slice(md5::compute(k).as_slice());
 
-        let aes = aes::Aes128::new_from_slice(&inner_key).unwrap();
-        let core = CtrCore::inner_iv_init(aes.clone(), (&[0u8; 16]).into());
-
-        Aes128Ctr {
-            inner: Ctr32BE::from_core(core),
-            inner_key: aes,
+        Self {
+            key: u8x16::from_array(key),
         }
     }
 
     #[inline]
-    fn in_place(&mut self, data: &mut [u8]) {
-        self.inner.apply_keystream(data);
+    fn in_place(&self, data: &mut [u8]) {
+        let count = data.len() / 16;
+
+        for i in 0..count {
+            let range = &mut data[i * 16..(i + 1) * 16];
+            let m1: u8x16 = u8x16::from_slice(range);
+            range.copy_from_slice((m1 ^ self.key).as_array())
+        }
+
+        for (i, v) in data[count * 16..].iter_mut().enumerate() {
+            *v ^= self.key.as_array()[i]
+        }
     }
 
     #[inline]
-    pub fn encrypt_slice(&mut self, plaintext_and_ciphertext: &mut [u8]) {
+    pub fn encrypt_slice(&self, plaintext_and_ciphertext: &mut [u8]) {
         self.in_place(plaintext_and_ciphertext);
     }
 
     #[inline]
-    pub fn decrypt_slice(&mut self, ciphertext_and_plaintext: &mut [u8]) {
+    pub fn decrypt_slice(&self, ciphertext_and_plaintext: &mut [u8]) {
         self.in_place(ciphertext_and_plaintext);
-    }
-}
-
-impl Clone for Aes128Ctr {
-    fn clone(&self) -> Self {
-        let core = CtrCore::inner_iv_init(self.inner_key.clone(), (&[0u8; 16]).into());
-
-        Aes128Ctr {
-            inner: Ctr32BE::from_core(core),
-            inner_key: self.inner_key.clone(),
-        }
     }
 }

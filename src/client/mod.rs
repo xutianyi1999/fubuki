@@ -18,7 +18,7 @@ use tokio::time;
 pub use api::{call, Req};
 
 use crate::client::api::api_start;
-use crate::common::cipher::Aes128Ctr;
+use crate::common::cipher::XorCipher;
 use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
 use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
 use crate::common::net::{proto, SocketExt};
@@ -72,7 +72,7 @@ struct InterfaceInfo<Map> {
     server_addr: String,
     tcp_handler_channel: Option<Sender<(Box<[u8]>, NodeId)>>,
     udp_socket: Option<Arc<UdpSocket>>,
-    key: Aes128Ctr,
+    key: XorCipher,
     try_send_to_lan_addr: bool,
 }
 
@@ -129,7 +129,7 @@ impl InterfaceMap {
                 node_map: node_map.node_map.try_read()?.clone(),
                 tcp_handler_channel: node_map.tcp_handler_channel.clone(),
                 udp_socket: node_map.udp_socket.clone(),
-                key: node_map.key.clone(),
+                key: node_map.key,
                 try_send_to_lan_addr: node_map.try_send_to_lan_addr,
             };
             map.insert(*k, range);
@@ -147,7 +147,7 @@ impl InterfaceMap {
                 node_map: node_map.node_map.read().clone(),
                 tcp_handler_channel: node_map.tcp_handler_channel.clone(),
                 udp_socket: node_map.udp_socket.clone(),
-                key: node_map.key.clone(),
+                key: node_map.key,
                 try_send_to_lan_addr: node_map.try_send_to_lan_addr,
             };
             map.insert(*k, range);
@@ -345,7 +345,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
                             };
 
                             let msg = UdpMsg::Data(data).encode(unsafe { &mut *buff });
-                            interface_info.key.clone().encrypt_slice(msg);
+                            interface_info.key.encrypt_slice(msg);
                             socket.send_to(msg, peer_addr)?;
 
                             debug!("Send {} -> {} packet to {}", src_addr, dst_addr, peer_addr);
@@ -402,7 +402,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
 fn udp_handler_inner<T: TunDevice>(
     tun: &T,
     socket: &UdpSocket,
-    key: &Aes128Ctr,
+    key: &XorCipher,
     heartbeat_seq: &AtomicU32,
 ) -> Result<()> {
     let mut buff = vec![0u8; UDP_BUFF_SIZE];
@@ -410,7 +410,7 @@ fn udp_handler_inner<T: TunDevice>(
     loop {
         let (len, peer_addr) = socket.recv_from(&mut buff)?;
         let packet = &mut buff[..len];
-        key.clone().decrypt_slice(packet);
+        key.decrypt_slice(packet);
 
         if let Ok(packet) = UdpMsg::decode(packet) {
             match packet {
@@ -419,7 +419,7 @@ fn udp_handler_inner<T: TunDevice>(
                 {
                     let resp = UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
                     let buff = resp.encode(&mut buff);
-                    key.clone().encrypt_slice(buff);
+                    key.encrypt_slice(buff);
                     socket.send_to(buff, peer_addr)?;
                 }
                 UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
@@ -463,7 +463,7 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
 
             let msg = UdpMsg::Heartbeat(get_local_node_id(), temp_seq, HeartbeatType::Req);
             let out = msg.encode(&mut buff);
-            interface_info.key.clone().encrypt_slice(out);
+            interface_info.key.encrypt_slice(out);
 
             if let Err(e) = socket.send_to(out, &interface_info.server_addr) {
                 error!(
@@ -499,7 +499,7 @@ fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
                     let heartbeat_packet =
                         UdpMsg::Heartbeat(*node_id, temp_seq, HeartbeatType::Req);
                     let out = heartbeat_packet.encode(&mut buff);
-                    interface_info.key.clone().encrypt_slice(out);
+                    interface_info.key.encrypt_slice(out);
 
                     if let Err(e) = socket.send_to(out, dest_addr) {
                         error!("UDP socket send to {} error: {}", dest_addr, e)
@@ -560,11 +560,11 @@ async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
             };
 
             let tun = tun.clone();
-            let key = info.key.clone();
+            let key = info.key;
             let seq = seq.clone();
 
-            let h = async {
-                tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &*socket, &key, &*seq))
+            let h = async move {
+                tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &socket, &key, &seq))
                     .await?
             };
             handle_list.push(h);
@@ -578,7 +578,7 @@ async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
         Ok(())
     };
     let fut2 = async {
-        tokio::task::spawn_blocking(move || heartbeat_schedule(&*seq))
+        tokio::task::spawn_blocking(move || heartbeat_schedule(&seq))
             .await
             .context("Heartbeat schedule handler error")?
     };
@@ -602,8 +602,6 @@ async fn tcp_handler_inner(
     loop {
         let mut node = init_node.clone();
         node.register_time = Utc::now().timestamp();
-        let mut tx_key = network_range_info.key.clone();
-        let mut rx_key = network_range_info.key.clone();
 
         let process = async {
             let mut stream = TcpStream::connect(&network_range_info.server_addr)
@@ -613,8 +611,8 @@ async fn tcp_handler_inner(
             let (rx, mut tx) = stream.split();
             let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
-            let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_key);
-            let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_key);
+            let mut msg_reader = TcpMsgReader::new(&mut rx, network_range_info.key);
+            let mut msg_writer = TcpMsgWriter::new(&mut tx, network_range_info.key);
 
             let msg = TcpMsg::Register(node);
             msg_writer.write(&msg).await?;
@@ -648,8 +646,8 @@ async fn tcp_handler_inner(
                     match msg_reader.read().await? {
                         TcpMsg::NodeMap(node_map) => {
                             let mapping: HashMap<Ipv4Addr, Node> = node_map
-                                .into_iter()
-                                .map(|(_, node)| (node.tun_addr, node))
+                                .into_values()
+                                .map(|node| (node.tun_addr, node))
                                 .collect();
 
                             get_interface_map().update(&network_range_info.tun.ip, mapping);
@@ -860,7 +858,7 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
             server_addr: range.server_addr.clone(),
             tcp_handler_channel: tx,
             udp_socket: opt.map(Arc::new),
-            key: range.key.clone(),
+            key: range.key,
             try_send_to_lan_addr: range.try_send_to_lan_addr,
         };
 
