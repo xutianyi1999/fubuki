@@ -1,49 +1,68 @@
-use aes::cipher::{InnerIvInit, KeyInit, StreamCipher};
-use aes::Aes128;
-use ctr::{Ctr32BE, CtrCore};
+use std::cmp::min;
+use std::simd::u8x16;
 
-pub struct Aes128Ctr {
-    inner_key: Aes128,
-    inner: ctr::Ctr32BE<aes::Aes128>,
+pub trait Cipher {
+    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], offset: usize);
+
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], offset: usize);
 }
 
-impl Aes128Ctr {
-    pub fn new(key: &[u8]) -> Self {
-        let mut inner_key = [0u8; 16];
-        inner_key.copy_from_slice(md5::compute(key).as_slice());
+#[derive(Clone, Copy)]
+pub struct XorCipher {
+    key: u8x16,
+}
 
-        let aes = aes::Aes128::new_from_slice(&inner_key).unwrap();
-        let core = CtrCore::inner_iv_init(aes.clone(), (&[0u8; 16]).into());
+impl Cipher for XorCipher {
+    #[inline]
+    fn encrypt(&self, mut data: &mut [u8], offset: usize) {
+        let v = offset % 16;
 
-        Aes128Ctr {
-            inner: Ctr32BE::from_core(core),
-            inner_key: aes,
+        if v != 0 {
+            let (l, r) = data.split_at_mut(min(16 - v, data.len()));
+            data = r;
+
+            l.iter_mut()
+                .zip(&self.key.as_array()[v..])
+                .for_each(|(a, b)| *a ^= b);
         }
+
+        while data.len() >= 16 {
+            let (l, r) = data.split_array_mut::<16>();
+            data = r;
+            let new = u8x16::from_array(*l) ^ self.key;
+            *l = *new.as_array();
+        }
+
+        data.iter_mut()
+            .zip(self.key.as_array())
+            .for_each(|(a, b)| *a ^= b);
     }
 
     #[inline]
-    fn in_place(&mut self, data: &mut [u8]) {
-        self.inner.apply_keystream(data);
-    }
-
-    #[inline]
-    pub fn encrypt_slice(&mut self, plaintext_and_ciphertext: &mut [u8]) {
-        self.in_place(plaintext_and_ciphertext);
-    }
-
-    #[inline]
-    pub fn decrypt_slice(&mut self, ciphertext_and_plaintext: &mut [u8]) {
-        self.in_place(ciphertext_and_plaintext);
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], offset: usize) {
+        self.encrypt(ciphertext_to_plaintext, offset)
     }
 }
 
-impl Clone for Aes128Ctr {
-    fn clone(&self) -> Self {
-        let core = CtrCore::inner_iv_init(self.inner_key.clone(), (&[0u8; 16]).into());
+impl TryFrom<&[u8]> for XorCipher {
+    type Error = std::io::Error;
 
-        Aes128Ctr {
-            inner: Ctr32BE::from_core(core),
-            inner_key: self.inner_key.clone(),
-        }
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let c = XorCipher {
+            key: u8x16::from_array(md5::compute(value).0),
+        };
+        Ok(c)
     }
+}
+
+#[test]
+fn test() {
+    let k = XorCipher::try_from(b"abc".as_ref()).unwrap();
+    let mut text = *b"abcdef";
+
+    k.encrypt(&mut text, 0);
+    k.decrypt(&mut text[..2], 0);
+    k.decrypt(&mut text[2..], 2);
+
+    assert_eq!(&text, b"abcdef");
 }

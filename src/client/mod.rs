@@ -1,831 +1,995 @@
-use std::mem::MaybeUninit;
-use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering};
+use std::mem::size_of;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use ahash::{HashMap, HashMapExt};
+use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
-use anyhow::{anyhow, Context};
-use chrono::Utc;
+use arc_swap::{ArcSwap, ArcSwapOption, Cache};
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use futures_util::future::LocalBoxFuture;
 use futures_util::FutureExt;
+use hyper::{Body, Method, Request};
+use ipnet::Ipv4Net;
 use parking_lot::RwLock;
-use tokio::io::BufReader;
+use prettytable::{row, Table};
+use rand::random;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::net::UdpSocket;
+use tokio::signal;
+use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::mpsc::{unbounded_channel, Receiver, Sender};
 use tokio::time;
+use hyper::body::Buf;
 
-pub use api::{call, Req};
-
+use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
 use crate::client::api::api_start;
-use crate::common::cipher::Aes128Ctr;
-use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
-use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
-use crate::common::net::{proto, SocketExt};
-use crate::common::{HashMap, HashSet, MapInit, SetInit};
+use crate::client::route::RouteHandle;
+use crate::common::allocator;
+use crate::common::allocator::Bytes;
+use crate::common::net::{HeartbeatCache, HeartbeatInfo, protocol, SocketExt, UdpStatus};
+use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::routing_table::RoutingTable;
+use crate::tun::create_device;
 use crate::tun::TunDevice;
-use crate::tun::{create_device, skip_error};
-use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
 
 mod api;
+mod nat;
+mod route;
 
-static mut LOCAL_NODE_ID: NodeId = 0;
-static mut CONFIG: MaybeUninit<ClientConfigFinalize> = MaybeUninit::uninit();
-static mut INTERFACE_MAP: MaybeUninit<InterfaceMap> = MaybeUninit::uninit();
-static mut DIRECT_NODE_LIST: MaybeUninit<DirectNodeList> = MaybeUninit::uninit();
+type NodeMap = HashMap<VirtualAddr, ExtendedNode>;
 
-fn set_local_node_id(id: NodeId) {
-    unsafe { LOCAL_NODE_ID = id }
+struct AtomicAddr {
+    inner: AtomicU32
 }
 
-fn set_config(config: ClientConfigFinalize) {
-    unsafe { CONFIG.write(config) };
+impl AtomicAddr {
+    fn load(&self) -> Ipv4Addr {
+        VirtualAddr::from(self.inner.load(Ordering::Relaxed))
+    }
+
+    fn store(&self, addr: VirtualAddr) {
+        self.inner.store(u32::from_be_bytes(addr.octets()), Ordering::Relaxed)
+    }
 }
 
-fn set_interface_map(map: InterfaceMap) {
-    unsafe { INTERFACE_MAP.write(map) };
+impl From<Ipv4Addr> for AtomicAddr {
+    fn from(value: Ipv4Addr) -> Self {
+        let inner = AtomicU32::new(u32::from_be_bytes(value.octets()));
+
+        AtomicAddr {
+            inner
+        }
+    }
 }
 
-fn set_direct_node_list(list: DirectNodeList) {
-    unsafe { DIRECT_NODE_LIST.write(list) };
+struct AtomicCidr {
+    inner: AtomicU64
 }
 
-fn get_local_node_id() -> NodeId {
-    unsafe { LOCAL_NODE_ID }
+#[repr(align(8))]
+struct Inner {
+    v: Ipv4Net
 }
 
-fn get_config() -> &'static ClientConfigFinalize {
-    unsafe { CONFIG.assume_init_ref() }
+impl From<Ipv4Net> for AtomicCidr {
+    fn from(value: Ipv4Net) -> Self {
+        let inner: AtomicU64 = unsafe {
+            std::mem::transmute(Inner { v: value })
+        };
+
+        AtomicCidr {
+            inner
+        }
+    }
 }
 
-fn get_interface_map() -> &'static InterfaceMap {
-    unsafe { INTERFACE_MAP.assume_init_ref() }
+impl AtomicCidr {
+    fn load(&self) -> Ipv4Net {
+        let inner: Inner = unsafe {
+            std::mem::transmute(self.inner.load(Ordering::Relaxed))
+        };
+        inner.v
+    }
+
+    fn store(&self, cidr: Ipv4Net) {
+        let v: u64 = unsafe {
+            std::mem::transmute(Inner { v: cidr })
+        };
+
+        self.inner.store(v, Ordering::Relaxed)
+    }
 }
 
-fn get_direct_node_list() -> &'static DirectNodeList {
-    unsafe { DIRECT_NODE_LIST.assume_init_ref() }
-}
-
-struct InterfaceInfo<Map> {
-    tun: TunIpAddr,
-    node_map: Map,
+struct Interface<K> {
+    index: usize,
+    node_name: String,
+    group_name: ArcSwapOption<String>,
+    addr: AtomicAddr,
+    cidr: AtomicCidr,
+    mode: ProtocolMode,
+    node_map: ArcSwap<NodeMap>,
     server_addr: String,
-    tcp_handler_channel: Option<Sender<(Box<[u8]>, NodeId)>>,
-    udp_socket: Option<Arc<UdpSocket>>,
-    key: Aes128Ctr,
-    try_send_to_lan_addr: bool,
+    server_udp_hc: RwLock<HeartbeatCache>,
+    server_udp_status: ArcSwap<UdpStatus>,
+    server_tcp_hc: RwLock<HeartbeatCache>,
+    server_is_connected: AtomicBool,
+    tcp_handler_channel: Option<Sender<Bytes>>,
+    udp_socket: Option<UdpSocket>,
+    key: K,
 }
 
-struct InterfaceMap {
-    // local_addr -> (tun_addr -> node)
-    map: HashMap<Ipv4Addr, InterfaceInfo<RwLock<Arc<HashMap<Ipv4Addr, Node>>>>>,
-    version: AtomicU8,
+#[derive(Serialize, Deserialize, Clone)]
+struct InterfaceInfo {
+    index: usize,
+    node_name: String,
+    group_name: Option<String>,
+    addr: VirtualAddr,
+    cidr: Ipv4Net,
+    mode: ProtocolMode,
+    node_map: HashMap<VirtualAddr, ExtendedNodeInfo>,
+    server_addr: String,
+    server_udp_hc: HeartbeatInfo,
+    server_udp_status: UdpStatus,
+    server_tcp_hc: HeartbeatInfo,
+    server_is_connected: bool,
 }
 
-impl InterfaceMap {
-    fn new(map: HashMap<Ipv4Addr, InterfaceInfo<()>>) -> Self {
-        let map = map
-            .into_iter()
-            .map(|(tun_addr, info)| {
-                let network_segment = InterfaceInfo {
-                    tun: info.tun,
-                    server_addr: info.server_addr,
-                    node_map: RwLock::new(Arc::new(HashMap::new())),
-                    tcp_handler_channel: info.tcp_handler_channel,
-                    udp_socket: info.udp_socket,
-                    key: info.key,
-                    try_send_to_lan_addr: info.try_send_to_lan_addr,
-                };
-                (tun_addr, network_segment)
-            })
+impl <K> From<&Interface<K>> for InterfaceInfo {
+    fn from(value: &Interface<K>) -> Self {
+        InterfaceInfo {
+            index: value.index,
+            node_name: value.node_name.clone(),
+            group_name: {
+                value.group_name
+                    .load()
+                    .as_ref()
+                    .map(|v| (**v).clone())
+            },
+            addr: value.addr.load(),
+            cidr: value.cidr.load(),
+            mode: value.mode.clone(),
+            node_map: {
+                value.node_map
+                    .load_full()
+                    .iter()
+                    .map(|(k, v)| {
+                        (*k, ExtendedNodeInfo::from(v))
+                    })
+                    .collect()
+            },
+            server_addr: value.server_addr.clone(),
+            server_udp_hc: HeartbeatInfo::from(&*value.server_udp_hc.read()),
+            server_udp_status: (**value.server_udp_status.load()),
+            server_tcp_hc: HeartbeatInfo::from(&*value.server_tcp_hc.read()),
+            server_is_connected: value.server_is_connected.load(Ordering::Relaxed)
+        }
+    }
+}
+
+#[allow(unused)]
+struct InterfaceCache<'a, K> {
+    addr: &'a AtomicAddr,
+    cidr: &'a AtomicCidr,
+    mode: &'a ProtocolMode,
+    node_map: Cache<&'a ArcSwap<NodeMap>, Arc<NodeMap>>,
+    server_addr: &'a str,
+    server_udp_hc: &'a RwLock<HeartbeatCache>,
+    server_udp_status: Cache<&'a ArcSwap<UdpStatus>, Arc<UdpStatus>>,
+    server_tcp_hc: &'a RwLock<HeartbeatCache>,
+    server_is_connected: &'a AtomicBool,
+    tcp_handler_channel: Option<&'a Sender<Bytes>>,
+    udp_socket: Option<&'a UdpSocket>,
+    key: &'a K,
+}
+
+impl <'a, K> From<&'a Interface<K>> for InterfaceCache<'a, K> {
+    fn from(value: &'a Interface<K>) -> Self {
+        InterfaceCache {
+            addr: &value.addr,
+            cidr: &value.cidr,
+            mode: &value.mode,
+            node_map: Cache::new(&value.node_map),
+            server_addr: &value.server_addr,
+            server_udp_hc: &value.server_udp_hc,
+            server_udp_status: Cache::new(&value.server_udp_status),
+            server_tcp_hc: &value.server_tcp_hc,
+            server_is_connected: &value.server_is_connected,
+            tcp_handler_channel: value.tcp_handler_channel.as_ref(),
+            udp_socket: value.udp_socket.as_ref(),
+            key: &value.key
+        }
+    }
+}
+
+struct ExtendedNode {
+    pub node: Node,
+    pub udp_status: ArcSwap<UdpStatus>,
+    pub hc: RwLock<HeartbeatCache>,
+    pub peer_addr: ArcSwapOption<SocketAddr>
+}
+
+impl From<Node> for ExtendedNode {
+    fn from(node: Node) -> Self {
+        ExtendedNode {
+            node,
+            udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
+            hc: RwLock::new(HeartbeatCache::new()),
+            peer_addr: ArcSwapOption::empty()
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ExtendedNodeInfo {
+    node: Node,
+    udp_status: UdpStatus,
+    hc: HeartbeatInfo,
+}
+
+impl From<&ExtendedNode> for ExtendedNodeInfo {
+    fn from(value: &ExtendedNode) -> Self {
+        ExtendedNodeInfo {
+            node: value.node.clone(),
+            udp_status: (**value.udp_status.load()),
+            hc: HeartbeatInfo::from(&*value.hc.read())
+        }
+    }
+}
+
+async fn lookup_host(dst: &str) -> Option<SocketAddr> {
+    tokio::net::lookup_host(dst).await.ok()?.next()
+}
+
+async fn send<K: Cipher>(
+    inter: &Interface<K>,
+    dst_node: &ExtendedNode,
+    server_udp_status: &UdpStatus,
+    buff: &mut [u8],
+    packet_range: Range<usize>
+) -> Result<()> {
+    if (!inter.mode.direct.is_empty()) && (!dst_node.node.mode.direct.is_empty()) {
+        let udp_status = **dst_node.udp_status.load();
+
+        if let UdpStatus::Available { dst_addr } = udp_status {
+            let socket = match &inter.udp_socket {
+                None => unreachable!(),
+                Some(socket) => socket,
+            };
+
+            let packet = &mut buff[packet_range.start - UDP_MSP_HEADER_LEN..packet_range.end];
+            UdpMsg::data_encode(packet_range.len(), packet);
+            inter.key.encrypt(packet, 0);
+            socket.send_to(packet, dst_addr).await?;
+            return Ok(());
+        }
+    }
+
+    if (!inter.mode.relay.is_empty()) && (!dst_node.node.mode.relay.is_empty()) {
+        for np in &inter.mode.relay {
+            match np {
+                NetProtocol::TCP => {
+                    let tx = match inter.tcp_handler_channel {
+                        None => unreachable!(),
+                        Some(ref v) => v,
+                    };
+
+                    const DATA_START: usize = TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
+                    let mut packet = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet_range.len());
+                    packet[DATA_START..].copy_from_slice(&buff[packet_range.start..packet_range.end]);
+
+                    TcpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), &mut packet);
+                    inter.key.encrypt(&mut packet, 0);
+
+                    if let Err(TrySendError::Closed(_)) = tx.try_send(packet) {
+                        return Err(anyhow!("Tcp handler has been closed"));
+                    }
+                    return Ok(());
+                }
+                NetProtocol::UDP => {
+                    let socket = match &inter.udp_socket {
+                        None => unreachable!(),
+                        Some(socket) => socket,
+                    };
+
+                    let dst_addr = match *server_udp_status {
+                        UdpStatus::Available { dst_addr } => dst_addr,
+                        UdpStatus::Unavailable => continue,
+                    };
+
+                    let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSP_HEADER_LEN..packet_range.end];
+
+                    UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
+                    inter.key.encrypt(packet, 0);
+                    socket.send_to(packet, dst_addr).await?;
+                    return Ok(());
+                }
+            };
+        }
+    }
+    Err(anyhow!("No route to dst node"))
+}
+
+enum TransferType {
+    Unicast(VirtualAddr),
+    Broadcast,
+}
+
+async fn tun_handler<T, K>(
+    tun: T,
+    routing_table: Arc<ArcSwap<RoutingTable>>,
+    interfaces: Vec<Arc<Interface<K>>>,
+) -> Result<()>
+where
+    T: TunDevice + Send + Sync + 'static,
+    K: Cipher + Clone + Send + Sync + 'static,
+{
+    let join = tokio::spawn(async move {
+        let mut rh_cache = Cache::new(&*routing_table);
+
+        let mut interfaces_cache: Vec<InterfaceCache<K>> = interfaces.iter()
+            .map(|v| InterfaceCache::from(&**v))
             .collect();
 
-        InterfaceMap {
-            map,
-            version: AtomicU8::new(0),
-        }
-    }
+        let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
-    fn version(&self) -> u8 {
-        self.version.load(Ordering::Relaxed)
-    }
+        loop {
+            const START: usize = UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>();
 
-    fn update(&self, local_tun_addr: &Ipv4Addr, map: HashMap<Ipv4Addr, Node>) {
-        let map = Arc::new(map);
-
-        if let Some(info) = self.map.get(local_tun_addr) {
-            *info.node_map.write() = map;
-            self.version.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn try_load(&self) -> Option<HashMap<Ipv4Addr, InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>>> {
-        let mut map = HashMap::with_capacity(self.map.len());
-
-        for (k, node_map) in &self.map {
-            let range = InterfaceInfo {
-                tun: node_map.tun.clone(),
-                server_addr: node_map.server_addr.clone(),
-                node_map: node_map.node_map.try_read()?.clone(),
-                tcp_handler_channel: node_map.tcp_handler_channel.clone(),
-                udp_socket: node_map.udp_socket.clone(),
-                key: node_map.key.clone(),
-                try_send_to_lan_addr: node_map.try_send_to_lan_addr,
+            let data = match tun
+                .recv_packet(&mut buff[START..])
+                .await
+                .context("Read packet from tun error")?
+            {
+                0 => continue,
+                len => &buff[START..START + len],
             };
-            map.insert(*k, range);
-        }
-        Some(map)
-    }
 
-    fn load(&self) -> HashMap<Ipv4Addr, InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>> {
-        let mut map = HashMap::with_capacity(self.map.len());
+            let packet_range = START..START + data.len();
+            let src_addr = protocol::get_ip_src_addr(data)?;
+            let dst_addr = protocol::get_ip_dst_addr(data)?;
 
-        for (k, node_map) in &self.map {
-            let range = InterfaceInfo {
-                tun: node_map.tun.clone(),
-                server_addr: node_map.server_addr.clone(),
-                node_map: node_map.node_map.read().clone(),
-                tcp_handler_channel: node_map.tcp_handler_channel.clone(),
-                udp_socket: node_map.udp_socket.clone(),
-                key: node_map.key.clone(),
-                try_send_to_lan_addr: node_map.try_send_to_lan_addr,
+            let rt = &**rh_cache.load();
+            let item = match rt.find(dst_addr) {
+                None => continue,
+                Some(item) => item,
             };
-            map.insert(*k, range);
-        }
-        map
-    }
-}
 
-macro_rules! init_interface_map {
-    () => {
-        let mut local_interface_map: HashMap<
-            Ipv4Addr,
-            InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>,
-        > = HashMap::new();
-        let mut local_interface_map_version = 0;
+            let interface_cache = &mut interfaces_cache[item.interface_index];
+            let interface_addr = interface_cache.addr.load();
+            let interface_cidr = interface_cache.cidr.load();
 
-        macro_rules! get_local_interface_map {
-            () => {{
-                let interface_map = get_interface_map();
-                let interface_map_version = interface_map.version();
+            if interface_cache.server_is_connected.load(Ordering::Relaxed) {
+                continue;
+            }
 
-                if local_interface_map_version != interface_map_version {
-                    if let Some(v) = interface_map.try_load() {
-                        debug!("Update local_interface_map");
-                        local_interface_map = v;
-                        local_interface_map_version = interface_map_version;
+            if interface_addr == dst_addr {
+                tun.send_packet(data).await.context("Write packet to tun error")?;
+                continue;
+            }
+
+            let transfer_type = if interface_addr == item.gateway {
+                if dst_addr.is_broadcast() && interface_addr == src_addr {
+                    TransferType::Broadcast
+                } else if interface_cidr.broadcast() == dst_addr {
+                    TransferType::Broadcast
+                } else {
+                    TransferType::Unicast(dst_addr)
+                }
+            } else {
+                TransferType::Unicast(item.gateway)
+            };
+
+            let server_us = **interface_cache.server_udp_status.load();
+            let t = interface_cache.node_map.load();
+            let node_map = &**t;
+
+            let inter = &interfaces[item.interface_index];
+
+            match transfer_type {
+                TransferType::Unicast(addr) => {
+                    let node = match node_map.get(&addr) {
+                        None => continue,
+                        Some(node) => node
+                    };
+                    send(inter, node, &server_us, &mut buff, packet_range).await?
+                }
+                TransferType::Broadcast => {
+                    for node in node_map.values() {
+                        send(inter, node, &server_us, &mut buff, packet_range.clone()).await?;
                     }
                 }
-                &local_interface_map
-            }};
-        }
-    };
-}
-
-struct DirectNodeList {
-    list: RwLock<HashMap<NodeId, AtomicI64>>,
-    version: AtomicU8,
-}
-
-impl DirectNodeList {
-    fn new() -> Self {
-        DirectNodeList {
-            list: RwLock::new(HashMap::new()),
-            version: AtomicU8::new(0),
-        }
-    }
-
-    fn version(&self) -> u8 {
-        self.version.load(Ordering::Relaxed)
-    }
-
-    fn try_load(&self) -> Option<HashSet<NodeId>> {
-        let guard = self.list.try_read()?;
-        let set: HashSet<NodeId> = guard.keys().copied().collect();
-        Some(set)
-    }
-
-    fn load(&self) -> HashSet<NodeId> {
-        let guard = self.list.read();
-        guard.keys().copied().collect()
-    }
-
-    fn try_update(&self, node_id: NodeId) {
-        let now = Utc::now().timestamp();
-
-        {
-            let guard = match self.list.try_read() {
-                Some(guard) => guard,
-                None => return,
-            };
-
-            if let Some(time) = guard.get(&node_id) {
-                time.store(now, Ordering::Relaxed);
-                return;
             }
         }
-
-        let option = {
-            let mut guard = match self.list.try_write() {
-                Some(guard) => guard,
-                None => return,
-            };
-
-            guard.insert(node_id, AtomicI64::new(now))
-        };
-
-        if option.is_none() {
-            self.version.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn try_update_all(&self, map: HashMap<NodeId, AtomicI64>) {
-        match self.list.try_write() {
-            Some(mut guard) => *guard = map,
-            None => return,
-        };
-
-        self.version.fetch_add(1, Ordering::Relaxed);
-    }
+    });
+    join.await?
 }
 
-macro_rules! init_local_direct_node_list {
-    () => {
-        let mut local_direct_node_list: HashSet<NodeId> = HashSet::new();
-        let mut local_direct_node_list_version = 0;
+async fn udp_handler<T, K>(
+    config: &'static ClientConfigFinalize<K>,
+    interface: Arc<Interface<K>>,
+    tun: T,
+) -> Result<()>
+where
+    T: TunDevice + Send + Sync + 'static,
+    K: Cipher + Clone + Send + Sync + 'static,
+{
+    let join = tokio::spawn(async move {
+        let socket = interface.udp_socket.as_ref().expect("Must need udp socket");
+        let key = &interface.key;
+        let is_direct = interface.mode.direct.contains(&NetProtocol::UDP);
 
-        macro_rules! get_local_direct_node_list {
-            () => {{
-                let node_list = get_direct_node_list();
-                let node_list_version = node_list.version();
+        let heartbeat_schedule =  async {
+            let mut packet = vec![0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
 
-                if node_list_version != local_direct_node_list_version {
-                    if let Some(v) = node_list.try_load() {
-                        debug!("Update local_direct_node_list");
-                        local_direct_node_list = v;
-                        local_direct_node_list_version = node_list_version
+            loop {
+                let server_hc = &interface.server_udp_hc;
+                let seq = {
+                    let mut server_hc_guard = server_hc.write();
+                    server_hc_guard.check();
+
+                    if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss && **interface.server_udp_status.load() != UdpStatus::Unavailable {
+                        interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
                     }
+
+                    server_hc_guard.increment();
+                    server_hc_guard.seq
+                };
+
+                let interface_addr = interface.addr.load();
+
+                if interface_addr.is_unspecified() {
+                    continue;
                 }
-                &local_direct_node_list
-            }};
-        }
-    };
-}
 
-fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
-    // TODO need to be optimized
-    let mut buff = vec![0u8; UDP_BUFF_SIZE];
-    let buff = (&mut buff[..]) as *mut [u8];
+                UdpMsg::heartbeat_encode(
+                    interface_addr,
+                    seq,
+                    HeartbeatType::Req,
+                    &mut packet,
+                );
 
-    init_interface_map!();
-    init_local_direct_node_list!();
+                key.encrypt(&mut packet, 0);
+                socket.send_to(&packet, &interface.server_addr).await?;
 
-    loop {
-        let data = match tun
-            .recv_packet(unsafe { &mut (*buff)[2..] })
-            .context("Read packet from tun error")?
-        {
-            0 => continue,
-            len => unsafe { &(*buff)[2..len + 2] },
-        };
+                if is_direct {
+                    let node_map = interface.node_map.load_full();
 
-        let src_addr = proto::get_ip_src_addr(data)?;
-        let dst_addr = proto::get_ip_dst_addr(data)?;
-
-        if src_addr == dst_addr {
-            match tun.send_packet(data) {
-                Err(e) if skip_error(&e) => {
-                    error!("Write packet to tun error: {}", e);
-                    Ok(())
-                }
-                res => res,
-            }
-            .context("Write packet to tun error")?;
-            continue;
-        }
-
-        let interface_map: &HashMap<Ipv4Addr, InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>> =
-            get_local_interface_map!();
-
-        let interface_info = match interface_map.get(&src_addr) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        let direct_node_list: &HashSet<NodeId> = get_local_direct_node_list!();
-
-        macro_rules! send {
-            ($local_node: expr, $dst_node: expr) => {
-                if $local_node.mode.udp_support() && $dst_node.mode.udp_support() {
-                    if let Node {
-                        id: node_id,
-                        wan_udp_addr: Some(peer_wan_addr),
-                        lan_udp_addr: Some(peer_lan_addr),
-                        ..
-                    } = $dst_node
-                    {
-                        // TODO There will be different port with the same id
-                        if direct_node_list.contains(node_id) {
-                            let peer_addr = if interface_info.try_send_to_lan_addr {
-                                match $local_node.wan_udp_addr {
-                                    Some(local_wan_addr)
-                                        if local_wan_addr.ip() == peer_wan_addr.ip() =>
-                                    {
-                                        *peer_lan_addr
-                                    }
-                                    _ => *peer_wan_addr,
-                                }
-                            } else {
-                                *peer_wan_addr
-                            };
-
-                            let socket = match interface_info.udp_socket {
-                                Some(ref v) => &**v,
-                                None => unreachable!(),
-                            };
-
-                            let msg = UdpMsg::Data(data).encode(unsafe { &mut *buff });
-                            interface_info.key.clone().encrypt_slice(msg);
-                            socket.send_to(msg, peer_addr)?;
-
-                            debug!("Send {} -> {} packet to {}", src_addr, dst_addr, peer_addr);
+                    for (_, ext_node) in &*node_map {
+                        if !ext_node.node.mode.direct.contains(&NetProtocol::UDP) {
                             continue;
                         }
+
+                        let is_over: bool;
+                        let udp_status = **ext_node.udp_status.load();
+
+                        let seq = {
+                            let mut hc = ext_node.hc.write();
+                            hc.check();
+                            is_over = hc.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss;
+
+                            if is_over && udp_status != UdpStatus::Unavailable {
+                                ext_node.udp_status.store(Arc::new(UdpStatus::Unavailable));
+                            }
+
+                            hc.increment();
+                            hc.seq
+                        };
+
+                        UdpMsg::heartbeat_encode(interface_addr, seq, HeartbeatType::Req, &mut packet);
+                        key.encrypt(&mut packet, 0);
+
+                        match udp_status {
+                            UdpStatus::Available { dst_addr } if !is_over => {
+                                if let Err(e) = socket.send_to(&packet, dst_addr).await {
+                                    return Err(anyhow!(e))
+                                }
+                            }
+                            _ => {
+                                if let (Some(lan), Some(wan)) =
+                                    (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr)
+                                {
+                                    let addr = ext_node.peer_addr
+                                        .load()
+                                        .as_ref()
+                                        .map(|v| **v);
+
+                                    if let Some(addr) = addr {
+                                        if addr != lan && addr != wan {
+                                            socket.send_to(&packet, addr).await?;
+                                        }
+                                    }
+
+                                    if wan == lan {
+                                        socket.send_to(&packet, lan).await?;
+                                    } else {
+                                        socket.send_to(&packet, lan).await?;
+                                        socket.send_to(&packet, wan).await?;
+                                    }
+                                }
+                            }
+                        };
                     }
                 }
 
-                if $local_node.mode.tcp_support() && $dst_node.mode.tcp_support() {
-                    let tx = match interface_info.tcp_handler_channel {
-                        Some(ref v) => v,
-                        None => unreachable!(),
-                    };
-
-                    match tx.try_send((data.into(), $dst_node.id)) {
-                        Ok(_) => debug!(
-                            "Forward {} -> {} packet to {}",
-                            src_addr, dst_addr, interface_info.server_addr
-                        ),
-                        Err(TrySendError::Closed(_)) => {
-                            return Err(anyhow!("TCP handler channel closed"))
-                        }
-                        _ => continue,
-                    }
-                }
-            };
-        }
-
-        let local_node = match interface_info.node_map.get(&src_addr) {
-            Some(v) => v,
-            None => continue,
+                time::sleep(config.udp_heartbeat_interval).await
+            }
         };
 
-        fn is_broadcast(dst: Ipv4Addr, prefix_len: u32) -> bool {
-            dst.is_broadcast()
-                || Ipv4Addr::from(u32::from(dst) | u32::MAX.checked_shr(prefix_len).unwrap_or(0))
-                    == dst
-        }
+        let recv_handler = async {
+            let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
-        if let Some(dst_node) = interface_info.node_map.get(&dst_addr) {
-            send!(local_node, dst_node);
-        } else if is_broadcast(dst_addr, u32::from(interface_info.tun.netmask).count_ones()) {
-            for dst_node in interface_info.node_map.values() {
-                if dst_node.id == get_local_node_id() {
-                    continue;
-                }
+            loop {
+                let (len, peer_addr) = match socket.recv_from(&mut buff).await {
+                    Ok(v) => v,
+                    Err(e) => return Err(anyhow!(e))
+                };
 
-                send!(local_node, dst_node);
-            }
-        }
-    }
-}
+                let packet = &mut buff[..len];
+                key.decrypt(packet, 0);
 
-fn udp_handler_inner<T: TunDevice>(
-    tun: &T,
-    socket: &UdpSocket,
-    key: &Aes128Ctr,
-    heartbeat_seq: &AtomicU32,
-) -> Result<()> {
-    let mut buff = vec![0u8; UDP_BUFF_SIZE];
+                if let Ok(packet) = UdpMsg::decode(packet) {
+                    match packet {
+                        UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Req) => {
+                            let interface_addr = interface.addr.load();
+                            let mut is_known = false;
 
-    loop {
-        let (len, peer_addr) = socket.recv_from(&mut buff)?;
-        let packet = &mut buff[..len];
-        key.clone().decrypt_slice(packet);
+                            if from_addr == SERVER_VIRTUAL_ADDR {
+                                is_known = true;
+                            } else if is_direct {
+                                if let Some(en) = interface.node_map.load().get(&from_addr) {
+                                    let old = en.peer_addr.load().as_ref().map(|v| **v);
 
-        if let Ok(packet) = UdpMsg::decode(packet) {
-            match packet {
-                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Req)
-                    if get_local_node_id() == node_id =>
-                {
-                    let resp = UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp);
-                    let buff = resp.encode(&mut buff);
-                    key.clone().encrypt_slice(buff);
-                    socket.send_to(buff, peer_addr)?;
-                }
-                UdpMsg::Heartbeat(node_id, seq, HeartbeatType::Resp)
-                    if node_id != get_local_node_id()
-                        && seq == heartbeat_seq.load(Ordering::Relaxed) =>
-                {
-                    get_direct_node_list().try_update(node_id);
-                }
-                UdpMsg::Data(data) => {
-                    debug!("Recv packet from {}", peer_addr);
+                                    if old != Some(peer_addr) {
+                                        en.peer_addr.store(Some(Arc::new(peer_addr)));
+                                    }
+                                    is_known = true;
+                                }
+                            }
 
-                    match tun.send_packet(data) {
-                        Err(e) if skip_error(&e) => {
-                            error!("Write packet to tun error: {}", e);
-                            Ok(())
+                            if is_known {
+                                let len = UdpMsg::heartbeat_encode(
+                                    interface_addr,
+                                    seq,
+                                    HeartbeatType::Resp,
+                                    &mut buff,
+                                );
+
+                                let packet = &mut buff[..len];
+                                key.encrypt(packet, 0);
+                                socket.send_to(packet, peer_addr).await?;
+                            }
                         }
-                        res => res,
-                    }
-                    .context("Write packet to tun error")?;
-                }
-                _ => continue,
-            }
-        }
-    }
-}
+                        UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
+                            if from_addr == SERVER_VIRTUAL_ADDR {
+                                match &*interface.server_udp_status.load_full() {
+                                    UdpStatus::Available { dst_addr } => {
+                                        if *dst_addr == peer_addr {
+                                            interface.server_udp_hc.write().response(seq);
+                                            continue;
+                                        }
 
-fn heartbeat_schedule(seq: &AtomicU32) -> Result<()> {
-    let mut buff = vec![0u8; 256];
-    init_interface_map!();
+                                        if lookup_host(&interface.server_addr).await == Some(peer_addr) {
+                                            if interface.server_udp_hc.write().response(seq).is_some() {
+                                                interface.server_udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                                            }
+                                        }
+                                    }
+                                    UdpStatus::Unavailable => {
+                                        if lookup_host(&interface.server_addr).await == Some(peer_addr)  {
+                                            let mut server_hc_guard = interface.server_udp_hc.write();
 
-    loop {
-        let interface_map: &HashMap<Ipv4Addr, InterfaceInfo<Arc<HashMap<Ipv4Addr, Node>>>> =
-            get_local_interface_map!();
-        let temp_seq = seq.load(Ordering::Relaxed);
+                                            if server_hc_guard.response(seq).is_some() && server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv {
+                                                drop(server_hc_guard);
+                                                interface.server_udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                                            }
+                                        }
+                                    }
+                                };
+                            } else if is_direct {
+                                if let Some(node) = interface.node_map.load_full().get(&from_addr) {
+                                    let mut hc_guard = node.hc.write();
 
-        for (local_addr, interface_info) in interface_map.iter() {
-            let socket = match &interface_info.udp_socket {
-                Some(socket) => &**socket,
-                None => continue,
-            };
-
-            let msg = UdpMsg::Heartbeat(get_local_node_id(), temp_seq, HeartbeatType::Req);
-            let out = msg.encode(&mut buff);
-            interface_info.key.clone().encrypt_slice(out);
-
-            if let Err(e) = socket.send_to(out, &interface_info.server_addr) {
-                error!(
-                    "UDP socket send to server {} error: {}",
-                    &interface_info.server_addr, e
-                )
-            }
-
-            for dest_node in interface_info.node_map.values() {
-                if get_local_node_id() == dest_node.id {
-                    continue;
-                }
-
-                if let Node {
-                    id: node_id,
-                    wan_udp_addr: Some(peer_wan_addr),
-                    lan_udp_addr: Some(peer_lan_addr),
-                    ..
-                } = dest_node
-                {
-                    let dest_addr = if interface_info.try_send_to_lan_addr {
-                        match interface_info.node_map.get(local_addr) {
-                            Some(Node {
-                                wan_udp_addr: Some(local_wan_addr),
-                                ..
-                            }) if local_wan_addr.ip() == peer_wan_addr.ip() => *peer_lan_addr,
-                            _ => *peer_wan_addr,
+                                    if hc_guard.response(seq).is_some() {
+                                        if **node.udp_status.load() == UdpStatus::Unavailable && hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
+                                        {
+                                            drop(hc_guard);
+                                            let status = Arc::new(UdpStatus::Available {
+                                                dst_addr: peer_addr,
+                                            });
+                                            node.udp_status.store(status);
+                                        }
+                                    }
+                                    continue;
+                                }
+                            };
                         }
-                    } else {
-                        *peer_wan_addr
-                    };
+                        UdpMsg::Data(packet) => {
+                            debug!("Recv packet from {}", peer_addr);
 
-                    let heartbeat_packet =
-                        UdpMsg::Heartbeat(*node_id, temp_seq, HeartbeatType::Req);
-                    let out = heartbeat_packet.encode(&mut buff);
-                    interface_info.key.clone().encrypt_slice(out);
+                            tun.send_packet(packet).await.context("Write packet to tun error")?;
+                        }
+                        UdpMsg::Relay(_, packet) => {
+                            debug!("Recv packet from {}", peer_addr);
 
-                    if let Err(e) = socket.send_to(out, dest_addr) {
-                        error!("UDP socket send to {} error: {}", dest_addr, e)
+                            tun.send_packet(packet).await.context("Write packet to tun error")?;
+                        }
                     }
                 }
             }
-        }
-
-        std::thread::sleep(get_config().udp_heartbeat_interval);
-        seq.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-async fn direct_node_list_schedule() {
-    loop {
-        time::sleep(Duration::from_secs(30)).await;
-        let now = Utc::now().timestamp();
-        let mut update = false;
-
-        let new_map = {
-            let guard = match get_direct_node_list().list.try_read() {
-                Some(guard) => guard,
-                None => continue,
-            };
-
-            let mut new = HashMap::with_capacity(guard.len());
-
-            for (k, v) in guard.iter() {
-                let time = v.load(Ordering::Relaxed);
-
-                if now - time <= 30 {
-                    new.insert(*k, AtomicI64::new(time));
-                } else {
-                    update = true
-                }
-            }
-            new
         };
-
-        if update {
-            get_direct_node_list().try_update_all(new_map)
-        }
-    }
-}
-
-async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
-    let map = get_interface_map();
-    let seq = Arc::new(AtomicU32::new(0));
-
-    let count = get_config().udp_handler_thread_count;
-    let mut handle_list = Vec::with_capacity(map.map.len() * count);
-
-    for (_, info) in map.map.iter() {
-        for _ in 0..count {
-            let socket = match info.udp_socket {
-                Some(ref socket) => socket.clone(),
-                None => continue,
-            };
-
-            let tun = tun.clone();
-            let key = info.key.clone();
-            let seq = seq.clone();
-
-            let h = async {
-                tokio::task::spawn_blocking(move || udp_handler_inner(&*tun, &*socket, &key, &*seq))
-                    .await?
-            };
-            handle_list.push(h);
-        }
-    }
-
-    let fut1 = async {
-        futures_util::future::try_join_all(handle_list)
-            .await
-            .context("UDP handler inner error")?;
-        Ok(())
-    };
-    let fut2 = async {
-        tokio::task::spawn_blocking(move || heartbeat_schedule(&*seq))
-            .await
-            .context("Heartbeat schedule handler error")?
-    };
-    let fut3 = async {
-        tokio::spawn(direct_node_list_schedule())
-            .await
-            .context("Direct node list schedule error")?;
-        Ok(())
-    };
-
-    tokio::try_join!(fut1, fut2, fut3).context("UDP handler error")?;
+        let res: Result<((), ()), anyhow::Error> = tokio::try_join!(heartbeat_schedule, recv_handler);
+        res
+    });
+    join.await??;
     Ok(())
 }
 
-async fn tcp_handler_inner(
-    init_node: Node,
-    mut from_tun: Option<Receiver<(Box<[u8]>, NodeId)>>,
-    to_tun: Option<crossbeam_channel::Sender<Box<[u8]>>>,
-    network_range_info: &NetworkRangeFinalize,
-) {
-    loop {
-        let mut node = init_node.clone();
-        node.register_time = Utc::now().timestamp();
-        let mut tx_key = network_range_info.key.clone();
-        let mut rx_key = network_range_info.key.clone();
+#[derive(Clone, Copy)]
+enum RegisterVirtualAddr {
+    Manual((VirtualAddr, Ipv4Net)),
+    Auto(Option<(VirtualAddr, Ipv4Net)>),
+}
 
-        let process = async {
-            let mut stream = TcpStream::connect(&network_range_info.server_addr)
-                .await
-                .with_context(|| format!("Connect to {} error", &network_range_info.server_addr))?;
+async fn register<T, K>(
+    config: &'static ClientConfigFinalize<K>,
+    group: &'static TargetGroupFinalize<K>,
+    stream: &mut T,
+    key: &K,
+    register_addr: &mut RegisterVirtualAddr,
+    lan_udp_socket_addr: Option<SocketAddr>,
+    refresh_route: &mut bool,
+) -> Result<GroupInfo>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+    K: Cipher + Clone
+{
+    let mut buff = allocator::alloc(1024);
 
-            let (rx, mut tx) = stream.split();
-            let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
+    let (virtual_addr, cidr) = match register_addr {
+        RegisterVirtualAddr::Manual(addr) => *addr,
+        RegisterVirtualAddr::Auto(Some(addr)) => *addr,
+        RegisterVirtualAddr::Auto(None) => {
+            *refresh_route = true;
+            let len = TcpMsg::get_idle_virtual_addr_encode(&mut buff);
+            TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
 
-            let mut msg_reader = TcpMsgReader::new(&mut rx, &mut rx_key);
-            let mut msg_writer = TcpMsgWriter::new(&mut tx, &mut tx_key);
-
-            let msg = TcpMsg::Register(node);
-            msg_writer.write(&msg).await?;
-            let msg = msg_reader.read().await?;
+            let msg = TcpMsg::read_msg(stream, key, &mut buff).await?
+                .ok_or_else(|| anyhow!("Server connection closed"))?;
 
             match msg {
-                TcpMsg::Result(MsgResult::Success) => (),
-                TcpMsg::Result(MsgResult::Timeout) => {
-                    return Err(anyhow!(
-                        "{} register timeout",
-                        &network_range_info.server_addr
-                    ))
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "{} register error",
-                        &network_range_info.server_addr
-                    ))
-                }
-            };
-
-            info!("{} connected", &network_range_info.server_addr);
-
-            let (tx, mut rx) = unbounded_channel::<TcpMsg>();
-
-            let latest_recv_heartbeat_time = AtomicI64::new(Utc::now().timestamp());
-            let seq = AtomicU32::new(0);
-
-            let fut1 = async {
-                loop {
-                    match msg_reader.read().await? {
-                        TcpMsg::NodeMap(node_map) => {
-                            let mapping: HashMap<Ipv4Addr, Node> = node_map
-                                .into_iter()
-                                .map(|(_, node)| (node.tun_addr, node))
-                                .collect();
-
-                            get_interface_map().update(&network_range_info.tun.ip, mapping);
-                        }
-                        TcpMsg::Forward(packet, _) => {
-                            if let Some(ref to_tun) = to_tun {
-                                debug!("Recv packet from {}", &network_range_info.server_addr);
-                                to_tun.send(packet.into())?
-                            }
-                        }
-                        TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
-                            let heartbeat = TcpMsg::Heartbeat(seq, HeartbeatType::Resp);
-                            let res = tx.send(heartbeat).map_err(|e| anyhow!(e.to_string()));
-
-                            if res.is_err() {
-                                return res;
-                            }
-                        }
-                        TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                            if seq.load(Ordering::Relaxed) == recv_seq {
-                                latest_recv_heartbeat_time
-                                    .store(Utc::now().timestamp(), Ordering::Relaxed)
-                            }
-                        }
-                        _ => continue,
-                    }
-                }
-            };
-
-            let fut2 = async {
-                let mut heartbeat_interval = time::interval(get_config().tcp_heartbeat_interval);
-                let mut check_heartbeat_timeout = time::interval(Duration::from_secs(30));
-
-                loop {
-                    tokio::select! {
-                        opt = rx.recv() => {
-                             match opt {
-                                Some(heartbeat) => msg_writer.write(&heartbeat).await?,
-                                None => return Ok(())
-                            }
-                        }
-                        opt = match from_tun {
-                            Some(ref mut v) => v.recv().right_future(),
-                            None => std::future::pending().left_future()
-                        } => {
-                            match opt {
-                                Some((data, dest_node_id)) => {
-                                    let msg = TcpMsg::Forward(&data, dest_node_id);
-                                    msg_writer.write(&msg).await?;
-                                }
-                                None => return Ok(())
-                            }
-                        }
-                        _ = heartbeat_interval.tick() => {
-                            let old = seq.fetch_add(1, Ordering::Relaxed);
-                            let heartbeat = TcpMsg::Heartbeat(old + 1, HeartbeatType::Req);
-                            msg_writer.write(&heartbeat).await?;
-                        }
-                        _ = check_heartbeat_timeout.tick() => {
-                            if Utc::now().timestamp() - latest_recv_heartbeat_time.load(Ordering::Relaxed) > 30 {
-                                return Err(anyhow!("Heartbeat recv timeout"))
-                            }
-                        }
-                    }
-                }
-            };
-
-            tokio::try_join!(fut1, fut2)
-        };
-
-        if let Err(e) = process.await {
-            error!(
-                "{} TCP node handler error -> {:?}",
-                &network_range_info.server_addr, e
-            )
+                TcpMsg::GetIdleVirtualAddrRes(Some((addr, cidr))) => {
+                    *register_addr = RegisterVirtualAddr::Auto(Some((addr, cidr)));
+                    (addr, cidr)
+                },
+                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("Address not enough")),
+                _ => return Err(anyhow!("Invalid Message")),
+            }
         }
+    };
 
-        time::sleep(get_config().reconnect_interval).await;
+    let now = Utc::now().timestamp();
+
+    let reg = Register {
+        node_name: group.node_name.clone(),
+        virtual_addr,
+        lan_udp_socket_addr,
+        proto_mod: group.mode.clone(),
+        register_time: now,
+        nonce: random(),
+        allowed_ips: config.allowed_ips.clone()
+    };
+
+    let len = TcpMsg::register_encode(&reg, &mut buff)?;
+    TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+
+    let ret = TcpMsg::read_msg(stream, key, &mut buff).await?
+        .ok_or_else(|| anyhow!("Server connection closed"))?;
+
+    let group_info = match ret {
+        TcpMsg::RegisterRes(RegisterResult::Success(group_info)) => group_info,
+        TcpMsg::RegisterRes(RegisterResult::Timeout) => return Err(anyhow!("register timeout")),
+        TcpMsg::RegisterRes(RegisterResult::NonceRepeat) => return Err(anyhow!("nonce repeat")),
+        TcpMsg::RegisterRes(RegisterResult::InvalidVirtualAddress(e)) => {
+            if e == AllocateError::IpAlreadyInUse {
+                if let RegisterVirtualAddr::Auto(v) = register_addr {
+                    *v = None;
+                }
+            }
+            return Err(anyhow!(e))
+        }
+        _ => return Err(anyhow!("response message not match")),
+    };
+
+    if cidr != group_info.cidr {
+        return Err(anyhow!("cidr not match"));
     }
+    Ok(group_info)
 }
 
-fn mpsc_to_tun<T: TunDevice>(
-    mpsc_rx: crossbeam_channel::Receiver<Box<[u8]>>,
+fn update_tun_addr<T: TunDevice, K>(
     tun: &T,
+    rt: &ArcSwap<RoutingTable>,
+    addr: VirtualAddr,
+    cidr: Ipv4Net,
+    interface: &Interface<K>
 ) -> Result<()> {
-    loop {
-        let packet = mpsc_rx.recv()?;
+    let mut t = (**rt.load()).clone();
+    t.remove(&cidr);
+    t.add(cidr, addr, interface.index);
+    rt.store(Arc::new(t));
 
-        match tun.send_packet(&packet) {
-            Err(e) if skip_error(&e) => {
-                error!("Write packet to tun error: {}", e);
-                Ok(())
-            }
-            res => res,
-        }
-        .context("Write packet to tun error")?;
-    }
-}
+    tun.delete_addr(addr, cidr.netmask())?;
+    tun.add_addr(addr, cidr.netmask())?;
 
-async fn tcp_handler<T: TunDevice + 'static>(
-    mut map: HashMap<Ipv4Addr, (Option<Receiver<(Box<[u8]>, NodeId)>>, Node)>,
-    tun: T,
-) -> Result<()> {
-    let mut handles = Vec::with_capacity(get_config().network_ranges.len());
-
-    fn get_channel<T>() -> (
-        Option<crossbeam_channel::Sender<T>>,
-        Option<crossbeam_channel::Receiver<T>>,
-    ) {
-        for range in &get_config().network_ranges {
-            if range.mode.tcp_support() {
-                let (tx, rx) = crossbeam_channel::unbounded();
-                return (Some(tx), Some(rx));
-            }
-        }
-        (None, None)
-    }
-
-    let (to_tun, from_tcp_handler) = get_channel();
-
-    for network_range in &get_config().network_ranges {
-        let (from_tun, init_node) = match map.remove(&network_range.tun.ip) {
-            Some(v) => v,
-            None => unreachable!(),
-        };
-
-        let h = tokio::spawn(tcp_handler_inner(
-            init_node,
-            from_tun,
-            to_tun.clone(),
-            network_range,
-        ));
-        handles.push(h);
-    }
-
-    let fut1 = async {
-        match from_tcp_handler {
-            Some(rx) => tokio::task::spawn_blocking(move || mpsc_to_tun(rx, &tun))
-                .await
-                .context("MPSC to TUN handler error")?,
-            None => std::future::pending().await,
-        }
-    };
-
-    let fut2 = async {
-        futures_util::future::try_join_all(handles).await?;
-        Ok(())
-    };
-
-    tokio::try_join!(fut1, fut2).context("TCP handler error")?;
+    interface.addr.store(addr);
+    interface.cidr.store(cidr);
     Ok(())
 }
 
-pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
-    set_local_node_id(rand::random());
-    set_config(config);
+async fn tcp_handler<T, K>(
+    config: &'static ClientConfigFinalize<K>,
+    group: &'static TargetGroupFinalize<K>,
+    routing_table: Arc<ArcSwap<RoutingTable>>,
+    interface: Arc<Interface<K>>,
+    tun: T,
+    mut channel_rx: Option<Receiver<Bytes>>
+) -> Result<()>
+where
+    T: TunDevice + Clone + Send + Sync + 'static,
+    K: Cipher + Clone + Send + Sync + 'static,
+{
+    let join = tokio::spawn(async move {
+        let lan_udp_socket_addr = match &interface.udp_socket {
+            None => None,
+            Some(s) => Some(s.local_addr()?),
+        };
 
-    let mut tcp_handler_initialize = HashMap::with_capacity(get_config().network_ranges.len());
-    let mut interface_map_initialize = HashMap::with_capacity(get_config().network_ranges.len());
-    let mut udp_support = false;
+        let mut tun_addr = match &group.tun_addr {
+            None => RegisterVirtualAddr::Auto(None),
+            Some(addr) => {
+                let cidr = Ipv4Net::with_netmask(addr.ip, addr.netmask)?.trunc();
+                update_tun_addr(&tun, &routing_table, addr.ip, cidr, &*interface)?;
+                RegisterVirtualAddr::Manual((addr.ip, cidr))
+            }
+        };
 
-    for range in &get_config().network_ranges {
-        if range.mode.udp_support() {
-            udp_support = true;
+        let key = &group.key;
+
+        loop {
+            let process = async {
+                let mut stream = TcpStream::connect(&group.server_addr)
+                    .await
+                    .with_context(|| format!("Connect to {} error", &group.server_addr))?;
+
+                let mut refresh_route= false;
+                let group_info = register(
+                    config,
+                    group,
+                    &mut stream,
+                    key,
+                    &mut tun_addr,
+                    lan_udp_socket_addr,
+                    &mut refresh_route
+                ).await?;
+
+                if refresh_route {
+                    if let RegisterVirtualAddr::Auto(Some((addr, cidr))) = &tun_addr {
+                        update_tun_addr(&tun, &routing_table, *addr, *cidr, &*interface)?;
+                    }
+                }
+
+                interface.group_name.store(Some(Arc::new(group_info.name.clone())));
+                interface.server_is_connected.store(true, Ordering::Relaxed);
+
+                let (rx, mut tx) = stream.split();
+                let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
+
+                let (inner_channel_tx, mut inner_channel_rx) = unbounded_channel::<Bytes>();
+
+                let recv_handler = async {
+                    let mut buff = vec![0u8; TCP_BUFF_SIZE];
+
+                    loop {
+                        let msg = TcpMsg::read_msg(&mut rx, key, &mut buff).await?
+                            .ok_or_else(|| anyhow!("Server connection closed"))?;
+
+                        match msg {
+                            TcpMsg::NodeMap(map) => {
+                                let old_map = interface.node_map.load_full();
+                                let mut new_map = HashMap::new();
+
+                                for (virtual_addr, node) in map {
+                                    match old_map.get(&virtual_addr) {
+                                        None => {
+                                            new_map.insert(virtual_addr, ExtendedNode::from(node));
+                                        },
+                                        Some(v) => {
+                                            let en = ExtendedNode {
+                                                node,
+                                                hc: RwLock::new(v.hc.read().clone()),
+                                                udp_status: ArcSwap::new(v.udp_status.load_full()),
+                                                peer_addr: ArcSwapOption::new(v.peer_addr.load_full())
+                                            };
+                                            new_map.insert(virtual_addr, en);
+                                        }
+                                    }
+                                }
+
+                                let new_map = Arc::new(new_map);
+                                interface.node_map.store(new_map.clone());
+
+                                let mut hb = hostsfile::HostsBuilder::new("FUBUKI");
+
+                                for node in new_map.values() {
+                                    let node = &node.node;
+                                    hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
+                                }
+
+                                tokio::task::spawn_blocking(move || {
+                                    match hb.write() {
+                                        Ok(_) => info!("update hosts file"),
+                                        Err(e) => error!("update hosts file error: {}", e)
+                                    }
+                                });
+                            }
+                            TcpMsg::Relay(_, buff) => {
+                                tun.send_packet(buff).await?;
+                            }
+                            TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                                let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
+                                TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
+                                key.encrypt(&mut buff, 0);
+
+                                let res = inner_channel_tx
+                                    .send(buff)
+                                    .map_err(|e| anyhow!(e.to_string()));
+
+                                if res.is_err() {
+                                    return res;
+                                }
+                            }
+                            TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                                interface.server_tcp_hc.write().response(recv_seq);
+                            }
+                            _ => continue,
+                        }
+                    }
+                };
+
+                let send_handler = async {
+                    loop {
+                        tokio::select! {
+                            opt = inner_channel_rx.recv() => {
+                                match opt {
+                                    Some(buff) => tx.write_all(&buff).await?,
+                                    None => return Ok(())
+                                };
+                            }
+                            opt = match channel_rx {
+                                Some(ref mut v) => v.recv().right_future(),
+                                None => std::future::pending().left_future()
+                            } => {
+                                match opt {
+                                    Some(buff) => tx.write_all(&buff).await?,
+                                    None => return Ok(())
+                                };
+                            }
+                        }
+                    }
+                };
+
+                let fut3 = async {
+                    let mut is_send = false;
+
+                    loop {
+                        let seq = {
+                            let mut guard = interface.server_tcp_hc.write();
+
+                            if is_send {
+                                guard.check();
+
+                                if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
+                                    guard.packet_continuous_loss_count = 0;
+                                    return Result::<(), _>::Err(anyhow!("recv tcp heartbeat timeout"));
+                                }
+                            }
+
+                            guard.increment();
+                            guard.seq
+                        };
+
+                        is_send = true;
+
+                        let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
+                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
+                        key.encrypt(&mut buff, 0);
+                        inner_channel_tx.send(buff).map_err(|e| anyhow!(e.to_string()))?;
+
+                        tokio::time::sleep(config.tcp_heartbeat_interval).await;
+                    }
+                };
+
+                tokio::try_join!(recv_handler, send_handler, fut3)?;
+                Result::<_, anyhow::Error>::Ok(())
+            };
+
+            if let Err(e) = process.await {
+                error!("{} TCP node handler error -> {:?}", &group.server_addr, e)
+            }
+
+            interface.server_is_connected.store(false, Ordering::Relaxed);
+            time::sleep(config.reconnect_interval).await;
+        }
+    });
+    join.await?
+}
+
+pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
+    config: ClientConfigFinalize<K>,
+) -> Result<()> {
+    let config = &*Box::leak(Box::new(config));
+
+    let tun = tokio::task::spawn_blocking(|| {
+        let tun = Arc::new(create_device()?);
+        tun.set_mtu(config.mtu)?;
+
+        if !config.allowed_ips.is_empty() {
+            nat::add_nat(&config.allowed_ips)?;
         }
 
-        let opt = match range.lan_ip_addr {
-            Some(lan_ip_addr) if range.mode.udp_support() => {
-                let udp_socket =
-                    UdpSocket::bind((lan_ip_addr, 0)).context("Failed to create UDP socket")?;
+        Result::<_, anyhow::Error>::Ok(tun)
+    })
+    .await??;
 
-                if let Some(v) = get_config().udp_socket_recv_buffer_size {
+    let tun_index = tun.get_index();
+    let mut rt = RoutingTable::new();
+    let mut routes = Vec::new();
+
+    for (index, group) in config.groups.iter().enumerate() {
+        for (dst, cidrs) in &group.ips {
+            for cidr in cidrs {
+                rt.add(*cidr, *dst, index);
+                routes.push((*cidr, *dst, tun_index));
+            }
+        }
+    }
+
+    let mut rh = RouteHandle::new(routes.as_slice())?;
+    rh.sync().await?;
+    let rt = Arc::new(ArcSwap::from_pointee(rt));
+
+    let mut future_list: Vec<LocalBoxFuture<Result<()>>> = Vec::new();
+    let mut interfaces = Vec::with_capacity(config.groups.len());
+
+    for (index, group) in config.groups.iter().enumerate() {
+        let (channel_tx, channel_rx) = if group.mode.is_use_tcp() {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(config.channel_limit);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        let udp_opt = match group.lan_ip_addr {
+            Some(lan_ip_addr) if group.mode.is_use_udp() => {
+                let bind_addr = match lan_ip_addr {
+                    IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                };
+
+                let udp_socket = UdpSocket::bind((bind_addr, 0))
+                    .await
+                    .context("Failed to create UDP socket")?;
+
+                if let Some(v) = config.udp_socket_recv_buffer_size {
                     udp_socket.set_recv_buffer_size(v)?;
                 }
 
-                if let Some(v) = get_config().udp_socket_send_buffer_size {
+                if let Some(v) = config.udp_socket_send_buffer_size {
                     udp_socket.set_send_buffer_size(v)?;
                 }
                 Some(udp_socket)
@@ -833,84 +997,160 @@ pub(super) async fn start(config: ClientConfigFinalize) -> Result<()> {
             _ => None,
         };
 
-        let (tx, rx) = if range.mode.tcp_support() {
-            let (tx, rx) = tokio::sync::mpsc::channel(get_config().channel_limit);
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
+        let interface = Interface {
+            index,
+            node_name: group.node_name.clone(),
+            group_name: ArcSwapOption::empty(),
+            addr: AtomicAddr::from(VirtualAddr::UNSPECIFIED),
+            cidr: AtomicCidr::from(Ipv4Net::default()),
+            mode: group.mode.clone(),
+            node_map: ArcSwap::from_pointee(HashMap::new()),
+            server_addr: group.server_addr.clone(),
+            server_udp_hc: RwLock::new(HeartbeatCache::new()),
+            server_udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
+            server_tcp_hc: RwLock::new(HeartbeatCache::new()),
+            server_is_connected: AtomicBool::new(false),
+            tcp_handler_channel: channel_tx,
+            udp_socket: udp_opt,
+            key: group.key.clone()
         };
 
-        let init_node = Node {
-            id: get_local_node_id(),
-            tun_addr: range.tun.ip,
-            lan_udp_addr: match opt {
-                Some(ref socket) => Some(socket.local_addr()?),
-                None => None,
+        let interface = Arc::new(interface);
+        interfaces.push(interface.clone());
+
+        let fut = tcp_handler(
+            config,
+            group,
+            rt.clone(),
+            interface.clone(),
+            tun.clone(),
+            channel_rx
+        );
+        future_list.push(Box::pin(fut));
+
+        if interface.udp_socket.is_some() {
+            let fut = udp_handler(
+                config,
+                interface,
+                tun.clone(),
+            );
+            future_list.push(Box::pin(fut));
+        }
+    };
+
+    let tun_handler_fut = tun_handler(tun.clone(), rt, interfaces.clone());
+    future_list.push(Box::pin(tun_handler_fut));
+    future_list.push(Box::pin(api_start(config.api_addr, interfaces)));
+
+    let serve = futures_util::future::try_join_all(future_list);
+
+    #[cfg(windows)]
+    {
+        let mut ctrl_c = signal::windows::ctrl_c()?;
+        let mut ctrl_close = signal::windows::ctrl_close()?;
+
+        tokio::select! {
+            _ = ctrl_c.recv() => (),
+            _ = ctrl_close.recv() => (),
+            res = serve => {
+                res?;
             },
-            wan_udp_addr: None,
-            mode: range.mode,
-            register_time: 0,
         };
-
-        tcp_handler_initialize.insert(range.tun.ip, (rx, init_node));
-
-        let info = InterfaceInfo {
-            tun: range.tun.clone(),
-            node_map: (),
-            server_addr: range.server_addr.clone(),
-            tcp_handler_channel: tx,
-            udp_socket: opt.map(Arc::new),
-            key: range.key.clone(),
-            try_send_to_lan_addr: range.try_send_to_lan_addr,
-        };
-
-        interface_map_initialize.insert(range.tun.ip, info);
     }
 
-    set_interface_map(InterfaceMap::new(interface_map_initialize));
-    set_direct_node_list(DirectNodeList::new());
+    #[cfg(unix)]
+    {
+        let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+        let mut interrupt = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
 
-    let tun_addrs: Vec<TunIpAddr> = get_config()
-        .network_ranges
-        .iter()
-        .map(|range| range.tun.clone())
-        .collect();
+        tokio::select! {
+            _ = terminate.recv() => (),
+            _ = interrupt.recv() => (),
+            res = serve => {
+                res?;
+            },
+        };
+    }
 
-    let tun_device =
-        create_device(get_config().mtu, &tun_addrs).context("Failed create tun adapter")?;
-    let tun_device = Arc::new(tun_device);
-    let inner_tun_device = tun_device.clone();
+    nat::del_nat(&config.allowed_ips)?;
+    Ok(())
+}
 
-    let tun_handle = async {
-        let count = get_config().tun_handler_thread_count;
-        let mut handles = Vec::with_capacity(count);
+pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("http://{}/info", api_addr))
+        .body(Body::empty())?;
 
-        for _ in 0..count {
-            let inner_tun_device = inner_tun_device.clone();
-            let handle = async {
-                tokio::task::spawn_blocking(move || tun_handler(&inner_tun_device)).await?
-            };
-            handles.push(handle)
+    let c = hyper::client::Client::new();
+    let resp = c.request(req).await?;
+
+    let (parts, body) = resp.into_parts();
+
+    if parts.status != 200 {
+        let bytes = hyper::body::to_bytes(body).await?;
+        let msg = String::from_utf8(bytes.to_vec())?;
+        return Err(anyhow!("HTTP response code: {}, message: {}", parts.status.as_u16(), msg));
+    }
+
+    let body = hyper::body::aggregate(body).await?;
+    let interfaces_info: Vec<InterfaceInfo> = serde_json::from_reader(body.reader())?;
+
+    let mut table = Table::new();
+
+    match info_type {
+        NodeInfoType::Interface => {
+            table.add_row(row!["INDEX", "NAME", "GROUP", "IP", "CIDR", "SERVER_ADDRESS", "IS_CONNECTED", "UDP_STATUS", "UDP DELAY&LOSS_RATE", "TCP DELAY&LOSS_RATE", "PROTOCOL_MODE"]);
+
+            for info in interfaces_info {
+                table.add_row(row![
+                    info.index,
+                    info.node_name,
+                    format!("{:?}", info.group_name),
+                    info.addr,
+                    info.cidr,
+                    info.server_addr,
+                    info.server_is_connected,
+                    info.server_udp_status,
+                    format!("{:?}-{}", info.server_udp_hc.elapsed, info.server_udp_hc.packet_loss_count / info.server_udp_hc.send_count),
+                    format!("{:?}-{}", info.server_tcp_hc.elapsed, info.server_tcp_hc.packet_loss_count / info.server_tcp_hc.send_count),
+                    format!("{:?}", info.mode)
+                ]);
+            }
         }
+        NodeInfoType::NodeMap{interface_id} => {
+            table.add_row(row!["NAME", "IP", "LAN_ADDRESS", "WAN_ADDRESS", "PROTOCOL_MODE", "ALLOWED_IPS", "REGISTER_TIME", "UDP_STATUS", "UDP DELAY&LOSS_RATE"]);
 
-        futures_util::future::try_join_all(handles)
-            .await
-            .context("TUN handler error")?;
-        Ok(())
-    };
-    let tcp_handle = tcp_handler(tcp_handler_initialize, tun_device.clone());
-    let udp_handle = if udp_support {
-        udp_handler(tun_device).right_future()
-    } else {
-        std::future::pending().left_future()
-    };
-    let api_handle = async {
-        tokio::spawn(api_start(get_config().api_addr))
-            .await
-            .context("API handler error")?
-    };
+            for info in interfaces_info {
+                if info.index == interface_id {
+                    for (_, node) in info.node_map {
+                        let register_time = {
+                            let utc: DateTime<Utc> = DateTime::from_utc(
+                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("Can't convert timestamp"))?,
+                                Utc,
+                            );
+                            let local_time: DateTime<Local> = DateTime::from(utc);
+                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
+                        };
 
-    info!("Client start");
-    tokio::try_join!(tun_handle, tcp_handle, udp_handle, api_handle)?;
+                        table.add_row(row![
+                            node.node.name,
+                            node.node.virtual_addr,
+                            format!("{:?}", node.node.lan_udp_addr),
+                            format!("{:?}", node.node.wan_udp_addr),
+                            format!("{:?}", node.node.mode),
+                            format!("{:?}", node.node.allowed_ips),
+                            register_time,
+                            node.udp_status,
+                            format!("{:?}-{}", node.hc.elapsed, node.hc.packet_loss_count / node.hc.send_count),
+                        ]);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    table.printstd();
     Ok(())
 }

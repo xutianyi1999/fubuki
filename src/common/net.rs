@@ -1,8 +1,13 @@
+use std::fmt::{Display, Formatter};
 use std::io::Result;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use socket2::TcpKeepalive;
 use tokio::time::Duration;
+
+use crate::common::net::protocol::Seq;
 
 pub trait SocketExt {
     fn set_keepalive(&self) -> Result<()>;
@@ -48,102 +53,251 @@ pub fn get_interface_addr<A: ToSocketAddrs>(dest_addr: A) -> Result<IpAddr> {
     Ok(addr.ip())
 }
 
-pub mod proto {
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub enum UdpStatus {
+    Available {
+        dst_addr: SocketAddr
+    },
+    Unavailable,
+}
+
+impl Display for UdpStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UdpStatus::Available { dst_addr } => write!(f, "Available({})", dst_addr),
+            UdpStatus::Unavailable => write!(f, "Unavailable")
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct HeartbeatCache {
+    pub seq: Seq,
+    pub send_time: Instant,
+    pub elapsed: Option<Duration>,
+    pub send_count: u64,
+    pub packet_continuous_loss_count: u64,
+    pub packet_continuous_recv_count: u64,
+    pub packet_loss_count: u64,
+}
+
+impl HeartbeatCache {
+    pub fn new() -> Self {
+        HeartbeatCache {
+            seq: 0,
+            send_time: Instant::now(),
+            elapsed: None,
+            send_count: 0,
+            packet_continuous_loss_count: 0,
+            packet_continuous_recv_count: 0,
+            packet_loss_count: 0,
+        }
+    }
+
+    pub fn response(&mut self, resp: Seq) -> Option<Duration> {
+        if self.seq == resp {
+            self.packet_continuous_loss_count = 0;
+            self.packet_continuous_recv_count += 1;
+            
+            let elapsed = Some(self.send_time.elapsed());
+            self.elapsed = elapsed;
+            elapsed
+        } else {
+            None
+        }
+    }
+
+    pub fn check(&mut self) {
+        if self.elapsed.is_none() {
+            self.packet_continuous_recv_count = 0;
+            self.packet_loss_count += 1;
+            self.packet_continuous_loss_count += 1;
+        }
+    }
+
+    pub fn increment(&mut self) {
+        self.elapsed = None;
+        self.send_time = Instant::now();
+        self.seq = self.seq.overflowing_add(1).0;
+        self.send_count += 1;
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HeartbeatInfo {
+    pub elapsed: Option<Duration>,
+    pub send_count: u64,
+    pub packet_continuous_loss_count: u64,
+    pub packet_continuous_recv_count: u64,
+    pub packet_loss_count: u64,
+}
+
+impl From<&HeartbeatCache> for HeartbeatInfo {
+    fn from(value: &HeartbeatCache) -> Self {
+        HeartbeatInfo {
+            elapsed: value.elapsed,
+            send_count: value.send_count,
+            packet_continuous_loss_count: value.packet_continuous_loss_count,
+            packet_continuous_recv_count: value.packet_continuous_recv_count,
+            packet_loss_count: value.packet_loss_count
+        }
+    }
+}
+
+pub mod protocol {
+    use std::error::Error;
     use std::fmt::{Display, Formatter};
     use std::io;
-    use std::io::Result;
+    use std::mem::size_of;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::ops::Range;
-    use std::str::FromStr;
 
-    use crate::common::HashMap;
+    use ahash::HashMap;
     use anyhow::anyhow;
+    use anyhow::Result;
+    use bincode::{config, Decode, Encode};
+    use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-    use crate::common::persistence::ToJson;
+    use crate::common::cipher::Cipher;
 
-    const MAGIC_NUM: u8 = 0x99;
-    const REGISTER: u8 = 0x00;
-    const NODE_MAP: u8 = 0x01;
-    const HEARTBEAT: u8 = 0x02;
-    const DATA: u8 = 0x03;
-    const FORWARD: u8 = 0x04;
-    const RESULT: u8 = 0x05;
-    const REQ: u8 = 0x00;
-    const RESP: u8 = 0x01;
-    const SUCCESS: u8 = 0x00;
-    const TIMEOUT: u8 = 0x01;
+    pub type VirtualAddr = Ipv4Addr;
 
-    pub type NodeId = u32;
+    // todo check is include
+    pub const SERVER_VIRTUAL_ADDR: VirtualAddr = VirtualAddr::new(9, 9, 9, 9);
+
+    pub const TCP_BUFF_SIZE: usize = 65535;
+    pub const UDP_BUFF_SIZE: usize = 65535;
+
+    pub const MAGIC_NUM: u8 = 0x99;
+    pub const REGISTER: u8 = 0x00;
+    pub const REGISTER_RESULT: u8 = 0x05;
+    pub const NODE_MAP: u8 = 0x01;
+    pub const HEARTBEAT: u8 = 0x02;
+    pub const DATA: u8 = 0x03;
+    pub const GET_IDLE_VIRTUAL_ADDR: u8 = 0x06;
+    pub const GET_IDLE_VIRTUAL_ADDR_RES: u8 = 0x07;
+    pub const RELAY: u8 = 0x08;
+    pub const REQ: u8 = 0x00;
+    pub const RESP: u8 = 0x01;
+
     pub type Seq = u32;
 
-    #[derive(Copy, Clone, Serialize, Deserialize, PartialEq)]
-    pub enum ProtocolMode {
-        UdpOnly,
-        TcpOnly,
-        UdpAndTcp,
+    #[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+    pub enum NetProtocol {
+        TCP,
+        UDP,
+    }
+
+    #[derive(Clone, Debug, Encode, Decode, Serialize, Deserialize)]
+    pub struct ProtocolMode {
+        pub direct: Vec<NetProtocol>,
+        pub relay: Vec<NetProtocol>,
+    }
+
+    impl Default for ProtocolMode {
+        fn default() -> Self {
+            ProtocolMode {
+                direct: vec![NetProtocol::UDP],
+                relay: vec![NetProtocol::UDP, NetProtocol::TCP],
+            }
+        }
     }
 
     impl ProtocolMode {
-        pub fn tcp_support(self) -> bool {
-            self == ProtocolMode::TcpOnly || self == ProtocolMode::UdpAndTcp
+        pub fn is_use_udp(&self) -> bool {
+            self.direct.contains(&NetProtocol::UDP) || self.relay.contains(&NetProtocol::UDP)
         }
 
-        pub fn udp_support(self) -> bool {
-            self == ProtocolMode::UdpOnly || self == ProtocolMode::UdpAndTcp
-        }
-    }
-
-    impl FromStr for ProtocolMode {
-        type Err = anyhow::Error;
-
-        fn from_str(s: &str) -> anyhow::Result<Self> {
-            let mode = match s.to_ascii_uppercase().as_str() {
-                "UDP_ONLY" => ProtocolMode::UdpOnly,
-                "TCP_ONLY" => ProtocolMode::TcpOnly,
-                "UDP_AND_TCP" => ProtocolMode::UdpAndTcp,
-                _ => return Err(anyhow!("Invalid protocol mode")),
-            };
-            Ok(mode)
+        pub fn is_use_tcp(&self) -> bool {
+            self.direct.contains(&NetProtocol::TCP) || self.relay.contains(&NetProtocol::TCP)
         }
     }
 
-    impl Display for ProtocolMode {
+    #[derive(Encode, Decode, Clone)]
+    pub struct GroupInfo {
+        pub name: String,
+        #[bincode(with_serde)]
+        pub cidr: Ipv4Net,
+    }
+
+    #[derive(Encode, Decode, Clone)]
+    pub struct Register {
+        pub node_name: String,
+        pub virtual_addr: VirtualAddr,
+        pub lan_udp_socket_addr: Option<SocketAddr>,
+        pub proto_mod: ProtocolMode,
+        #[bincode(with_serde)]
+        pub allowed_ips: Vec<Ipv4Net>,
+        pub register_time: i64,
+        pub nonce: u32,
+    }
+
+    #[derive(PartialEq, Debug, Copy, Clone, Encode, Decode)]
+    pub enum AllocateError {
+        IpNotBelongNetworkRange,
+        IpSameAsNetworkAddress,
+        IpSameAsBroadcastAddress,
+        IpAlreadyInUse,
+    }
+
+    impl Display for AllocateError {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            let str = match self {
-                ProtocolMode::UdpOnly => "UDP_ONLY",
-                ProtocolMode::TcpOnly => "TCP_ONLY",
-                ProtocolMode::UdpAndTcp => "UDP_AND_TCP",
-            };
-            write!(f, "{}", str)
+            write!(f, "{:?}", self)
         }
     }
 
-    #[derive(Serialize, Deserialize, Clone)]
+    impl Error for AllocateError {}
+
+    #[derive(Clone, Encode, Decode)]
+    pub enum RegisterResult {
+        Success(GroupInfo),
+        InvalidVirtualAddress(AllocateError),
+        Timeout,
+        NonceRepeat,
+    }
+
+    #[derive(Encode, Decode, Deserialize, Serialize, Clone)]
     pub struct Node {
-        pub id: NodeId,
-        pub tun_addr: Ipv4Addr,
+        pub name: String,
+        pub virtual_addr: VirtualAddr,
         pub lan_udp_addr: Option<SocketAddr>,
         pub wan_udp_addr: Option<SocketAddr>,
         pub mode: ProtocolMode,
+        #[bincode(with_serde)]
+        pub allowed_ips: Vec<Ipv4Net>,
         pub register_time: i64,
+        pub register_nonce: u32
     }
 
+    #[repr(u8)]
     pub enum HeartbeatType {
-        Req,
+        Req = 0,
         Resp,
     }
 
-    pub enum MsgResult {
-        Success,
-        Timeout,
+    impl TryFrom<u8> for HeartbeatType {
+        type Error = anyhow::Error;
+
+        fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+            match value {
+                REQ => Ok(HeartbeatType::Req),
+                RESP => Ok(HeartbeatType::Resp),
+                _ => Err(anyhow!("Heartbeat type not match"))
+            }
+        }
     }
 
     pub enum TcpMsg<'a> {
-        Register(Node),
-        Result(MsgResult),
-        NodeMap(HashMap<NodeId, Node>),
-        Forward(&'a [u8], NodeId),
+        GetIdleVirtualAddr,
+        // address, netmask
+        GetIdleVirtualAddrRes(Option<(VirtualAddr, Ipv4Net)>),
+        Register(Register),
+        RegisterRes(RegisterResult),
+        NodeMap(HashMap<VirtualAddr, Node>),
+        // todo convert to data
+        Relay(VirtualAddr, &'a [u8]),
         Heartbeat(Seq, HeartbeatType),
     }
 
@@ -158,174 +312,242 @@ pub mod proto {
         };
     }
 
+    pub const TCP_MSG_HEADER_LEN: usize = 4;
+
+    // |MAGIC NUM|PACKET TYPE|DATA LEN|DATA|
     impl TcpMsg<'_> {
-        pub fn encode<'a>(&self, buff: &'a mut [u8]) -> Result<&'a mut [u8]> {
-            buff[0] = MAGIC_NUM;
-            let slice = &mut buff[1..];
-
-            let len = match self {
-                TcpMsg::NodeMap(node_map) => {
-                    let data = node_map.to_json_vec()?;
-                    slice[0] = NODE_MAP;
-                    slice[1..data.len() + 1].copy_from_slice(&data);
-                    data.len() + 1
-                }
-                TcpMsg::Register(node) => {
-                    let data = node.to_json_vec()?;
-                    slice[0] = REGISTER;
-                    slice[1..data.len() + 1].copy_from_slice(&data);
-                    data.len() + 1
-                }
-                TcpMsg::Result(res) => {
-                    slice[0] = RESULT;
-
-                    match res {
-                        MsgResult::Success => slice[1] = SUCCESS,
-                        MsgResult::Timeout => slice[1] = TIMEOUT,
-                    };
-                    2
-                }
-                TcpMsg::Forward(data, node_id) => {
-                    slice[0] = FORWARD;
-                    slice[1..5].copy_from_slice(&node_id.to_be_bytes());
-                    slice[5..data.len() + 5].copy_from_slice(*data);
-                    data.len() + 5
-                }
-                TcpMsg::Heartbeat(seq, heartbeat_type) => {
-                    slice[0] = HEARTBEAT;
-                    slice[1..5].copy_from_slice(&seq.to_be_bytes());
-
-                    let type_byte = match heartbeat_type {
-                        HeartbeatType::Req => REQ,
-                        HeartbeatType::Resp => RESP,
-                    };
-
-                    slice[5] = type_byte;
-                    6
-                }
-            };
-            Ok(&mut buff[..len + 1])
+        pub fn get_idle_virtual_addr_encode(out: &mut [u8]) -> usize {
+            out[0] = MAGIC_NUM;
+            out[1] = GET_IDLE_VIRTUAL_ADDR;
+            out[2..4].copy_from_slice(&0u16.to_be_bytes());
+            TCP_MSG_HEADER_LEN
         }
 
-        pub fn decode(packet: &[u8]) -> Result<TcpMsg> {
-            let magic_num = *get!(packet, 0);
-            let mode = *get!(packet, 1);
-            let data = get!(packet, 2..);
+        pub fn get_idle_virtual_addr_res_encode(
+            addr: Option<(VirtualAddr, Ipv4Net)>,
+            out: &mut [u8],
+        ) -> Result<usize> {
+            out[0] = MAGIC_NUM;
+            out[1] = GET_IDLE_VIRTUAL_ADDR_RES;
 
-            if magic_num != MAGIC_NUM {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "TCP Message error",
-                ));
-            }
+            let size = bincode::encode_into_slice(
+                bincode::serde::Compat(addr),
+                &mut out[TCP_MSG_HEADER_LEN..],
+                config::standard(),
+            )?;
 
+            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+            Ok(TCP_MSG_HEADER_LEN + size)
+        }
+
+        pub fn node_map_encode(
+            node_map: &HashMap<VirtualAddr, Node>,
+            out: &mut [u8],
+        ) -> Result<usize> {
+            out[0] = MAGIC_NUM;
+            out[1] = NODE_MAP;
+
+            let size = bincode::encode_into_slice(node_map, &mut out[TCP_MSG_HEADER_LEN..], config::standard())?;
+            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+
+            Ok(TCP_MSG_HEADER_LEN + size)
+        }
+
+        pub fn register_encode(register: &Register, out: &mut [u8]) -> Result<usize> {
+            out[0] = MAGIC_NUM;
+            out[1] = REGISTER;
+
+            let size = bincode::encode_into_slice(register, &mut out[TCP_MSG_HEADER_LEN..], config::standard())?;
+            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+
+            Ok(TCP_MSG_HEADER_LEN + size)
+        }
+
+        pub fn register_res_encode(register_res: &RegisterResult, out: &mut [u8]) -> Result<usize> {
+            out[0] = MAGIC_NUM;
+            out[1] = REGISTER_RESULT;
+
+            let size = bincode::encode_into_slice(register_res, &mut out[TCP_MSG_HEADER_LEN..], config::standard())?;
+            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+
+            Ok(TCP_MSG_HEADER_LEN + size)
+        }
+
+        pub fn relay_encode(to: VirtualAddr, packet_size: usize, out: &mut [u8]) -> usize {
+            out[0] = MAGIC_NUM;
+            out[1] = RELAY;
+
+            let data_size = size_of::<VirtualAddr>() + packet_size;
+            out[2..4].copy_from_slice(&(data_size as u16).to_be_bytes());
+            out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()].copy_from_slice(&to.octets());
+
+            TCP_MSG_HEADER_LEN + data_size
+        }
+
+        pub fn heartbeat_encode(seq: Seq, heartbeat_type: HeartbeatType, out: &mut [u8]) -> usize {
+            out[0] = MAGIC_NUM;
+            out[1] = HEARTBEAT;
+
+            const DATA_SIZE: usize = size_of::<Seq>() + size_of::<HeartbeatType>();
+
+            out[2..4].copy_from_slice(&(DATA_SIZE as u16).to_be_bytes());
+            out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<Seq>()].copy_from_slice(&seq.to_be_bytes());
+            out[TCP_MSG_HEADER_LEN + size_of::<Seq>()] = heartbeat_type as u8;
+
+            TCP_MSG_HEADER_LEN + DATA_SIZE
+        }
+
+        pub fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
             let msg = match mode {
                 REGISTER => {
-                    let node: Node = serde_json::from_slice(data)?;
-                    TcpMsg::Register(node)
+                    let (register, _) = bincode::decode_from_slice::<Register, _>(data, config::standard())?;
+                    TcpMsg::Register(register)
                 }
-                RESULT => match data[0] {
-                    SUCCESS => TcpMsg::Result(MsgResult::Success),
-                    TIMEOUT => TcpMsg::Result(MsgResult::Timeout),
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "TCP Message error",
-                        ));
-                    }
-                },
+                REGISTER_RESULT => {
+                    let (res, _) = bincode::decode_from_slice::<RegisterResult, _>(
+                        data,
+                        config::standard(),
+                    )?;
+                    TcpMsg::RegisterRes(res)
+                }
                 NODE_MAP => {
-                    let node_map: HashMap<NodeId, Node> = serde_json::from_slice(data)?;
+                    let (node_map, _) = bincode::decode_from_slice::<HashMap<VirtualAddr, Node>, _>(
+                        data,
+                        config::standard(),
+                    )?;
                     TcpMsg::NodeMap(node_map)
                 }
-                FORWARD => {
-                    let mut node_id_buff = [0u8; 4];
-                    node_id_buff.copy_from_slice(get!(data, ..4));
-                    let node_id = NodeId::from_be_bytes(node_id_buff);
+                RELAY => {
+                    const ADDR_SIZE: usize = size_of::<VirtualAddr>();
 
-                    TcpMsg::Forward(get!(data, 4..), node_id)
+                    let mut virtual_addr_buff = [0u8; ADDR_SIZE];
+                    virtual_addr_buff.copy_from_slice(get!(data, ..ADDR_SIZE));
+                    let virtual_addr = VirtualAddr::from(virtual_addr_buff);
+
+                    TcpMsg::Relay(virtual_addr, &data[ADDR_SIZE..])
                 }
                 HEARTBEAT => {
-                    let mut seq = [0u8; 4];
-                    seq.copy_from_slice(get!(data, ..4));
-                    let seq: Seq = u32::from_be_bytes(seq);
+                    const SEQ_SIZE: usize = size_of::<Seq>();
 
-                    let heartbeat_type = *get!(data, 4);
+                    let mut seq = [0u8; SEQ_SIZE];
+                    seq.copy_from_slice(get!(data, ..SEQ_SIZE));
+                    let seq = Seq::from_be_bytes(seq);
 
-                    let heartbeat_type = match heartbeat_type {
-                        REQ => HeartbeatType::Req,
-                        RESP => HeartbeatType::Resp,
-                        _ => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "TCP Message error",
-                            ));
-                        }
-                    };
+                    let heartbeat_type = *get!(data, SEQ_SIZE);
+                    let heartbeat_type = HeartbeatType::try_from(heartbeat_type)?;
                     TcpMsg::Heartbeat(seq, heartbeat_type)
                 }
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "TCP Message error",
-                    ));
+                GET_IDLE_VIRTUAL_ADDR => TcpMsg::GetIdleVirtualAddr,
+                GET_IDLE_VIRTUAL_ADDR_RES => {
+                    let (opt, _) = bincode::decode_from_slice::<
+                        bincode::serde::Compat<Option<(VirtualAddr, Ipv4Net)>>,
+                        _,
+                    >(data, config::standard())?;
+                    TcpMsg::GetIdleVirtualAddrRes(opt.0)
                 }
+                _ => return Err(anyhow!("TCP msg error")),
             };
             Ok(msg)
+        }
+
+        pub async fn read_msg<'a, Rx: AsyncRead + Unpin, K: Cipher>(
+            rx: &mut Rx,
+            key: &K,
+            buff: &'a mut [u8],
+        ) -> Result<Option<TcpMsg<'a>>> {
+            if rx.read_exact(&mut buff[..4]).await.is_err() {
+                return Ok(None);
+            }
+
+            key.decrypt(&mut buff[..4], 0);
+
+            if buff[0] != MAGIC_NUM {
+                return Err(anyhow!("Magic number not match"));
+            }
+
+            let mode = buff[1];
+            let mut len_buff = [0u8; 2];
+            len_buff.copy_from_slice(&buff[2..4]);
+            let len = u16::from_be_bytes(len_buff);
+
+            let buff = &mut buff[..len as usize];
+            rx.read_exact(buff).await?;
+            key.decrypt(buff, 4);
+
+            TcpMsg::decode(mode, buff).map(Some)
+        }
+
+        pub async fn write_msg<Tx: AsyncWrite + Unpin, K: Cipher>(
+            tx: &mut Tx,
+            key: &K,
+            input: &mut [u8],
+        ) -> Result<()> {
+            key.encrypt(input, 0);
+            tx.write_all(input).await?;
+            Ok(())
         }
     }
 
     pub enum UdpMsg<'a> {
-        Heartbeat(NodeId, Seq, HeartbeatType),
+        Heartbeat(VirtualAddr, Seq, HeartbeatType),
         Data(&'a [u8]),
+        // todo remove relay
+        Relay(VirtualAddr, &'a [u8]),
     }
 
-    impl<'a> UdpMsg<'a> {
-        pub fn encode(&self, buff: &'a mut [u8]) -> &'a mut [u8] {
-            buff[0] = MAGIC_NUM;
-            let slice = &mut buff[1..];
+    pub const UDP_MSP_HEADER_LEN: usize = 2;
 
-            let len = match self {
-                UdpMsg::Heartbeat(node_id, seq, heartbeat_type) => {
-                    slice[0] = HEARTBEAT;
-                    slice[1..5].copy_from_slice(&node_id.to_be_bytes());
-                    slice[5..9].copy_from_slice(&seq.to_be_bytes());
+    impl UdpMsg<'_> {
+        pub fn heartbeat_encode(
+            addr: VirtualAddr,
+            seq: Seq,
+            heartbeat_type: HeartbeatType,
+            out: &mut [u8],
+        ) -> usize {
+            out[0] = MAGIC_NUM;
+            out[1] = HEARTBEAT;
+            out[2..6].copy_from_slice(&addr.octets());
+            out[6..10].copy_from_slice(&seq.to_be_bytes());
 
-                    let type_byte = match heartbeat_type {
-                        HeartbeatType::Req => REQ,
-                        HeartbeatType::Resp => RESP,
-                    };
-
-                    slice[9] = type_byte;
-                    10
-                }
-                UdpMsg::Data(data) => {
-                    slice[0] = DATA;
-                    data.len() + 1
-                }
-            };
-
-            &mut buff[..len + 1]
+            out[10] = heartbeat_type as u8;
+            UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()
         }
 
-        pub fn decode(packet: &'a [u8]) -> Result<Self> {
-            let magic_num = *get!(packet, 0);
-            let mode = *get!(packet, 1);
-            let data = get!(packet, 2..);
+        pub fn data_encode(packet_len: usize, out: &mut [u8]) -> usize {
+            out[0] = MAGIC_NUM;
+            out[1] = DATA;
+            UDP_MSP_HEADER_LEN + packet_len
+        }
+
+        pub fn relay_encode(to: VirtualAddr, packet_len: usize, out: &mut [u8]) -> usize {
+            out[0] = MAGIC_NUM;
+            out[1] = DATA;
+            out[2..6].copy_from_slice(&to.octets());
+            UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + packet_len
+        }
+
+        pub fn decode(packet: &[u8]) -> Result<UdpMsg> {
+            let magic_num = packet[0];
+            let mode = packet[1];
+            let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "UDP Message error",
-                ));
-            }
+                return Err(anyhow!("Magic number not match"))
+            };
 
             match mode {
                 DATA => Ok(UdpMsg::Data(data)),
+                RELAY => {
+                    let mut virtual_addr = [0u8; 4];
+                    virtual_addr.copy_from_slice(get!(data, ..4));
+                    let virtual_addr = VirtualAddr::from(virtual_addr);
+
+                    Ok(UdpMsg::Relay(virtual_addr, &data[4..]))
+                }
                 HEARTBEAT => {
-                    let mut node_id = [0u8; 4];
-                    node_id.copy_from_slice(get!(data, ..4));
-                    let node_id: NodeId = u32::from_be_bytes(node_id);
+                    let mut virtual_addr = [0u8; 4];
+                    virtual_addr.copy_from_slice(get!(data, ..4));
+                    let virtual_addr = VirtualAddr::from(virtual_addr);
 
                     let mut seq = [0u8; 4];
                     seq.copy_from_slice(get!(data, 4..8));
@@ -336,19 +558,11 @@ pub mod proto {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "UDP Message error",
-                            ));
-                        }
+                        _ => return Err(anyhow!("UDP Message error")),
                     };
-                    Ok(UdpMsg::Heartbeat(node_id, seq, heartbeat_type))
+                    Ok(UdpMsg::Heartbeat(virtual_addr, seq, heartbeat_type))
                 }
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "UDP Message error",
-                )),
+                _ => Err(anyhow!("UDP Message error")),
             }
         }
     }
@@ -366,115 +580,5 @@ pub mod proto {
         let mut buff = [0u8; 4];
         buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "Get ip packet src addr error"));
         Ok(Ipv4Addr::from(buff))
-    }
-}
-
-pub mod msg_operator {
-    use std::io::Result;
-    use std::net::SocketAddr;
-
-    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    use tokio::net::UdpSocket;
-
-    use crate::common::cipher::Aes128Ctr;
-
-    use super::proto::{TcpMsg, UdpMsg};
-
-    pub const UDP_BUFF_SIZE: usize = 65536;
-    pub const TCP_BUFF_SIZE: usize = 65536;
-
-    pub struct TcpMsgReader<'a, Rx: AsyncRead + Unpin> {
-        rx: &'a mut Rx,
-        key: &'a mut Aes128Ctr,
-        buff: Box<[u8]>,
-    }
-
-    impl<'a, Rx: AsyncRead + Unpin> TcpMsgReader<'a, Rx> {
-        pub fn new(rx: &'a mut Rx, key: &'a mut Aes128Ctr) -> Self {
-            let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            TcpMsgReader { rx, key, buff }
-        }
-
-        pub async fn read(&mut self) -> Result<TcpMsg<'_>> {
-            let buff = &mut self.buff;
-            let rx = &mut self.rx;
-            let key = &mut self.key;
-
-            let len = rx.read_u16().await?;
-            let data = &mut buff[..len as usize];
-            rx.read_exact(data).await?;
-
-            key.decrypt_slice(data);
-            TcpMsg::decode(data)
-        }
-    }
-
-    pub struct TcpMsgWriter<'a, Tx: AsyncWrite + Unpin> {
-        tx: &'a mut Tx,
-        key: &'a mut Aes128Ctr,
-        buff: Box<[u8]>,
-    }
-
-    impl<'a, Tx: AsyncWrite + Unpin> TcpMsgWriter<'a, Tx> {
-        pub fn new(tx: &'a mut Tx, key: &'a mut Aes128Ctr) -> Self {
-            let buff = vec![0u8; TCP_BUFF_SIZE].into_boxed_slice();
-            TcpMsgWriter { tx, key, buff }
-        }
-
-        pub async fn write(&mut self, msg: &TcpMsg<'_>) -> Result<()> {
-            let buff = &mut self.buff;
-            let tx = &mut self.tx;
-            let key = &mut self.key;
-
-            let data = msg.encode(&mut buff[2..])?;
-            key.encrypt_slice(data);
-
-            let len = data.len();
-            buff[..2].copy_from_slice(&(len as u16).to_be_bytes());
-
-            tx.write_all(&buff[..len + 2]).await?;
-            Ok(())
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct UdpMsgSocket<'a> {
-        socket: &'a UdpSocket,
-        key: Aes128Ctr,
-        buff: Box<[u8]>,
-    }
-
-    impl<'a> UdpMsgSocket<'a> {
-        pub fn new(socket: &'a UdpSocket, key: Aes128Ctr) -> Self {
-            UdpMsgSocket {
-                socket,
-                key,
-                buff: vec![0u8; UDP_BUFF_SIZE].into_boxed_slice(),
-            }
-        }
-
-        pub async fn read(&mut self) -> Result<(UdpMsg<'_>, SocketAddr)> {
-            let socket = self.socket;
-            let mut key = self.key.clone();
-            let buff = &mut self.buff;
-
-            let (len, peer_addr) = socket.recv_from(buff).await?;
-            let data = &mut buff[..len];
-            key.decrypt_slice(data);
-
-            Ok((UdpMsg::decode(data)?, peer_addr))
-        }
-
-        // TODO unsupported UdpMsg::Data type
-        pub async fn write(&mut self, msg: &UdpMsg<'_>, dest_addr: SocketAddr) -> Result<()> {
-            let socket = self.socket;
-            let mut key = self.key.clone();
-            let buff = &mut self.buff;
-
-            let data = msg.encode(buff);
-            key.encrypt_slice(data);
-            socket.send_to(data, dest_addr).await?;
-            Ok(())
-        }
     }
 }

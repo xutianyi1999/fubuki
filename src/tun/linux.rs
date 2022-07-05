@@ -1,68 +1,110 @@
 use std::cell::UnsafeCell;
+use std::future::Future;
 use std::io;
-use std::io::{Error, ErrorKind, Result};
-use std::io::{Read, Write};
-use std::process::Command;
+use std::net::Ipv4Addr;
+
+use ahash::{HashSet, HashSetExt};
+use anyhow::{anyhow, Result};
+use ipnet::{IpNet, Ipv4Net};
+use netconfig::Interface;
+use parking_lot::Mutex;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tun::Device;
 
 use crate::tun::TunDevice;
-use crate::TunIpAddr;
+use crate::TunAddr;
 
 pub struct Linuxtun {
-    fd: UnsafeCell<tun::platform::Device>,
+    ips: Mutex<HashSet<Ipv4Addr>>,
+    fd: UnsafeCell<tun::AsyncDevice>,
+    inter: Interface
 }
 
 unsafe impl Sync for Linuxtun {}
 
 impl Linuxtun {
-    pub(super) fn create(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<Linuxtun> {
+    pub(super) fn create() -> Result<Linuxtun> {
         let mut config = tun::Configuration::default();
-        config
-            .address(ip_addrs[0].ip)
-            .netmask(ip_addrs[0].netmask)
-            .mtu(mtu as i32)
-            .platform(|config| {
+
+        config.platform(|config| {
                 config.packet_information(false);
             })
             .up();
 
-        let device = tun::create(&config).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        let tun_name = device.name();
+        let device = tun::create_as_async(&config)?;
+        let device_name = device.get_ref().name();
 
-        for TunIpAddr { ip, netmask } in &ip_addrs[1..] {
-            let count = u32::from(*netmask).count_ones();
-
-            let status = Command::new("ip")
-                .args([
-                    "addr",
-                    "add",
-                    format!("{}/{}", ip, count).as_str(),
-                    "dev",
-                    tun_name,
-                ])
-                .output()?
-                .status;
-
-            if !status.success() {
-                return Err(Error::new(ErrorKind::Other, "Failed to add tun ip address"));
+        for inter in netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))? {
+            if inter.name().map_err(|e| anyhow!(e.to_string()))? == device_name {
+                return Ok(Linuxtun {
+                    ips: Mutex::new(HashSet::new()),
+                    fd: UnsafeCell::new(device),
+                    inter,
+                });
             }
         }
 
-        Ok(Linuxtun {
-            fd: UnsafeCell::new(device),
-        })
+        Err(anyhow!("Not fount interface"))
     }
 }
 
 impl TunDevice for Linuxtun {
-    fn send_packet(&self, packet: &[u8]) -> Result<()> {
+    type SendFut<'a> = impl Future<Output = Result<()>> + 'a;
+    type RecvFut<'a> = impl Future<Output = Result<usize>> + 'a;
+
+    fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
         let fd = unsafe { &mut *self.fd.get() };
-        fd.write(packet)?;
+
+        async {
+            fd.write(packet).await?;
+            Ok(())
+        }
+    }
+
+    fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {
+        let fd = unsafe { &mut *self.fd.get() };
+
+        async {
+            let len = fd.read(buff).await?;
+            Ok(len)
+        }
+    }
+
+    fn set_mtu(&self, mtu: usize) -> Result<()> {
+        let fd = unsafe { &mut *self.fd.get() };
+        fd.get_mut().set_mtu(mtu as i32)?;
         Ok(())
     }
 
-    fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {
-        let fd = unsafe { &mut *self.fd.get() };
-        fd.read(buff)
+    fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
+        let mut guard = self.ips.lock();
+
+        if guard.contains(&addr) {
+            return Ok(());
+        }
+
+        self.inter
+            .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
+            .map_err(|e| anyhow!(e.to_string()))?;
+        guard.insert(addr);
+        Ok(())
+    }
+
+    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
+        let mut guard = self.ips.lock();
+
+        if !guard.contains(&addr) {
+            return Ok(());
+        }
+
+        self.inter
+            .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
+            .map_err(|e| anyhow!(e.to_string()))?;
+        guard.remove(&addr);
+        Ok(())
+    }
+
+    fn get_index(&self) -> u32 {
+        self.inter.index().unwrap()
     }
 }

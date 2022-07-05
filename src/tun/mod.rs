@@ -1,51 +1,76 @@
-use std::io::{Error, Result};
+use std::future::Future;
+use anyhow::Result;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-
-use crate::TunIpAddr;
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
+
 #[cfg(target_os = "windows")]
 mod windows;
 
-pub trait TunDevice: Send + Sync {
-    fn send_packet(&self, packet: &[u8]) -> Result<()>;
+pub trait TunDevice {
+    type SendFut<'a>: Future<Output = Result<()>> + Send + Sync
+    where
+        Self: 'a;
 
-    fn recv_packet(&self, buff: &mut [u8]) -> Result<usize>;
+    type RecvFut<'a>: Future<Output = Result<usize>> + Send + Sync
+    where
+        Self: 'a;
+
+    fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a>;
+
+    fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a>;
+
+    fn set_mtu(&self, mtu: usize) -> Result<()>;
+
+    fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()>;
+
+    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()>;
+
+    fn get_index(&self) -> u32;
 }
 
 impl<T: TunDevice> TunDevice for Arc<T> {
-    fn send_packet(&self, packet: &[u8]) -> Result<()> {
+    type SendFut<'a> = T::SendFut<'a> where Self: 'a;
+    type RecvFut<'a> = T::RecvFut<'a> where Self: 'a;
+
+    fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
         (**self).send_packet(packet)
     }
 
-    fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {
+    fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {
         (**self).recv_packet(buff)
+    }
+
+    fn set_mtu(&self, mtu: usize) -> Result<()> {
+        (**self).set_mtu(mtu)
+    }
+
+    fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
+        (**self).add_addr(addr, netmask)
+    }
+
+    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
+        (**self).delete_addr(addr, netmask)
+    }
+
+    fn get_index(&self) -> u32 {
+        (**self).get_index()
     }
 }
 
-pub(crate) fn create_device(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<impl TunDevice> {
+pub(crate) fn create_device() -> Result<impl TunDevice + Send + Sync> {
+    let tun;
+
     #[cfg(target_os = "windows")]
     {
-        windows::Wintun::create(mtu, ip_addrs)
+        tun = windows::Wintun::create()?;
     }
     #[cfg(target_os = "linux")]
     {
-        linux::Linuxtun::create(mtu, ip_addrs)
+        tun = linux::Linuxtun::create()?;
     }
-    #[cfg(target_os = "macos")]
-    {
-        macos::Macostun::create(mtu, ip_addrs)
-    }
-}
 
-pub(crate) fn skip_error(err: &Error) -> bool {
-    if cfg!(target_os = "linux") {
-        const INVALID_ARGUMENT: i32 = 22;
-        err.raw_os_error() == Some(INVALID_ARGUMENT)
-    } else {
-        false
-    }
+    Ok(tun)
 }
