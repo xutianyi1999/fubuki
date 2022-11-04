@@ -46,3 +46,4 @@ jobs:
         env:
           # (required)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTUP_TOOLCHAIN: nightly
