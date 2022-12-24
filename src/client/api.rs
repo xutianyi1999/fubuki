@@ -128,7 +128,7 @@ pub fn call(req: Req, dest: impl ToSocketAddrs) -> Result<()> {
                         mode: info.node.mode.to_string(),
                         register_time: {
                             let utc: DateTime<Utc> = DateTime::from_utc(
-                                NaiveDateTime::from_timestamp(info.node.register_time, 0),
+                                NaiveDateTime::from_timestamp_opt(info.node.register_time, 0).expect("Can't convert timestamp"),
                                 Utc,
                             );
                             let local_time: DateTime<Local> = DateTime::from(utc);
