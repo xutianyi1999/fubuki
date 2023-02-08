@@ -6,7 +6,7 @@ pub struct Bytes {
     // todo need optimization
     inner: Arc<UnsafeCell<Box<[u8]>>>,
     start: usize,
-    len: usize,
+    end: usize,
 }
 
 unsafe impl Send for Bytes {}
@@ -18,7 +18,7 @@ impl Deref for Bytes {
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            &(**self.inner.get())[self.start..self.start + self.len]
+            &(**self.inner.get())[self.start..self.end]
         }
     }
 }
@@ -26,16 +26,8 @@ impl Deref for Bytes {
 impl DerefMut for Bytes {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            &mut (**self.inner.get())[self.start..self.start + self.len]
+            &mut (**self.inner.get())[self.start..self.end]
         }
-    }
-}
-
-impl From<&[u8]> for Bytes {
-    fn from(value: &[u8]) -> Self {
-        let mut new_buff = alloc(value.len());
-        new_buff.copy_from_slice(value);
-        new_buff
     }
 }
 
@@ -46,17 +38,17 @@ impl Bytes {
         Bytes {
             inner: p,
             start: 0,
-            len,
+            end: len,
         }
     }
 
     pub fn split(&mut self, size: usize) -> Bytes {
-        assert!(self.start + size <= self.len);
+        assert!(self.start + size <= self.end);
 
         let new_bytes = Bytes {
             inner: self.inner.clone(),
             start: self.start,
-            len: size,
+            end: self.start + size,
         };
 
         self.start += size;
@@ -64,7 +56,7 @@ impl Bytes {
     }
 
     pub fn len(&self) -> usize {
-        self.len - self.start
+        self.end - self.start
     }
 }
 
