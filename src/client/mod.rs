@@ -26,6 +26,7 @@ use crate::common::{HashMap, HashSet, MapInit, SetInit};
 use crate::tun::TunDevice;
 use crate::tun::{create_device, skip_error};
 use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
+use crate::common::allocator::Bytes;
 
 mod api;
 
@@ -70,7 +71,7 @@ struct InterfaceInfo<Map> {
     tun: TunIpAddr,
     node_map: Map,
     server_addr: String,
-    tcp_handler_channel: Option<Sender<(Box<[u8]>, NodeId)>>,
+    tcp_handler_channel: Option<Sender<(Bytes, NodeId)>>,
     udp_socket: Option<Arc<UdpSocket>>,
     key: XorCipher,
     try_send_to_lan_addr: bool,
@@ -595,8 +596,8 @@ async fn udp_handler<T: TunDevice + 'static>(tun: Arc<T>) -> Result<()> {
 
 async fn tcp_handler_inner(
     init_node: Node,
-    mut from_tun: Option<Receiver<(Box<[u8]>, NodeId)>>,
-    to_tun: Option<crossbeam_channel::Sender<Box<[u8]>>>,
+    mut from_tun: Option<Receiver<(Bytes, NodeId)>>,
+    to_tun: Option<crossbeam_channel::Sender<Bytes>>,
     network_range_info: &NetworkRangeFinalize,
 ) {
     loop {
@@ -730,7 +731,7 @@ async fn tcp_handler_inner(
 }
 
 fn mpsc_to_tun<T: TunDevice>(
-    mpsc_rx: crossbeam_channel::Receiver<Box<[u8]>>,
+    mpsc_rx: crossbeam_channel::Receiver<Bytes>,
     tun: &T,
 ) -> Result<()> {
     loop {
@@ -748,7 +749,7 @@ fn mpsc_to_tun<T: TunDevice>(
 }
 
 async fn tcp_handler<T: TunDevice + 'static>(
-    mut map: HashMap<Ipv4Addr, (Option<Receiver<(Box<[u8]>, NodeId)>>, Node)>,
+    mut map: HashMap<Ipv4Addr, (Option<Receiver<(Bytes, NodeId)>>, Node)>,
     tun: T,
 ) -> Result<()> {
     let mut handles = Vec::with_capacity(get_config().network_ranges.len());

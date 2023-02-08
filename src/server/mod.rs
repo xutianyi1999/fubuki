@@ -20,6 +20,7 @@ use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, 
 use crate::common::net::SocketExt;
 use crate::common::{HashMap, MapInit};
 use crate::{Listener, ServerConfigFinalize};
+use crate::common::allocator::Bytes;
 
 static mut CONFIG: MaybeUninit<ServerConfigFinalize> = MaybeUninit::uninit();
 
@@ -33,12 +34,12 @@ fn get_config() -> &'static ServerConfigFinalize {
 
 struct NodeHandle {
     node: Node,
-    tx: Sender<(Box<[u8]>, NodeId)>,
+    tx: Sender<(Bytes, NodeId)>,
 }
 
 struct Bridge<'a> {
     node: Node,
-    channel_rx: Receiver<(Box<[u8]>, NodeId)>,
+    channel_rx: Receiver<(Bytes, NodeId)>,
     watch_rx: watch::Receiver<HashMap<NodeId, Node>>,
     node_db: &'a NodeDb,
 }
@@ -83,7 +84,7 @@ impl NodeDb {
     fn insert(&self, node: Node) -> Result<Bridge> {
         let node_id = node.id;
         let (_, watch_rx) = &self.watch;
-        let (tx, rx) = mpsc::channel::<(Box<[u8]>, NodeId)>(get_config().channel_limit);
+        let (tx, rx) = mpsc::channel::<(Bytes, NodeId)>(get_config().channel_limit);
 
         self.mapping.write().insert(
             node_id,

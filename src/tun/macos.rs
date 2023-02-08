@@ -5,8 +5,10 @@ use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::process::Command;
 use std::time::Duration;
+
 use tun::Device;
 
+use crate::common::allocator::alloc;
 use crate::tun::TunDevice;
 use crate::TunIpAddr;
 
@@ -98,7 +100,7 @@ impl Macostun {
 
 impl TunDevice for Macostun {
     fn send_packet(&self, packet: &[u8]) -> Result<()> {
-        let mut buff = vec![0u8; packet.len() + 4];
+        let mut buff = alloc(packet.len() + 4);
         buff[..3].copy_from_slice(&[0u8; 3]);
         buff[3] = 2;
         buff[4..].copy_from_slice(packet);

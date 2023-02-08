@@ -281,7 +281,7 @@ fn load_config<T: de::DeserializeOwned>(path: &str) -> Result<T> {
 fn logger_init() -> Result<()> {
     let stdout = ConsoleAppender::builder()
         .encoder(Box::new(PatternEncoder::new(
-            "[Console] {d(%Y-%m-%d %H:%M:%S)} - {l} - {m}{n}",
+            "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}",
         )))
         .build();
 
