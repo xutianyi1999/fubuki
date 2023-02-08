@@ -68,8 +68,8 @@ impl Bytes {
     }
 }
 
-// 1MB
-const BUFFER_SIZE: usize = 1048576;
+// 256KB
+const BUFFER_SIZE: usize = 262144;
 thread_local!(static BUFFER: RefCell<Bytes> = RefCell::new(Bytes::new(BUFFER_SIZE)));
 
 pub fn alloc(size: usize) -> Bytes {
