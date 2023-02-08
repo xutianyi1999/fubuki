@@ -56,12 +56,11 @@ pub async fn api_start(listen_addr: SocketAddr) -> Result<()> {
 
         tokio::spawn(async move {
             let fut = async {
-                let mut buff = vec![0u8; 65536];
-
                 let len = stream.read_u16().await? as usize;
-                stream.read_exact(&mut buff[..len]).await?;
+                let mut buff = vec![0u8; len];
+                stream.read_exact(&mut buff).await?;
 
-                let resp = match serde_json::from_slice::<Req>(&buff[..len]) {
+                let resp = match serde_json::from_slice::<Req>(&buff) {
                     Ok(Req::NodeMap) => {
                         let map = get_interface_map().load();
                         let direct_list = get_direct_node_list().load();
