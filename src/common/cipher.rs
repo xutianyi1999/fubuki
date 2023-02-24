@@ -16,18 +16,19 @@ impl XorCipher {
     }
 
     #[inline]
-    fn in_place(&self, data: &mut [u8]) {
+    fn in_place(&self, mut data: &mut [u8]) {
         let count = data.len() / 16;
 
-        for i in 0..count {
-            let range = &mut data[i * 16..(i + 1) * 16];
-            let m1: u8x16 = u8x16::from_slice(range);
-            range.copy_from_slice((m1 ^ self.key).as_array())
+        for _ in 0..count {
+            let (l, r) = data.split_array_mut::<16>();
+            data = r;
+            let new = u8x16::from_array(*l) ^ self.key;
+            *l = *new.as_array();
         }
 
-        for (i, v) in data[count * 16..].iter_mut().enumerate() {
-            *v ^= self.key.as_array()[i]
-        }
+        data.iter_mut()
+            .zip(self.key.as_array())
+            .for_each(|(a, b)| *a ^= b);
     }
 
     #[inline]

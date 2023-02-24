@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+#![feature(split_array)]
 
 #[macro_use]
 extern crate log;
