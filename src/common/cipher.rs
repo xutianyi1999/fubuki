@@ -7,19 +7,14 @@ pub struct XorCipher {
 
 impl XorCipher {
     pub fn new(k: &[u8]) -> Self {
-        let mut key = [0u8; 16];
-        key.copy_from_slice(md5::compute(k).as_slice());
-
         Self {
-            key: u8x16::from_array(key),
+            key: u8x16::from_array(md5::compute(k).0),
         }
     }
 
     #[inline]
     fn in_place(&self, mut data: &mut [u8]) {
-        let count = data.len() / 16;
-
-        for _ in 0..count {
+        while data.len() >= 16 {
             let (l, r) = data.split_array_mut::<16>();
             data = r;
             let new = u8x16::from_array(*l) ^ self.key;
