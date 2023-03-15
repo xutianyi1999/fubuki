@@ -1,5 +1,5 @@
 # fubuki
-[![Release](https://github.com/fly3366/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/fly3366/fubuki/actions/workflows/rust.yml)
+[![Release](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml)
 
 fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
 
