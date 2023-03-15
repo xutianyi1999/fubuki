@@ -1,4 +1,5 @@
 # fubuki
+[![Release](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml)
 
 fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
 
@@ -52,5 +53,5 @@ Windows平台toolchain需要为MSVC
 ```shell
 git clone "https://github.com/xutianyi1999/fubuki";
 cd fubuki;
-cargo build --release;
+RUSTUP_TOOLCHAIN=nightly cargo build --release;
 ```
