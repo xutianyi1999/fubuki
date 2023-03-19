@@ -1,10 +1,10 @@
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::RefCell;
+use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 pub struct Bytes {
-    // todo need optimization
-    inner: Arc<UnsafeCell<Box<[u8]>>>,
+    inner: Arc<[MaybeUninit<u8>]>,
     start: usize,
     end: usize,
 }
@@ -18,7 +18,7 @@ impl Deref for Bytes {
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            &(**self.inner.get())[self.start..self.end]
+            MaybeUninit::slice_assume_init_ref(&self.inner[self.start..self.end])
         }
     }
 }
@@ -26,7 +26,8 @@ impl Deref for Bytes {
 impl DerefMut for Bytes {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            &mut (**self.inner.get())[self.start..self.end]
+            let slice = Arc::get_mut_unchecked(&mut self.inner);
+            MaybeUninit::slice_assume_init_mut(&mut slice[self.start..self.end])
         }
     }
 }
@@ -41,10 +42,8 @@ impl From<&[u8]> for Bytes {
 
 impl Bytes {
     pub fn new(len: usize) -> Bytes {
-        let p: Arc<UnsafeCell<Box<[u8]>>> = Arc::from(UnsafeCell::new(vec![0u8; len].into_boxed_slice()));
-
         Bytes {
-            inner: p,
+            inner: Arc::<[u8]>::new_zeroed_slice(len),
             start: 0,
             end: len,
         }
