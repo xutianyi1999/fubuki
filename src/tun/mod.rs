@@ -40,12 +40,3 @@ pub(crate) fn create_device(mtu: usize, ip_addrs: &[TunIpAddr]) -> Result<impl T
         macos::Macostun::create(mtu, ip_addrs)
     }
 }
-
-pub(crate) fn skip_error(err: &Error) -> bool {
-    if cfg!(target_os = "linux") {
-        const INVALID_ARGUMENT: i32 = 22;
-        err.raw_os_error() == Some(INVALID_ARGUMENT)
-    } else {
-        false
-    }
-}

@@ -56,9 +56,18 @@ impl Linuxtun {
 
 impl TunDevice for Linuxtun {
     fn send_packet(&self, packet: &[u8]) -> Result<()> {
+        const INVALID_ARGUMENT: i32 = 22;
+
         let fd = unsafe { &mut *self.fd.get() };
-        fd.write(packet)?;
-        Ok(())
+        let res = fd.write(packet);
+
+        match res {
+            Err(e) if e.raw_os_error() == Some(INVALID_ARGUMENT) => {
+                error!("Write packet to tun error: {}", e);
+                Ok(())
+            }
+            _ => res.map(|_| ())
+        }
     }
 
     fn recv_packet(&self, buff: &mut [u8]) -> Result<usize> {

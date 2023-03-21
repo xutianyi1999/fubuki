@@ -1,32 +1,32 @@
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering};
 use std::time::Duration;
 
-use anyhow::Result;
 use anyhow::{anyhow, Context};
+use anyhow::Result;
 use chrono::Utc;
 use futures_util::FutureExt;
 use parking_lot::RwLock;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::mpsc::{unbounded_channel, Receiver, Sender};
 use tokio::time;
 
 pub use api::{call, Req};
 
-use crate::client::api::api_start;
-use crate::common::cipher::XorCipher;
-use crate::common::net::msg_operator::{TcpMsgReader, TcpMsgWriter, TCP_BUFF_SIZE, UDP_BUFF_SIZE};
-use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
-use crate::common::net::{proto, SocketExt};
-use crate::common::{HashMap, HashSet, MapInit, SetInit};
-use crate::tun::TunDevice;
-use crate::tun::{create_device, skip_error};
 use crate::{ClientConfigFinalize, NetworkRangeFinalize, TunIpAddr};
+use crate::client::api::api_start;
+use crate::common::{HashMap, HashSet, MapInit, SetInit};
 use crate::common::allocator::Bytes;
+use crate::common::cipher::XorCipher;
+use crate::common::net::{proto, SocketExt};
+use crate::common::net::msg_operator::{TCP_BUFF_SIZE, TcpMsgReader, TcpMsgWriter, UDP_BUFF_SIZE};
+use crate::common::net::proto::{HeartbeatType, MsgResult, Node, NodeId, TcpMsg, UdpMsg};
+use crate::tun::create_device;
+use crate::tun::TunDevice;
 
 mod api;
 
@@ -294,14 +294,7 @@ fn tun_handler<T: TunDevice>(tun: &T) -> Result<()> {
         let dst_addr = proto::get_ip_dst_addr(data)?;
 
         if src_addr == dst_addr {
-            match tun.send_packet(data) {
-                Err(e) if skip_error(&e) => {
-                    error!("Write packet to tun error: {}", e);
-                    Ok(())
-                }
-                res => res,
-            }
-            .context("Write packet to tun error")?;
+            tun.send_packet(data).context("Write packet to tun error")?;
             continue;
         }
 
@@ -431,15 +424,7 @@ fn udp_handler_inner<T: TunDevice>(
                 }
                 UdpMsg::Data(data) => {
                     debug!("Recv packet from {}", peer_addr);
-
-                    match tun.send_packet(data) {
-                        Err(e) if skip_error(&e) => {
-                            error!("Write packet to tun error: {}", e);
-                            Ok(())
-                        }
-                        res => res,
-                    }
-                    .context("Write packet to tun error")?;
+                    tun.send_packet(data).context("Write packet to tun error")?;
                 }
                 _ => continue,
             }
@@ -736,15 +721,7 @@ fn mpsc_to_tun<T: TunDevice>(
 ) -> Result<()> {
     loop {
         let packet = mpsc_rx.recv()?;
-
-        match tun.send_packet(&packet) {
-            Err(e) if skip_error(&e) => {
-                error!("Write packet to tun error: {}", e);
-                Ok(())
-            }
-            res => res,
-        }
-        .context("Write packet to tun error")?;
+        tun.send_packet(&packet).context("Write packet to tun error")?;
     }
 }
 
