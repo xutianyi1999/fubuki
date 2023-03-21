@@ -66,7 +66,7 @@ impl TunDevice for Linuxtun {
                 error!("Write packet to tun error: {}", e);
                 Ok(())
             }
-            _ => res.map(|_| ())
+            res => res.map(|_| ())
         }
     }
 

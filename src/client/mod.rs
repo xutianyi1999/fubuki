@@ -402,7 +402,19 @@ fn udp_handler_inner<T: TunDevice>(
     let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
     loop {
-        let (len, peer_addr) = socket.recv_from(&mut buff)?;
+        let res = socket.recv_from(&mut buff);
+
+        #[cfg(target_os = "windows")]
+        if let Err(ref e) = res {
+            const WSAECONNRESET: i32 = 10054;
+
+            if e.raw_os_error() == Some(WSAECONNRESET) {
+                error!("Receive udp packet error {}", e);
+                continue;
+            }
+        }
+
+        let (len, peer_addr) = res?;
         let packet = &mut buff[..len];
         key.decrypt_slice(packet);
 

@@ -1,4 +1,4 @@
-use std::io::{Error, Result};
+use std::io::Result;
 use std::sync::Arc;
 
 use crate::TunIpAddr;
