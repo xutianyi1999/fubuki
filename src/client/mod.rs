@@ -612,9 +612,15 @@ async fn tcp_handler_inner(
             let mut msg_reader = TcpMsgReader::new(&mut rx, network_range_info.key);
             let mut msg_writer = TcpMsgWriter::new(&mut tx, network_range_info.key);
 
-            let msg = TcpMsg::Register(node);
-            msg_writer.write(&msg).await?;
-            let msg = msg_reader.read().await?;
+            let call = async {
+                let msg = TcpMsg::Register(node);
+                msg_writer.write(&msg).await?;
+                msg_reader.read().await
+            };
+
+            let msg = tokio::time::timeout(Duration::from_secs(30), call)
+                .await
+                .with_context(|| format!("Register to {} timeout", &network_range_info.server_addr))??;
 
             match msg {
                 TcpMsg::Result(MsgResult::Success) => (),
