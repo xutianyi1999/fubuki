@@ -175,7 +175,7 @@ async fn udp_handler<K: Cipher>(
                         let guard = node_db.mapping.read();
 
                         if let Some(node) = guard.get(&dst_virt_addr) {
-                            node.node.wan_udp_addr != Some(peer_addr)
+                            node.node.mode.direct.contains(&NetProtocol::UDP) && node.node.wan_udp_addr != Some(peer_addr)
                         } else {
                             false
                         }

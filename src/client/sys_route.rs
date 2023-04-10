@@ -8,14 +8,14 @@ use futures_util::stream::StreamExt;
 
 use crate::common::net::protocol::VirtualAddr;
 
-pub struct RouteHandle {
+pub struct SystemRouteHandle {
     handle: Handle,
     routes: Vec<Route>,
     rt: tokio::runtime::Handle,
     is_sync: bool
 }
 
-impl RouteHandle {
+impl SystemRouteHandle {
     // cidr, gateway, ifindex
     pub fn new(input: &[(Ipv4Net, VirtualAddr, u32)]) -> Result<Self> {
         let mut routes = Vec::new();
@@ -39,7 +39,7 @@ impl RouteHandle {
             }
         });
 
-        let this = RouteHandle {
+        let this = SystemRouteHandle {
             handle,
             routes,
             rt: tokio::runtime::Handle::current(),
@@ -71,7 +71,7 @@ impl RouteHandle {
     }
 }
 
-impl Drop for RouteHandle {
+impl Drop for SystemRouteHandle {
     fn drop(&mut self) {
         let rt= self.rt.clone();
 

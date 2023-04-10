@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
 use anyhow::{anyhow, Context as AnyhowContext};
@@ -28,7 +29,7 @@ use hyper::body::Buf;
 
 use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
 use crate::client::api::api_start;
-use crate::client::route::RouteHandle;
+use crate::client::sys_route::SystemRouteHandle;
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::net::{HeartbeatCache, HeartbeatInfo, protocol, SocketExt, UdpStatus};
@@ -39,7 +40,7 @@ use crate::tun::TunDevice;
 
 mod api;
 mod nat;
-mod route;
+mod sys_route;
 
 type NodeMap = HashMap<VirtualAddr, ExtendedNode>;
 
@@ -666,7 +667,7 @@ where
                     *register_addr = RegisterVirtualAddr::Auto(Some((addr, cidr)));
                     (addr, cidr)
                 },
-                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("Address not enough")),
+                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("Insufficient address pool")),
                 _ => return Err(anyhow!("Invalid Message")),
             }
         }
@@ -692,8 +693,8 @@ where
 
     let group_info = match ret {
         TcpMsg::RegisterRes(RegisterResult::Success(group_info)) => group_info,
-        TcpMsg::RegisterRes(RegisterResult::Timeout) => return Err(anyhow!("register timeout")),
-        TcpMsg::RegisterRes(RegisterResult::NonceRepeat) => return Err(anyhow!("nonce repeat")),
+        TcpMsg::RegisterRes(RegisterResult::Timeout) => return Err(anyhow!("Register timeout")),
+        TcpMsg::RegisterRes(RegisterResult::NonceRepeat) => return Err(anyhow!("Nonce repeat")),
         TcpMsg::RegisterRes(RegisterResult::InvalidVirtualAddress(e)) => {
             if e == AllocateError::IpAlreadyInUse {
                 if let RegisterVirtualAddr::Auto(v) = register_addr {
@@ -702,11 +703,11 @@ where
             }
             return Err(anyhow!(e))
         }
-        _ => return Err(anyhow!("response message not match")),
+        _ => return Err(anyhow!("Response message not match")),
     };
 
     if cidr != group_info.cidr {
-        return Err(anyhow!("cidr not match"));
+        return Err(anyhow!("Cidr not match"));
     }
     Ok(group_info)
 }
@@ -744,9 +745,9 @@ where
     K: Cipher + Clone + Send + Sync + 'static,
 {
     let join = tokio::spawn(async move {
-        let lan_udp_socket_addr = match &interface.udp_socket {
-            None => None,
-            Some(s) => Some(s.local_addr()?),
+        let lan_udp_socket_addr = match (&interface.udp_socket, &group.lan_ip_addr) {
+            (Some(s), Some(lan_ip)) => Some(SocketAddr::new(*lan_ip, s.local_addr()?.port())),
+            _ => None,
         };
 
         let mut tun_addr = match &group.tun_addr {
@@ -767,15 +768,18 @@ where
                     .with_context(|| format!("Connect to {} error", &group.server_addr))?;
 
                 let mut refresh_route= false;
-                let group_info = register(
-                    config,
-                    group,
-                    &mut stream,
-                    key,
-                    &mut tun_addr,
-                    lan_udp_socket_addr,
-                    &mut refresh_route
-                ).await?;
+
+                let group_info = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    register(
+                        config,
+                        group,
+                        &mut stream,
+                        key,
+                        &mut tun_addr,
+                        lan_udp_socket_addr,
+                        &mut refresh_route
+                )).await??;
 
                 if refresh_route {
                     if let RegisterVirtualAddr::Auto(Some((addr, cidr))) = &tun_addr {
@@ -959,7 +963,7 @@ pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
         }
     }
 
-    let mut rh = RouteHandle::new(routes.as_slice())?;
+    let mut rh = SystemRouteHandle::new(routes.as_slice())?;
     rh.sync().await?;
     let rt = Arc::new(ArcSwap::from_pointee(rt));
 
