@@ -443,9 +443,9 @@ impl<K: Cipher> Tunnel<K> {
                         if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
                             return Err(anyhow!("Heartbeat recv timeout"))
                         }
-                        hc.increment();
                     }
 
+                    hc.increment();
                     hc.seq
                 };
 

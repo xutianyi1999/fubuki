@@ -430,98 +430,95 @@ where
             let mut is_send = false;
 
             loop {
-                let server_hc = &interface.server_udp_hc;
-                let seq = {
-                    let mut server_hc_guard = server_hc.write();
+                let interface_addr = interface.addr.load();
 
-                    if is_send {
-                        server_hc_guard.check();
+                if !interface_addr.is_unspecified() {
+                    let server_hc = &interface.server_udp_hc;
+                    let seq = {
+                        let mut server_hc_guard = server_hc.write();
 
-                        if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss && **interface.server_udp_status.load() != UdpStatus::Unavailable {
-                            interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
+                        if is_send {
+                            server_hc_guard.check();
+
+                            if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss && **interface.server_udp_status.load() != UdpStatus::Unavailable {
+                                interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
+                            }
                         }
 
                         server_hc_guard.increment();
-                    }
+                        server_hc_guard.seq
+                    };
 
-                    server_hc_guard.seq
-                };
+                    is_send = true;
 
-                let interface_addr = interface.addr.load();
+                    UdpMsg::heartbeat_encode(
+                        interface_addr,
+                        seq,
+                        HeartbeatType::Req,
+                        &mut packet,
+                    );
 
-                if interface_addr.is_unspecified() {
-                    continue;
-                }
+                    key.encrypt(&mut packet, 0);
+                    socket.send_to(&packet, &interface.server_addr).await?;
 
-                is_send = true;
+                    if is_direct {
+                        let node_map = interface.node_map.load_full();
 
-                UdpMsg::heartbeat_encode(
-                    interface_addr,
-                    seq,
-                    HeartbeatType::Req,
-                    &mut packet,
-                );
-
-                key.encrypt(&mut packet, 0);
-                socket.send_to(&packet, &interface.server_addr).await?;
-
-                if is_direct {
-                    let node_map = interface.node_map.load_full();
-
-                    for (_, ext_node) in &*node_map {
-                        if !ext_node.node.mode.direct.contains(&NetProtocol::UDP) {
-                            continue;
-                        }
-
-                        let is_over: bool;
-                        let udp_status = **ext_node.udp_status.load();
-
-                        let seq = {
-                            let mut hc = ext_node.hc.write();
-                            hc.check();
-                            is_over = hc.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss;
-
-                            if is_over && udp_status != UdpStatus::Unavailable {
-                                ext_node.udp_status.store(Arc::new(UdpStatus::Unavailable));
+                        for (_, ext_node) in &*node_map {
+                            if !ext_node.node.mode.direct.contains(&NetProtocol::UDP) {
+                                continue;
                             }
 
-                            hc.increment();
-                            hc.seq
-                        };
+                            let is_over: bool;
+                            let udp_status = **ext_node.udp_status.load();
 
-                        UdpMsg::heartbeat_encode(interface_addr, seq, HeartbeatType::Req, &mut packet);
-                        key.encrypt(&mut packet, 0);
+                            let seq = {
+                                let mut hc = ext_node.hc.write();
+                                hc.check();
+                                is_over = hc.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss;
 
-                        match udp_status {
-                            UdpStatus::Available { dst_addr } if !is_over => {
-                                if let Err(e) = socket.send_to(&packet, dst_addr).await {
-                                    return Err(anyhow!(e))
+                                if is_over && udp_status != UdpStatus::Unavailable {
+                                    ext_node.udp_status.store(Arc::new(UdpStatus::Unavailable));
                                 }
-                            }
-                            _ => {
-                                if let (Some(lan), Some(wan)) =
-                                    (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr)
-                                {
-                                    let addr = ext_node.peer_addr
-                                        .load()
-                                        .as_ref()
-                                        .map(|v| **v);
 
-                                    if let Some(addr) = addr {
-                                        if addr != lan && addr != wan {
-                                            socket.send_to(&packet, addr).await?;
+                                hc.increment();
+                                hc.seq
+                            };
+
+                            UdpMsg::heartbeat_encode(interface_addr, seq, HeartbeatType::Req, &mut packet);
+                            key.encrypt(&mut packet, 0);
+
+                            match udp_status {
+                                UdpStatus::Available { dst_addr } if !is_over => {
+                                    if let Err(e) = socket.send_to(&packet, dst_addr).await {
+                                        return Err(anyhow!(e))
+                                    }
+                                }
+                                _ => {
+                                    if let (Some(lan), Some(wan)) =
+                                        (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr)
+                                    {
+                                        let addr = ext_node.peer_addr
+                                            .load()
+                                            .as_ref()
+                                            .map(|v| **v);
+
+                                        if let Some(addr) = addr {
+                                            if addr != lan && addr != wan {
+                                                socket.send_to(&packet, addr).await?;
+                                            }
+                                        }
+
+                                        if wan == lan {
+                                            socket.send_to(&packet, lan).await?;
+                                        } else {
+                                            socket.send_to(&packet, lan).await?;
+                                            socket.send_to(&packet, wan).await?;
                                         }
                                     }
-
-                                    if wan == lan {
-                                        socket.send_to(&packet, lan).await?;
-                                    } else {
-                                        socket.send_to(&packet, lan).await?;
-                                        socket.send_to(&packet, wan).await?;
-                                    }
                                 }
-                            }
-                        };
+                            };
+                        }
                     }
                 }
 
@@ -911,9 +908,9 @@ where
                                     guard.packet_continuous_loss_count = 0;
                                     return Result::<(), _>::Err(anyhow!("Recv tcp heartbeat timeout"));
                                 }
-                                guard.increment();
                             }
 
+                            guard.increment();
                             guard.seq
                         };
 
