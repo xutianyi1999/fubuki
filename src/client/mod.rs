@@ -427,18 +427,23 @@ where
 
         let heartbeat_schedule =  async {
             let mut packet = vec![0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
+            let mut is_send = false;
 
             loop {
                 let server_hc = &interface.server_udp_hc;
                 let seq = {
                     let mut server_hc_guard = server_hc.write();
-                    server_hc_guard.check();
 
-                    if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss && **interface.server_udp_status.load() != UdpStatus::Unavailable {
-                        interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
+                    if is_send {
+                        server_hc_guard.check();
+
+                        if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss && **interface.server_udp_status.load() != UdpStatus::Unavailable {
+                            interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
+                        }
+
+                        server_hc_guard.increment();
                     }
 
-                    server_hc_guard.increment();
                     server_hc_guard.seq
                 };
 
@@ -447,6 +452,8 @@ where
                 if interface_addr.is_unspecified() {
                     continue;
                 }
+
+                is_send = true;
 
                 UdpMsg::heartbeat_encode(
                     interface_addr,
@@ -904,9 +911,9 @@ where
                                     guard.packet_continuous_loss_count = 0;
                                     return Result::<(), _>::Err(anyhow!("Recv tcp heartbeat timeout"));
                                 }
+                                guard.increment();
                             }
 
-                            guard.increment();
                             guard.seq
                         };
 

@@ -166,7 +166,7 @@ async fn udp_handler<K: Cipher>(
 
             match msg {
                 UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Req) => {
-                    let len = UdpMsg::heartbeat_encode(dst_virt_addr, seq, HeartbeatType::Resp, &mut buff);
+                    let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
                     let packet = &mut buff[..len];
                     key.encrypt(packet, 0);
                     socket.send_to(packet, peer_addr).await?;
@@ -443,9 +443,9 @@ impl<K: Cipher> Tunnel<K> {
                         if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
                             return Err(anyhow!("Heartbeat recv timeout"))
                         }
+                        hc.increment();
                     }
 
-                    hc.increment();
                     hc.seq
                 };
 
