@@ -65,8 +65,14 @@ impl TunDevice for Wintun {
     type RecvFut<'a> = impl Future<Output = Result<usize>> + 'a;
 
     fn send_packet(&self, packet: &[u8]) -> Self::SendFut<'_> {
-        let res = self.session.write_packet(packet);
-        std::future::ready(res.map_err(|e| anyhow!(e)))
+        const ERROR_BUFFER_OVERFLOW: i32 = 111;
+
+        loop {
+            match self.session.write_packet(packet) {
+                Err(e) if e.raw_os_error() == Some(ERROR_BUFFER_OVERFLOW) => continue,
+                res => return std::future::ready(res.map_err(|e| anyhow!(e))),
+            }
+        }
     }
 
     fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {

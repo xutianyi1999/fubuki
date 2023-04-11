@@ -23,7 +23,6 @@ use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::time;
 use hyper::body::Buf;
 
@@ -115,6 +114,7 @@ struct Interface<K> {
     mode: ProtocolMode,
     node_map: ArcSwap<NodeMap>,
     server_addr: String,
+    // todo use ArcSwap
     server_udp_hc: RwLock<HeartbeatCache>,
     server_udp_status: ArcSwap<UdpStatus>,
     server_tcp_hc: RwLock<HeartbeatCache>,
@@ -209,18 +209,18 @@ impl <'a, K> From<&'a Interface<K>> for InterfaceCache<'a, K> {
 
 struct ExtendedNode {
     pub node: Node,
-    pub udp_status: ArcSwap<UdpStatus>,
-    pub hc: RwLock<HeartbeatCache>,
-    pub peer_addr: ArcSwapOption<SocketAddr>
+    pub udp_status: Arc<ArcSwap<UdpStatus>>,
+    pub hc: Arc<RwLock<HeartbeatCache>>,
+    pub peer_addr: Arc<ArcSwapOption<SocketAddr>>
 }
 
 impl From<Node> for ExtendedNode {
     fn from(node: Node) -> Self {
         ExtendedNode {
             node,
-            udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
-            hc: RwLock::new(HeartbeatCache::new()),
-            peer_addr: ArcSwapOption::empty()
+            udp_status: Arc::new(ArcSwap::from_pointee(UdpStatus::Unavailable)),
+            hc: Arc::new(RwLock::new(HeartbeatCache::new())),
+            peer_addr: Arc::new(ArcSwapOption::empty())
         }
     }
 }
@@ -286,8 +286,9 @@ async fn send<K: Cipher>(
                     TcpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), &mut packet);
                     inter.key.encrypt(&mut packet, 0);
 
-                    if let Err(TrySendError::Closed(_)) = tx.try_send(packet) {
-                        return Err(anyhow!("Tcp handler has been closed"));
+                    if let Err(e) = tx.try_send(packet) {
+                        warn!("{}", e);
+                        continue;
                     }
                     return Ok(());
                 }
@@ -364,7 +365,7 @@ where
             let interface_addr = interface_cache.addr.load();
             let interface_cidr = interface_cache.cidr.load();
 
-            if interface_cache.server_is_connected.load(Ordering::Relaxed) {
+            if !interface_cache.server_is_connected.load(Ordering::Relaxed) {
                 continue;
             }
 
@@ -536,7 +537,6 @@ where
                 if let Ok(packet) = UdpMsg::decode(packet) {
                     match packet {
                         UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Req) => {
-                            let interface_addr = interface.addr.load();
                             let mut is_known = false;
 
                             if from_addr == SERVER_VIRTUAL_ADDR {
@@ -553,6 +553,8 @@ where
                             }
 
                             if is_known {
+                                let interface_addr = interface.addr.load();
+
                                 let len = UdpMsg::heartbeat_encode(
                                     interface_addr,
                                     seq,
@@ -779,7 +781,8 @@ where
                         &mut tun_addr,
                         lan_udp_socket_addr,
                         &mut refresh_route
-                )).await??;
+                    )
+                ).await??;
 
                 if refresh_route {
                     if let RegisterVirtualAddr::Auto(Some((addr, cidr))) = &tun_addr {
@@ -815,9 +818,9 @@ where
                                         Some(v) => {
                                             let en = ExtendedNode {
                                                 node,
-                                                hc: RwLock::new(v.hc.read().clone()),
-                                                udp_status: ArcSwap::new(v.udp_status.load_full()),
-                                                peer_addr: ArcSwapOption::new(v.peer_addr.load_full())
+                                                hc: v.hc.clone(),
+                                                udp_status: v.udp_status.clone(),
+                                                peer_addr: v.peer_addr.clone()
                                             };
                                             new_map.insert(virtual_addr, en);
                                         }
@@ -836,8 +839,8 @@ where
 
                                 tokio::task::spawn_blocking(move || {
                                     match hb.write() {
-                                        Ok(_) => info!("update hosts file"),
-                                        Err(e) => error!("update hosts file error: {}", e)
+                                        Ok(_) => info!("Update hosts file"),
+                                        Err(e) => error!("Update hosts file error: {}", e)
                                     }
                                 });
                             }
@@ -887,7 +890,7 @@ where
                     }
                 };
 
-                let fut3 = async {
+                let heartbeat_schedule = async {
                     let mut is_send = false;
 
                     loop {
@@ -899,7 +902,7 @@ where
 
                                 if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
                                     guard.packet_continuous_loss_count = 0;
-                                    return Result::<(), _>::Err(anyhow!("recv tcp heartbeat timeout"));
+                                    return Result::<(), _>::Err(anyhow!("Recv tcp heartbeat timeout"));
                                 }
                             }
 
@@ -918,7 +921,7 @@ where
                     }
                 };
 
-                tokio::try_join!(recv_handler, send_handler, fut3)?;
+                tokio::try_join!(recv_handler, send_handler, heartbeat_schedule)?;
                 Result::<_, anyhow::Error>::Ok(())
             };
 

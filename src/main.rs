@@ -399,7 +399,7 @@ fn main() -> ExitCode {
     match launch(Args::parse()) {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{:?}", e);
             ExitCode::FAILURE
         }
     }

@@ -75,8 +75,12 @@ impl Drop for SystemRouteHandle {
     fn drop(&mut self) {
         let rt= self.rt.clone();
 
-        if let Err(e) = rt.block_on(self.clear()) {
-            error!("delete route failure: {}", e)
-        }
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                if let Err(e) = rt.block_on(self.clear()) {
+                    error!("delete route failure: {}", e)
+                }
+            });
+        });
     }
 }

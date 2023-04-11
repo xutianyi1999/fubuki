@@ -1,6 +1,5 @@
 use std::cell::UnsafeCell;
 use std::future::Future;
-use std::io;
 use std::net::Ipv4Addr;
 
 use ahash::{HashSet, HashSetExt};
@@ -12,7 +11,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tun::Device;
 
 use crate::tun::TunDevice;
-use crate::TunAddr;
 
 pub struct Linuxtun {
     ips: Mutex<HashSet<Ipv4Addr>>,
