@@ -1123,8 +1123,8 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                     info.server_addr,
                     info.server_is_connected,
                     info.server_udp_status,
-                    format!("{:?}-{}", info.server_udp_hc.elapsed, info.server_udp_hc.packet_loss_count / info.server_udp_hc.send_count),
-                    format!("{:?}-{}", info.server_tcp_hc.elapsed, info.server_tcp_hc.packet_loss_count / info.server_tcp_hc.send_count),
+                    format!("{:?}-{}%", info.server_udp_hc.elapsed, info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32),
+                    format!("{:?}-{}%", info.server_tcp_hc.elapsed, info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32),
                     format!("{:?}", info.mode)
                 ]);
             }
@@ -1153,7 +1153,7 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                             format!("{:?}", node.node.allowed_ips),
                             register_time,
                             node.udp_status,
-                            format!("{:?}-{}", node.hc.elapsed, node.hc.packet_loss_count / node.hc.send_count),
+                            format!("{:?}-{}%", node.hc.elapsed, node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32),
                         ]);
                     }
                     break;

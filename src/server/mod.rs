@@ -270,7 +270,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
             .await
             .context("Accept connection error")?;
 
-        let tunnel = Tunnel::new(
+        let mut tunnel = Tunnel::new(
             stream,
             udp_socket.clone(),
             config,
@@ -283,6 +283,10 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
         tokio::spawn(async move {
             if let Err(e) = tunnel.exec().await {
                 error!("Peer addr {} tunnel error -> {:?}", peer_addr, e)
+            }
+
+            if let Some(addr) = &tunnel.virtual_addr {
+                warn!("{} disconnected", addr);
             }
         });
     }
@@ -411,7 +415,7 @@ impl<K: Cipher> Tunnel<K> {
         }
     }
 
-    async fn exec(mut self) -> Result<()> {
+    async fn exec(&mut self) -> Result<()> {
         self.stream.set_keepalive()?;
         self.init().await?;
 
@@ -571,7 +575,12 @@ impl<K: Cipher> Tunnel<K> {
 impl<T> Drop for Tunnel<T> {
     fn drop(&mut self) {
         if let Some(addr) = self.virtual_addr.take() {
-            self.node_db.mapping.write().remove(&addr);
+            {
+                let mut guard = self.node_db.mapping.write();
+                guard.remove(&addr);
+                self.node_db.sync(&*guard).expect("Sync node mapping failure");
+            }
+
             self.address_pool.inner.lock().release(&addr)
         }
     }
