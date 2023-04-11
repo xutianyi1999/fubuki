@@ -293,7 +293,7 @@ enum NodeCmd {
         config_path: String
     },
     Info {
-        #[arg(short, long, default_value = "http://127.0.0.1:3030")]
+        #[arg(short, long, default_value = "127.0.0.1:3030")]
         api: String,
 
         #[command(subcommand)]
@@ -307,7 +307,7 @@ enum ServerCmd {
         config_path: String
     },
     Info {
-        #[arg(short, long, default_value = "http://127.0.0.1:3030")]
+        #[arg(short, long, default_value = "127.0.0.1:3030")]
         api: String,
     }
 }
