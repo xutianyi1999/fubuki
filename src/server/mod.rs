@@ -218,11 +218,14 @@ async fn udp_handler<K: Cipher>(
                                         buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(data);
                                         key.encrypt(&mut buff, 0);
 
-                                        if let Err(e) = handle.tx.try_send(buff) {
-                                            warn!("{}", e);
-                                            continue;
+
+                                        match handle.tx.try_send(buff) {
+                                            Ok(_) => {
+                                                debug!("TCP relay to {}", dst_virt_addr);
+                                                break;
+                                            }
+                                            Err(e) =>  warn!("{}", e)
                                         }
-                                        break;
                                     }
                                     NetProtocol::UDP => {
                                         let dst_addr = match handle.udp_status {
@@ -230,6 +233,7 @@ async fn udp_handler<K: Cipher>(
                                             UdpStatus::Unavailable => continue
                                         };
 
+                                        debug!("UDP relay to {}", dst_virt_addr);
                                         key.encrypt(packet, 0);
                                         fut = Some(socket.send_to(packet, dst_addr));
                                         break;
