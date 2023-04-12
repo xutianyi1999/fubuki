@@ -288,8 +288,9 @@ async fn send<K: Cipher>(
                     TcpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), &mut packet);
                     inter.key.encrypt(&mut packet, 0);
 
-                    if let Err(e) = tx.try_send(packet) {
-                        warn!("{}", e);
+                    match tx.try_send(packet) {
+                        Ok(_) => return Ok(()),
+                        Err(e) => error!("{}", e)
                     }
                 }
                 NetProtocol::UDP => {
@@ -308,12 +309,13 @@ async fn send<K: Cipher>(
                     UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
                     inter.key.encrypt(packet, 0);
                     socket.send_to(packet, dst_addr).await?;
+                    return Ok(())
                 }
             };
         }
     }
 
-    warn!("No route to dst node");
+    warn!("No route to {}", dst_node.node.virtual_addr);
     Ok(())
 }
 
