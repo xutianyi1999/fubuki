@@ -25,6 +25,7 @@ use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::time;
 use hyper::body::Buf;
+use net_route::Route;
 
 use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
 use crate::client::api::api_start;
@@ -725,6 +726,7 @@ fn update_tun_addr<T: TunDevice, K>(
     cidr: Ipv4Net,
     interface: &Interface<K>
 ) -> Result<()> {
+    // todo use rcu
     let mut t = (**rt.load()).clone();
     t.remove(&cidr);
     t.add(cidr, addr, interface.index);
@@ -744,13 +746,17 @@ async fn tcp_handler<T, K>(
     routing_table: Arc<ArcSwap<RoutingTable>>,
     interface: Arc<Interface<K>>,
     tun: T,
-    mut channel_rx: Option<Receiver<Bytes>>
+    mut channel_rx: Option<Receiver<Bytes>>,
+    sys_routing: Arc<tokio::sync::Mutex<SystemRouteHandle>>,
+    routes: Vec<Route>
 ) -> Result<()>
 where
     T: TunDevice + Clone + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
 {
     let join = tokio::spawn(async move {
+        let mut sys_route_is_sync = false;
+
         let lan_udp_socket_addr = match (&interface.udp_socket, &group.lan_ip_addr) {
             (Some(s), Some(lan_ip)) => Some(SocketAddr::new(*lan_ip, s.local_addr()?.port())),
             _ => None,
@@ -796,6 +802,11 @@ where
 
                 interface.group_name.store(Some(Arc::new(group_info.name.clone())));
                 interface.server_is_connected.store(true, Ordering::Relaxed);
+
+                if !sys_route_is_sync {
+                    sys_route_is_sync = true;
+                    sys_routing.lock().await.add(&routes).await?;
+                }
 
                 let (rx, mut tx) = stream.split();
                 let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
@@ -957,25 +968,22 @@ pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
     })
     .await??;
 
-    let tun_index = tun.get_index();
     let mut rt = RoutingTable::new();
-    let mut routes = Vec::new();
 
     for (index, group) in config.groups.iter().enumerate() {
         for (dst, cidrs) in &group.ips {
             for cidr in cidrs {
                 rt.add(*cidr, *dst, index);
-                routes.push((*cidr, *dst, tun_index));
             }
         }
     }
 
-    let mut rh = SystemRouteHandle::new(routes.as_slice())?;
-    rh.sync().await?;
     let rt = Arc::new(ArcSwap::from_pointee(rt));
 
     let mut future_list: Vec<LocalBoxFuture<Result<()>>> = Vec::new();
     let mut interfaces = Vec::with_capacity(config.groups.len());
+    let sys_routing = Arc::new(tokio::sync::Mutex::new(SystemRouteHandle::new()?));
+    let tun_index = tun.get_index();
 
     for (index, group) in config.groups.iter().enumerate() {
         let (channel_tx, channel_rx) = if group.mode.is_use_tcp() {
@@ -1029,13 +1037,27 @@ pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
         let interface = Arc::new(interface);
         interfaces.push(interface.clone());
 
+        let mut routes = Vec::new();
+
+        for (gateway, cidrs) in &group.ips {
+            for cidr in cidrs {
+                let route = Route::new(IpAddr::V4(cidr.network()), cidr.prefix_len())
+                    .with_gateway(IpAddr::V4(*gateway))
+                    .with_ifindex(tun_index);
+
+                routes.push(route);
+            }
+        }
+
         let fut = tcp_handler(
             config,
             group,
             rt.clone(),
             interface.clone(),
             tun.clone(),
-            channel_rx
+            channel_rx,
+            sys_routing.clone(),
+            routes
         );
         future_list.push(Box::pin(fut));
 
@@ -1083,7 +1105,10 @@ pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
         };
     }
 
-    nat::del_nat(&config.allowed_ips)?;
+    if !config.allowed_ips.is_empty() {
+        info!("Clear nat");
+        nat::del_nat(&config.allowed_ips)?;
+    }
     Ok(())
 }
 
