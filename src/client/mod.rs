@@ -824,6 +824,8 @@ where
                     sys_routing.lock().await.add(&routes).await?;
                 }
 
+                info!("Server {} connected", group.server_addr);
+
                 let (rx, mut tx) = stream.split();
                 let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
@@ -982,7 +984,7 @@ pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
 
     defer! {
         if !config.allowed_ips.is_empty() {
-            info!("Clear nat");
+            info!("Clear nat list");
 
             if let Err(e) = nat::del_nat(&config.allowed_ips) {
                 error!("{}", e);
