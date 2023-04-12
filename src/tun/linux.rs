@@ -63,7 +63,7 @@ impl TunDevice for Linuxtun {
                     let f = || {
                         let src = crate::common::net::protocol::get_ip_src_addr(&packet)?;
                         let dst = crate::common::net::protocol::get_ip_dst_addr(&packet)?;
-                        Ok((src, dst))
+                        Result::<_, anyhow::Error>::Ok((src, dst))
                     };
 
                     let (src, dst) = match f() {
