@@ -61,8 +61,8 @@ impl TunDevice for Linuxtun {
             match res {
                 Err(e) if e.raw_os_error() == Some(INVALID_ARGUMENT) => {
                     let f = || {
-                        let src = crate::common::net::protocol::get_ip_src_addr(&packet)?;
-                        let dst = crate::common::net::protocol::get_ip_dst_addr(&packet)?;
+                        let src = crate::common::net::protocol::get_ip_src_addr(packet)?;
+                        let dst = crate::common::net::protocol::get_ip_dst_addr(packet)?;
                         Result::<_, anyhow::Error>::Ok((src, dst))
                     };
 
