@@ -60,7 +60,21 @@ impl TunDevice for Linuxtun {
 
             match res {
                 Err(e) if e.raw_os_error() == Some(INVALID_ARGUMENT) => {
-                    error!("Write packet to tun error: {}", e);
+                    let f = || {
+                        let src = crate::common::net::protocol::get_ip_src_addr(&packet)?;
+                        let dst = crate::common::net::protocol::get_ip_dst_addr(&packet)?;
+                        Ok((src, dst))
+                    };
+
+                    let (src, dst) = match f() {
+                        Ok(v) => V,
+                        Err(e) => {
+                            error!("{}", e);
+                            return Ok(())
+                        }
+                    };
+
+                    error!("Write packet to tun error: {}; {} -> {}", e, src, dst);
                     Ok(())
                 }
                 res => res.map(|_| ()).map_err(|e| anyhow!(e))
