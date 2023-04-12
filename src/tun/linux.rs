@@ -67,7 +67,7 @@ impl TunDevice for Linuxtun {
                     };
 
                     let (src, dst) = match f() {
-                        Ok(v) => V,
+                        Ok(v) => v,
                         Err(e) => {
                             error!("{}", e);
                             return Ok(())

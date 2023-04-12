@@ -290,7 +290,6 @@ async fn send<K: Cipher>(
 
                     if let Err(e) = tx.try_send(packet) {
                         warn!("{}", e);
-                        continue;
                     }
                 }
                 NetProtocol::UDP => {
