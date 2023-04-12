@@ -521,7 +521,7 @@ pub mod protocol {
 
         pub fn relay_encode(to: VirtualAddr, packet_len: usize, out: &mut [u8]) -> usize {
             out[0] = MAGIC_NUM;
-            out[1] = DATA;
+            out[1] = RELAY;
             out[2..6].copy_from_slice(&to.octets());
             UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + packet_len
         }
