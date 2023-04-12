@@ -366,32 +366,32 @@ impl<K: Cipher> Tunnel<K> {
                         }
                     };
 
-                    if res {
-                        let nonce_pool = nonce_pool.clone();
-
-                        tokio::spawn(async move {
-                            time::sleep(Duration::from_secs(60)).await;
-                            nonce_pool.set.lock().remove(&msg.nonce);
-                        });
-
-                        let gi = GroupInfo {
-                            name: self.group.name.clone(),
-                            cidr: self.group.address_range
-                        };
-
-                        let len = TcpMsg::register_res_encode(&RegisterResult::Success(gi), buff)?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
-                    } else {
+                    if !res {
                         let len = TcpMsg::register_res_encode(&RegisterResult::NonceRepeat, buff)?;
                         TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
-                        return Err(anyhow!("Nonce repeat"))
+                        return Err(anyhow!("Nonce repeat"));
                     }
+
+                    let nonce_pool = nonce_pool.clone();
+
+                    tokio::spawn(async move {
+                        time::sleep(Duration::from_secs(60)).await;
+                        nonce_pool.set.lock().remove(&msg.nonce);
+                    });
 
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
                         let len = TcpMsg::register_res_encode(&RegisterResult::InvalidVirtualAddress(e), buff)?;
                         TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
                         return Err(anyhow!(e))
                     };
+
+                    let gi = GroupInfo {
+                        name: self.group.name.clone(),
+                        cidr: self.group.address_range
+                    };
+
+                    let len = TcpMsg::register_res_encode(&RegisterResult::Success(gi), buff)?;
+                    TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
 
                     self.virtual_addr = Some(msg.virtual_addr);
 
