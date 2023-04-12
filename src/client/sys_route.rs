@@ -58,7 +58,7 @@ impl Drop for SystemRouteHandle {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     if let Err(e) = rt.block_on(self.clear()) {
-                        error!("delete route failure: {}", e)
+                        warn!("Delete route failure: {}", e)
                     }
                 });
             });

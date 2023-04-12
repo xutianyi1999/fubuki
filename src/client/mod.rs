@@ -291,7 +291,6 @@ async fn send<K: Cipher>(
                         warn!("{}", e);
                         continue;
                     }
-                    return Ok(());
                 }
                 NetProtocol::UDP => {
                     let socket = match &inter.udp_socket {
@@ -309,12 +308,13 @@ async fn send<K: Cipher>(
                     UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
                     inter.key.encrypt(packet, 0);
                     socket.send_to(packet, dst_addr).await?;
-                    return Ok(());
                 }
             };
         }
     }
-    Err(anyhow!("No route to dst node"))
+
+    warn!("No route to dst node");
+    Ok(())
 }
 
 enum TransferType {
@@ -399,9 +399,13 @@ where
                         None => continue,
                         Some(node) => node
                     };
+
+                    debug!("{} -> {}; gateway: {}", src_addr, dst_addr, addr);
                     send(inter, node, &server_us, &mut buff, packet_range).await?
                 }
                 TransferType::Broadcast => {
+                    debug!("{} -> {}", src_addr, dst_addr);
+
                     for node in node_map.values() {
                         send(inter, node, &server_us, &mut buff, packet_range.clone()).await?;
                     }
