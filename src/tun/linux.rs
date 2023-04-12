@@ -51,10 +51,11 @@ impl TunDevice for Linuxtun {
     type RecvFut<'a> = impl Future<Output = Result<usize>> + 'a;
 
     fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
+        let fd = unsafe { &mut *self.fd.get() };
+
         async {
             const INVALID_ARGUMENT: i32 = 22;
 
-            let fd = unsafe { &mut *self.fd.get() };
             let res = fd.write(packet).await;
 
             match res {
