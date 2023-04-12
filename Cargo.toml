@@ -28,6 +28,7 @@ human-panic = "1"
 hyper = { version = "0.14", features = ["server", "client", "http1", "tcp"] }
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 prettytable-rs = "0.10"
+scopeguard = "1"
 
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/GamePad64/netconfig.git" }

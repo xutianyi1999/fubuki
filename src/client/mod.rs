@@ -26,6 +26,7 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::time;
 use hyper::body::Buf;
 use net_route::Route;
+use scopeguard::defer;
 
 use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
 use crate::client::api::api_start;
@@ -537,7 +538,18 @@ where
             loop {
                 let (len, peer_addr) = match socket.recv_from(&mut buff).await {
                     Ok(v) => v,
-                    Err(e) => return Err(anyhow!(e))
+                    Err(e) => {
+                        #[cfg(target_os = "windows")]
+                        {
+                            const WSAECONNRESET: i32 = 10054;
+
+                            if e.raw_os_error() == Some(WSAECONNRESET) {
+                                error!("Receive udp packet error {}", e);
+                                continue;
+                            }
+                        }
+                        return Err(anyhow!(e))
+                    }
                 };
 
                 let packet = &mut buff[..len];
@@ -730,11 +742,12 @@ fn update_tun_addr<T: TunDevice, K>(
     cidr: Ipv4Net,
     interface: &Interface<K>
 ) -> Result<()> {
-    // todo use rcu
-    let mut t = (**rt.load()).clone();
-    t.remove(&cidr);
-    t.add(cidr, addr, interface.index);
-    rt.store(Arc::new(t));
+    rt.rcu(|v| {
+        let mut t = (**v).clone();
+        t.remove(&cidr);
+        t.add(cidr, addr, interface.index);
+        t
+    });
 
     tun.delete_addr(addr, cidr.netmask())?;
     tun.add_addr(addr, cidr.netmask())?;
@@ -955,22 +968,28 @@ where
     join.await?
 }
 
-pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
-    config: ClientConfigFinalize<K>,
-) -> Result<()> {
+pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
+    where
+        K: Cipher + Send + Sync + Clone + 'static
+{
     let config = &*Box::leak(Box::new(config));
 
-    let tun = tokio::task::spawn_blocking(|| {
-        let tun = Arc::new(create_device()?);
-        tun.set_mtu(config.mtu)?;
+    let tun = Arc::new(create_device()?);
+    tun.set_mtu(config.mtu)?;
 
+    if !config.allowed_ips.is_empty() {
+        nat::add_nat(&config.allowed_ips)?;
+    }
+
+    defer! {
         if !config.allowed_ips.is_empty() {
-            nat::add_nat(&config.allowed_ips)?;
-        }
+            info!("Clear nat");
 
-        Result::<_, anyhow::Error>::Ok(tun)
-    })
-    .await??;
+            if let Err(e) = nat::del_nat(&config.allowed_ips) {
+                error!("{}", e);
+            }
+        }
+    }
 
     let mut rt = RoutingTable::new();
 
@@ -1109,10 +1128,7 @@ pub async fn start<K: Cipher + Send + Sync + Clone + 'static>(
         };
     }
 
-    if !config.allowed_ips.is_empty() {
-        info!("Clear nat");
-        nat::del_nat(&config.allowed_ips)?;
-    }
+
     Ok(())
 }
 
