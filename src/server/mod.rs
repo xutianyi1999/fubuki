@@ -506,10 +506,10 @@ impl<K: Cipher> Tunnel<K> {
                                             };
 
                                             let packet_len = packet.len();
-                                            let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, sub_buff);
-                                            key.encrypt(&mut sub_buff[..len], 0);
+                                            let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
+                                            key.encrypt(&mut buff[..len], 0);
 
-                                            fut = Some(self.udp_socket.send_to(&sub_buff[..len], addr));
+                                            fut = Some(self.udp_socket.send_to(&buff[..len], addr));
                                             break;
                                         }
                                     }
