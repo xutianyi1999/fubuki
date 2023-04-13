@@ -470,8 +470,8 @@ impl<K: Cipher> Tunnel<K> {
             let mut buff = vec![0u8; TCP_BUFF_SIZE];
 
             loop {
-                let mut sub_buff = &mut buff[UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>()..];
-                let msg = TcpMsg::read_msg(&mut rx, key, &mut sub_buff).await?;
+                let sub_buff = &mut buff[UDP_MSP_HEADER_LEN..];
+                let msg = TcpMsg::read_msg(&mut rx, key, sub_buff).await?;
 
                 let msg = match msg {
                     None => return Ok(()),
