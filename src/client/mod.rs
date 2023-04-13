@@ -372,11 +372,6 @@ where
                 continue;
             }
 
-            if interface_addr == dst_addr {
-                tun.send_packet(data).await.context("Write packet to tun error")?;
-                continue;
-            }
-
             let transfer_type = if interface_addr == item.gateway {
                 if dst_addr.is_broadcast() && interface_addr == src_addr {
                     TransferType::Broadcast
@@ -389,27 +384,35 @@ where
                 TransferType::Unicast(item.gateway)
             };
 
-            let server_us = **interface_cache.server_udp_status.load();
-            let t = interface_cache.node_map.load();
-            let node_map = &**t;
+            let server_us = &**interface_cache.server_udp_status.load();
+            let node_map = &**interface_cache.node_map.load();
 
             let inter = &interfaces[item.interface_index];
 
             match transfer_type {
                 TransferType::Unicast(addr) => {
+                    if interface_addr == addr {
+                        tun.send_packet(data).await.context("Write packet to tun error")?;
+                        continue;
+                    }
+
                     let node = match node_map.get(&addr) {
                         None => continue,
                         Some(node) => node
                     };
 
                     debug!("{} -> {}; gateway: {}", src_addr, dst_addr, addr);
-                    send(inter, node, &server_us, &mut buff, packet_range).await?
+                    send(inter, node, server_us, &mut buff, packet_range).await?
                 }
                 TransferType::Broadcast => {
                     debug!("{} -> {}", src_addr, dst_addr);
 
                     for node in node_map.values() {
-                        send(inter, node, &server_us, &mut buff, packet_range.clone()).await?;
+                        if node.node.virtual_addr == interface_addr {
+                            continue;
+                        }
+
+                        send(inter, node, server_us, &mut buff, packet_range.clone()).await?;
                     }
                 }
             }

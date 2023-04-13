@@ -592,35 +592,23 @@ impl<T> Drop for Tunnel<T> {
 struct AddressPoolInner {
     used: HashSet<Ipv4Addr>,
     cidr: Ipv4Net,
-    hosts: Ipv4AddrRange,
 }
 
 impl AddressPoolInner {
     fn new(cidr: Ipv4Net) -> Result<Self> {
-        let hosts = cidr.hosts();
-
         let pool = AddressPoolInner {
             used: HashSet::new(),
             cidr,
-            hosts,
         };
         Ok(pool)
     }
 
     fn get_idle_addr(&mut self) -> Option<Ipv4Addr> {
-        macro_rules! for_each {
-            () => {
-                for v in self.hosts {
-                    if !self.used.contains(&v) {
-                        return Some(v);
-                    }
-                }
-            };
+        for v in self.cidr.hosts() {
+            if !self.used.contains(&v) {
+                return Some(v);
+            }
         }
-
-        for_each!();
-        self.hosts = self.cidr.hosts();
-        for_each!();
         None
     }
 
