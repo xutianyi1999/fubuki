@@ -175,7 +175,7 @@ async fn udp_handler<K: Cipher>(
                         let guard = node_db.mapping.read();
 
                         if let Some(node) = guard.get(&dst_virt_addr) {
-                            node.node.mode.direct.contains(&NetProtocol::UDP) && node.node.wan_udp_addr != Some(peer_addr)
+                            node.node.wan_udp_addr != Some(peer_addr)
                         } else {
                             false
                         }
@@ -218,13 +218,12 @@ async fn udp_handler<K: Cipher>(
                                         buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(data);
                                         key.encrypt(&mut buff, 0);
 
-
                                         match handle.tx.try_send(buff) {
                                             Ok(_) => {
                                                 debug!("TCP relay to {}", dst_virt_addr);
                                                 break;
                                             }
-                                            Err(e) =>  warn!("{}", e)
+                                            Err(e) => warn!("{}", e)
                                         }
                                     }
                                     NetProtocol::UDP => {
