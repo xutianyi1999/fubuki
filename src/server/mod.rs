@@ -470,7 +470,8 @@ impl<K: Cipher> Tunnel<K> {
             let mut buff = vec![0u8; TCP_BUFF_SIZE];
 
             loop {
-                let msg = TcpMsg::read_msg(&mut rx, key, &mut buff).await?;
+                let mut sub_buff = &mut buff[UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>()..];
+                let msg = TcpMsg::read_msg(&mut rx, key, &mut sub_buff).await?;
 
                 let msg = match msg {
                     None => return Ok(()),
@@ -505,11 +506,10 @@ impl<K: Cipher> Tunnel<K> {
                                             };
 
                                             let packet_len = packet.len();
-                                            let data = &mut buff[TCP_MSG_HEADER_LEN - UDP_MSP_HEADER_LEN..];
-                                            let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, data);
-                                            key.encrypt(&mut data[..len], 0);
+                                            let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, sub_buff);
+                                            key.encrypt(&mut sub_buff[..len], 0);
 
-                                            fut = Some(self.udp_socket.send_to(&data[..len], addr));
+                                            fut = Some(self.udp_socket.send_to(&sub_buff[..len], addr));
                                             break;
                                         }
                                     }

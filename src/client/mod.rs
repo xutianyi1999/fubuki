@@ -31,7 +31,7 @@ use scopeguard::defer;
 use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
 use crate::client::api::api_start;
 use crate::client::sys_route::SystemRouteHandle;
-use crate::common::allocator;
+use crate::common::{allocator, net};
 use crate::common::allocator::Bytes;
 use crate::common::net::{HeartbeatCache, HeartbeatInfo, protocol, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
@@ -639,7 +639,10 @@ where
                             tun.send_packet(packet).await.context("Write packet to tun error")?;
                         }
                         UdpMsg::Relay(_, packet) => {
-                            debug!("Recv packet from {}", peer_addr);
+                            let src = net::protocol::get_ip_src_addr(packet)?;
+                            let dst= net::protocol::get_ip_dst_addr(packet)?;
+
+                            debug!("Recv packet from {}; {}->{}", peer_addr, src, dst);
 
                             tun.send_packet(packet).await.context("Write packet to tun error")?;
                         }
