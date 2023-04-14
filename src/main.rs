@@ -5,6 +5,7 @@
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
+#![feature(pattern)]
 
 #[macro_use]
 extern crate log;

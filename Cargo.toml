@@ -29,6 +29,7 @@ hyper = { version = "0.14", features = ["server", "client", "http1", "tcp"] }
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 prettytable-rs = "0.10"
 scopeguard = "1"
+static-files = { version = "0.2", optional = true }
 
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/GamePad64/netconfig.git" }
@@ -39,6 +40,12 @@ tun = { version = "0.5", features = ["async"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
+
+[build-dependencies]
+static-files = { version = "0.2", optional = true }
+
+[features]
+web = ["static-files"]
 
 [profile.release]
 lto = true

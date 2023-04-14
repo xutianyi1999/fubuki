@@ -8,6 +8,12 @@ use hyper::service::{make_service_fn, service_fn};
 
 use crate::client::{Interface, InterfaceInfo};
 
+#[cfg(feature = "web")]
+use std::str::pattern::Pattern;
+
+#[cfg(feature = "web")]
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
 fn info<K>(
     _req: Request<Body>,
     interfaces: &[Arc<Interface<K>>],
@@ -37,6 +43,22 @@ fn router<K>(
 ) -> Result<Response<Body>, http::Error> {
     match req.uri().path() {
         "/info" => info(req, &interfaces),
+        #[cfg(feature = "web")]
+        path if path.is_prefix_of("/static") => {
+            let map: std::collections::HashMap<&str, static_files::Resource> = generate();
+            let k = path.trim_start_matches("/");
+
+            match map.get(k) {
+                None =>  {
+                    Response::builder()
+                        .status(404)
+                        .body(Body::empty())
+                }
+                Some(resource) => {
+                    Ok(Response::new(Body::from(resource.data)))
+                }
+            }
+        }
         _ => {
             Response::builder()
                 .status(404)
