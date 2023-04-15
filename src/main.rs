@@ -186,7 +186,7 @@ pub struct ClientConfigFinalize<K> {
     reconnect_interval: Duration,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
-    // todo consider move to the group, can't set NAT when init
+    // todo consider move to the group, but can't set NAT when init
     allowed_ips: Vec<Ipv4Net>,
     groups: Vec<TargetGroupFinalize<K>>,
 }
