@@ -4,22 +4,30 @@
   "api_addr": "127.0.0.1:3030",
   "tcp_heartbeat_interval_secs": 5,
   "udp_heartbeat_interval_secs": 5,
+  "tcp_heartbeat_continuous_loss": 5,
+  "udp_heartbeat_continuous_loss": 5,
+  "udp_heartbeat_continuous_recv": 3,
   "reconnect_interval_secs": 3,
   "udp_socket_recv_buffer_size": 8192,
   "udp_socket_send_buffer_size": 8192,
-  "tun_handler_thread_count": 1,
-  "udp_handler_thread_count": 1,
-  "network_ranges": [
+  "allowed_ips": ["192.168.200.0/24"],
+  "groups": [
     {
+      "node_name": "t1",
       "server_addr": "192.168.1.10:12345",
       "tun": {
         "ip": "10.0.0.1",
         "netmask": "255.255.255.0"
       },
-      "key": "a123",
-      "mode": "UDP_AND_TCP",
+      "key": "123",
+      "mode": {
+        "direct": ["UDP"],
+        "relay": ["UDP", "TCP"]
+      },
       "lan_ip_addr": "192.168.0.2",
-      "try_send_to_lan_addr": false
+      "ips": {
+        "10.0.0.2": ["192.168.201.0/24"]
+      }
     }
   ]
 }
