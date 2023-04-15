@@ -186,7 +186,7 @@ async fn udp_handler<K: Cipher>(
 
                         if let Some(node) = guard.get_mut(&dst_virt_addr) {
                             node.node.wan_udp_addr = Some(peer_addr);
-                            node_db.sync(&*guard)?;
+                            node_db.sync(&guard)?;
                         }
                     }
                 }
@@ -581,7 +581,7 @@ impl<T> Drop for Tunnel<T> {
             {
                 let mut guard = self.node_db.mapping.write();
                 guard.remove(&addr);
-                self.node_db.sync(&*guard).expect("Sync node mapping failure");
+                self.node_db.sync(&guard).expect("Sync node mapping failure");
             }
 
             self.address_pool.inner.lock().release(&addr)
@@ -604,12 +604,9 @@ impl AddressPoolInner {
     }
 
     fn get_idle_addr(&mut self) -> Option<Ipv4Addr> {
-        for v in self.cidr.hosts() {
-            if !self.used.contains(&v) {
-                return Some(v);
-            }
-        }
-        None
+        self.cidr
+            .hosts()
+            .find(|&v| !self.used.contains(&v))
     }
 
     fn release(&mut self, addr: &Ipv4Addr) {

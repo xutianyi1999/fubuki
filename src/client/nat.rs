@@ -17,7 +17,7 @@ pub fn add_nat(ranges: &[Ipv4Net]) -> Result<()> {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("Failed to set nat"));
+            return Err(anyhow!("Failed to add nat"));
         }
     }
     Ok(())
@@ -56,7 +56,7 @@ pub fn add_nat(ranges: &[Ipv4Net]) -> Result<()> {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("Failed to set nat"));
+            return Err(anyhow!("Failed to add nat"));
         }
     }
     Ok(())

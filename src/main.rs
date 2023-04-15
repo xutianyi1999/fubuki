@@ -1,11 +1,10 @@
 #![feature(portable_simd)]
 #![feature(trait_alias)]
-#![feature(type_alias_impl_trait)]
 #![feature(split_array)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
-#![feature(pattern)]
+#![feature(impl_trait_in_assoc_type)]
 
 #[macro_use]
 extern crate log;
@@ -187,7 +186,7 @@ pub struct ClientConfigFinalize<K> {
     reconnect_interval: Duration,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
-    // todo consider into the group
+    // todo consider move to the group, can't set NAT when init
     allowed_ips: Vec<Ipv4Net>,
     groups: Vec<TargetGroupFinalize<K>>,
 }

@@ -474,7 +474,7 @@ where
                     if is_direct {
                         let node_map = interface.node_map.load_full();
 
-                        for (_, ext_node) in &*node_map {
+                        for ext_node in node_map.values() {
                             if !ext_node.node.mode.direct.contains(&NetProtocol::UDP) {
                                 continue;
                             }

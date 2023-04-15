@@ -9,10 +9,13 @@ use hyper::service::{make_service_fn, service_fn};
 use crate::client::{Interface, InterfaceInfo};
 
 #[cfg(feature = "web")]
-use std::str::pattern::Pattern;
-
-#[cfg(feature = "web")]
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+
+struct Context<K> {
+    interfaces: Vec<Arc<Interface<K>>>,
+    #[cfg(feature = "web")]
+    static_files: std::collections::HashMap<&'static str, static_files::Resource>
+}
 
 fn info<K>(
     _req: Request<Body>,
@@ -38,24 +41,28 @@ fn info<K>(
 }
 
 fn router<K>(
-    interfaces: Vec<Arc<Interface<K>>>,
+    ctx: Arc<Context<K>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, http::Error> {
-    match req.uri().path() {
-        "/info" => info(req, &interfaces),
-        #[cfg(feature = "web")]
-        path if path.is_prefix_of("/static") => {
-            let map: std::collections::HashMap<&str, static_files::Resource> = generate();
-            let k = path.trim_start_matches("/");
+    let path = req.uri()
+        .path()
+        .trim_start_matches('/');
 
-            match map.get(k) {
+    match path {
+        "info" => info(req, ctx.interfaces.as_slice()),
+        #[cfg(feature = "web")]
+        path if path.starts_with("static") => {
+            match ctx.static_files.get(path) {
                 None =>  {
                     Response::builder()
                         .status(404)
                         .body(Body::empty())
                 }
                 Some(resource) => {
-                    Ok(Response::new(Body::from(resource.data)))
+                    Response::builder()
+                        .header("Content-Type", resource.mime_type)
+                        .status(200)
+                        .body(Body::empty())
                 }
             }
         }
@@ -71,21 +78,29 @@ pub(super) async fn api_start<K: Send + Sync + 'static>(
     bind: SocketAddr,
     interfaces: Vec<Arc<Interface<K>>>
 ) -> Result<()> {
+    let ctx = Context {
+        interfaces,
+        #[cfg(feature = "web")]
+        static_files: generate()
+    };
+
+    let ctx = Arc::new(ctx);
+
     let make_svc = make_service_fn(move |_conn|  {
-        let interfaces = interfaces.clone();
+        let ctx = ctx.clone();
 
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
-                let interfaces = interfaces.clone();
+                let ctx = ctx.clone();
 
-                async move {
-                    router(interfaces, req)
+                async {
+                    router(ctx, req)
                 }
             }))
         }
     });
 
-    tokio::spawn(hyper::server::Server::bind(&bind)
+    tokio::spawn(hyper::server::Server::try_bind(&bind)?
             .serve(make_svc)).await??;
 
     Ok(())
