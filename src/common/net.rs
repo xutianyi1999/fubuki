@@ -1,5 +1,5 @@
 use std::io::Result;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use socket2::TcpKeepalive;
 use tokio::time::Duration;
@@ -41,8 +41,13 @@ build_socket_ext!(std::os::windows::io::AsRawSocket);
 #[cfg(unix)]
 build_socket_ext!(std::os::unix::io::AsRawFd);
 
-pub fn get_interface_addr<A: ToSocketAddrs>(dest_addr: A) -> Result<IpAddr> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
+    let bind_addr = match dest_addr {
+        SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+    };
+
+    let socket = std::net::UdpSocket::bind((bind_addr, 0))?;
     socket.connect(dest_addr)?;
     let addr = socket.local_addr()?;
     Ok(addr.ip())
