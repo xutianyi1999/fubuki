@@ -442,7 +442,7 @@ where
             loop {
                 let interface_addr = interface.addr.load();
 
-                if !interface_addr.is_unspecified() {
+                if interface.server_is_connected.load(Ordering::Relaxed) {
                     let server_hc = &interface.server_udp_hc;
                     let seq = {
                         let mut server_hc_guard = server_hc.write();
@@ -825,13 +825,13 @@ where
                 }
 
                 interface.group_name.store(Some(Arc::new(group_info.name.clone())));
-                interface.server_is_connected.store(true, Ordering::Relaxed);
 
                 if !sys_route_is_sync {
                     sys_route_is_sync = true;
                     sys_routing.lock().await.add(&routes).await?;
                 }
 
+                interface.server_is_connected.store(true, Ordering::Relaxed);
                 info!("Server {} connected", group.server_addr);
 
                 let (rx, mut tx) = stream.split();
