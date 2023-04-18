@@ -31,7 +31,7 @@ use crate::client::info;
 
 use crate::common::cipher::{Cipher, XorCipher};
 use crate::common::net::get_interface_addr;
-use crate::common::net::protocol::{NetProtocol, ProtocolMode, VirtualAddr};
+use crate::common::net::protocol::{NetProtocol, ProtocolMode, SERVER_VIRTUAL_ADDR, VirtualAddr};
 
 mod client;
 mod common;
@@ -108,7 +108,11 @@ where
 
                 for group in config.groups {
                     if group.listen_addr.ip().is_loopback() {
-                        return Err(anyhow!("Listen address can't be a loopback address"));
+                        return Err(anyhow!("listen address can't be a loopback address"));
+                    }
+
+                    if group.address_range.contains(&SERVER_VIRTUAL_ADDR) {
+                        warn!("{} is used as a special address, should not be contained in the address range", SERVER_VIRTUAL_ADDR)
                     }
 
                     let v = GroupFinalize {
@@ -325,9 +329,9 @@ enum Args {
 
 fn load_config<T: de::DeserializeOwned>(path: &str) -> Result<T> {
     let file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to read config from: {}", path))?;
+        .with_context(|| format!("failed to read config from: {}", path))?;
 
-    serde_json::from_reader(file).context("Failed to parse config")
+    serde_json::from_reader(file).context("failed to parse config")
 }
 
 fn logger_init() -> Result<()> {

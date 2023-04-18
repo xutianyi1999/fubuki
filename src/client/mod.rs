@@ -13,10 +13,13 @@ use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use futures_util::future::LocalBoxFuture;
 use futures_util::FutureExt;
 use hyper::{Body, Method, Request};
+use hyper::body::Buf;
 use ipnet::Ipv4Net;
+use net_route::Route;
 use parking_lot::RwLock;
 use prettytable::{row, Table};
 use rand::random;
+use scopeguard::defer;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -24,17 +27,14 @@ use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::time;
-use hyper::body::Buf;
-use net_route::Route;
-use scopeguard::defer;
 
-use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
+use crate::{Cipher, ClientConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
 use crate::client::api::api_start;
 use crate::client::nat::{add_nat, del_nat};
 use crate::client::sys_route::SystemRouteHandle;
-use crate::common::{allocator, net};
+use crate::common::allocator;
 use crate::common::allocator::Bytes;
-use crate::common::net::{HeartbeatCache, HeartbeatInfo, protocol, SocketExt, UdpStatus};
+use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::common::routing_table::RoutingTable;
 use crate::tun::create_device;
@@ -356,8 +356,8 @@ where
             };
 
             let packet_range = START..START + data.len();
-            let src_addr = protocol::get_ip_src_addr(data)?;
-            let dst_addr = protocol::get_ip_dst_addr(data)?;
+            let src_addr = get_ip_src_addr(data)?;
+            let dst_addr = get_ip_dst_addr(data)?;
 
             let rt = &**rh_cache.load();
             let item = match rt.find(dst_addr) {
@@ -422,6 +422,23 @@ where
     join.await?
 }
 
+fn contains_by_ips(ips: &HashMap<VirtualAddr, Vec<Ipv4Net>>, dst: SocketAddr) -> bool {
+    match dst {
+        SocketAddr::V4(addr) => {
+            for cidrs in ips.values() {
+                for cidr in cidrs {
+                    if cidr.contains(addr.ip()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        SocketAddr::V6(_) => ()
+    };
+
+    false
+}
+
 async fn udp_handler<T, K>(
     config: &'static ClientConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
@@ -457,7 +474,7 @@ where
                             }
                         }
 
-                        server_hc_guard.increment();
+                        server_hc_guard.request();
                         server_hc_guard.seq
                     };
 
@@ -493,7 +510,7 @@ where
                                     ext_node.udp_status.store(Arc::new(UdpStatus::Unavailable));
                                 }
 
-                                hc.increment();
+                                hc.request();
                                 hc.seq
                             };
 
@@ -516,16 +533,23 @@ where
                                             .map(|v| **v);
 
                                         if let Some(addr) = addr {
-                                            if addr != lan && addr != wan {
+                                            if addr != lan && addr != wan && !contains_by_ips(&group.ips, addr) {
                                                 socket.send_to(&packet, addr).await?;
                                             }
                                         }
 
                                         if wan == lan {
-                                            socket.send_to(&packet, lan).await?;
+                                            if !contains_by_ips(&group.ips, wan) {
+                                                socket.send_to(&packet, lan).await?;
+                                            }
                                         } else {
-                                            socket.send_to(&packet, lan).await?;
-                                            socket.send_to(&packet, wan).await?;
+                                            if !contains_by_ips(&group.ips, lan) {
+                                                socket.send_to(&packet, lan).await?;
+                                            }
+
+                                            if !contains_by_ips(&group.ips, wan) {
+                                                socket.send_to(&packet, wan).await?;
+                                            }
                                         }
                                     }
                                 }
@@ -625,25 +649,9 @@ where
                                     let mut hc_guard = node.hc.write();
 
                                     if hc_guard.response(seq).is_some() {
-                                        let mut flag = true;
-
-                                        match peer_addr {
-                                            SocketAddr::V4(v) => {
-                                                for cidrs in group.ips.values() {
-                                                    for cidr in cidrs {
-                                                        if cidr.contains(v.ip()) {
-                                                            flag = false;
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            SocketAddr::V6(_) => ()
-                                        }
-
                                         if **node.udp_status.load() == UdpStatus::Unavailable &&
                                             hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                            flag
+                                            !contains_by_ips(&group.ips, peer_addr)
                                         {
                                             drop(hc_guard);
                                             let status = Arc::new(UdpStatus::Available {
@@ -662,10 +670,7 @@ where
                             tun.send_packet(packet).await.context("Write packet to tun error")?;
                         }
                         UdpMsg::Relay(_, packet) => {
-                            let src = net::protocol::get_ip_src_addr(packet)?;
-                            let dst= net::protocol::get_ip_dst_addr(packet)?;
-
-                            debug!("Recv packet from {}; {}->{}", peer_addr, src, dst);
+                            // debug!("Recv packet from {}; {}->{}", peer_addr, src, dst);
 
                             tun.send_packet(packet).await.context("Write packet to tun error")?;
                         }
@@ -997,7 +1002,7 @@ where
                                 }
                             }
 
-                            guard.increment();
+                            guard.request();
                             guard.seq
                         };
 

@@ -121,12 +121,13 @@ async fn udp_handler<K: Cipher>(
                         node.udp_status = UdpStatus::Unavailable;
                     }
 
-                    heartbeat_status.increment();
-                    list.push(( socket_addr, heartbeat_status.seq));
+                    heartbeat_status.request();
+                    list.push((socket_addr, heartbeat_status.seq));
                 }
             };
 
             for (sock_addr, seq) in list {
+                // todo check
                 let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
                 let packet = &mut buff[..len];
                 key.encrypt(packet, 0);
@@ -452,7 +453,7 @@ impl<K: Cipher> Tunnel<K> {
                         }
                     }
 
-                    hc.increment();
+                    hc.request();
                     hc.seq
                 };
 
@@ -682,17 +683,17 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
 
             let udp_socket = UdpSocket::bind(listen_addr)
                 .await
-                .with_context(|| format!("UDP socket bind {} error", listen_addr))?;
+                .with_context(|| format!("udp socket bind {} error", listen_addr))?;
 
             let udp_socket = Arc::new(udp_socket);
 
-            info!("UDP socket listening on {}", listen_addr);
+            info!("{} udp socket listening on {}", group.name, listen_addr);
 
             let tcp_listener = TcpListener::bind(listen_addr)
                 .await
-                .with_context(|| format!("TCP socket bind {} error", listen_addr))?;
+                .with_context(|| format!("tcp socket bind {} error", listen_addr))?;
 
-            info!("TCP socket listening on {}", listen_addr);
+            info!("{} tcp socket listening on {}", group.name, listen_addr);
 
             let notify = Arc::new(Notify::new());
 
@@ -714,7 +715,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
                     }
                 })
                 .await?
-                .context("UDP handler error")
+                .context("udp handler error")
             };
 
             let tcp_handle = async {
@@ -734,7 +735,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
                     }
                 })
                 .await?
-                .context("TCP handler error")
+                .context("tcp handler error")
             };
 
             let res = tokio::try_join!(udp_handle, tcp_handle).map(|_| ());
@@ -743,8 +744,10 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
         };
 
         futures.push(async {
+            info!("{} server start", group.name);
+
             if let Err(e) = fut.await {
-                error!("Server error: {:?}", e)
+                error!("{} server error: {:?}", group.name, e)
             }
         });
     }

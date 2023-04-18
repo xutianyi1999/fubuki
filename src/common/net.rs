@@ -1,6 +1,8 @@
 use std::fmt::{Display, Formatter};
+use std::io;
 use std::io::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::ops::Range;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +48,32 @@ build_socket_ext!(std::os::windows::io::AsRawSocket);
 #[cfg(unix)]
 build_socket_ext!(std::os::unix::io::AsRawFd);
 
+macro_rules! get {
+        ($slice: expr, $index: expr, $error_msg: expr) => {
+            $slice
+                .get($index)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, $error_msg))?
+        };
+        ($slice: expr, $index: expr) => {
+            get!($slice, $index, "Decode error")
+        };
+    }
+
+const SRC_ADDR: Range<usize> = 12..16;
+const DST_ADDR: Range<usize> = 16..20;
+
+pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
+    let mut buff = [0u8; 4];
+    buff.copy_from_slice(get!(ip_packet, DST_ADDR, "get ip packet dst addr error"));
+    Ok(Ipv4Addr::from(buff))
+}
+
+pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
+    let mut buff = [0u8; 4];
+    buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "get ip packet src addr error"));
+    Ok(Ipv4Addr::from(buff))
+}
+
 pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
     let bind_addr = match dest_addr {
         SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -84,6 +112,7 @@ pub struct HeartbeatCache {
     pub packet_continuous_loss_count: u64,
     pub packet_continuous_recv_count: u64,
     pub packet_loss_count: u64,
+    is_send: bool,
 }
 
 impl HeartbeatCache {
@@ -96,6 +125,7 @@ impl HeartbeatCache {
             packet_continuous_loss_count: 0,
             packet_continuous_recv_count: 0,
             packet_loss_count: 0,
+            is_send: false,
         }
     }
 
@@ -113,14 +143,16 @@ impl HeartbeatCache {
     }
 
     pub fn check(&mut self) {
-        if self.elapsed.is_none() {
+        if self.is_send && self.elapsed.is_none() {
             self.packet_continuous_recv_count = 0;
             self.packet_loss_count += 1;
             self.packet_continuous_loss_count += 1;
         }
     }
 
-    pub fn increment(&mut self) {
+    pub fn request(&mut self) {
+        // todo remove other place is_send
+        self.is_send = true;
         self.elapsed = None;
         self.send_time = Instant::now();
         self.seq = self.seq.overflowing_add(1).0;
@@ -155,21 +187,19 @@ pub mod protocol {
     use std::io;
     use std::mem::size_of;
     use std::net::{Ipv4Addr, SocketAddr};
-    use std::ops::Range;
 
     use ahash::HashMap;
-    use anyhow::anyhow;
-    use anyhow::Result;
+    use anyhow::{anyhow, Result};
     use bincode::{config, Decode, Encode};
     use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use tokio::net::UdpSocket;
 
     use crate::common::cipher::Cipher;
 
     pub type VirtualAddr = Ipv4Addr;
 
-    // todo check is include
     pub const SERVER_VIRTUAL_ADDR: VirtualAddr = VirtualAddr::new(9, 9, 9, 9);
 
     pub const TCP_BUFF_SIZE: usize = 65535;
@@ -306,17 +336,6 @@ pub mod protocol {
         Heartbeat(Seq, HeartbeatType),
     }
 
-    macro_rules! get {
-        ($slice: expr, $index: expr, $error_msg: expr) => {
-            $slice
-                .get($index)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, $error_msg))?
-        };
-        ($slice: expr, $index: expr) => {
-            get!($slice, $index, "Decode error")
-        };
-    }
-
     pub const TCP_MSG_HEADER_LEN: usize = 4;
 
     // |MAGIC NUM|PACKET TYPE|DATA LEN|DATA|
@@ -402,7 +421,7 @@ pub mod protocol {
             TCP_MSG_HEADER_LEN + DATA_SIZE
         }
 
-        pub fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
+        fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
             let msg = match mode {
                 REGISTER => {
                     let (register, _) = bincode::decode_from_slice::<Register, _>(data, config::standard())?;
@@ -537,7 +556,7 @@ pub mod protocol {
             let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(anyhow!("Magic number not match"))
+                return Err(anyhow!("magic number not match"))
             };
 
             match mode {
@@ -563,27 +582,18 @@ pub mod protocol {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => return Err(anyhow!("UDP Message error")),
+                        _ => return Err(anyhow!("udp message error")),
                     };
                     Ok(UdpMsg::Heartbeat(virtual_addr, seq, heartbeat_type))
                 }
-                _ => Err(anyhow!("UDP Message error")),
+                _ => Err(anyhow!("udp Message error")),
             }
         }
-    }
 
-    const SRC_ADDR: Range<usize> = 12..16;
-    const DST_ADDR: Range<usize> = 16..20;
-
-    pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
-        let mut buff = [0u8; 4];
-        buff.copy_from_slice(get!(ip_packet, DST_ADDR, "Get ip packet dst addr error"));
-        Ok(Ipv4Addr::from(buff))
-    }
-
-    pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
-        let mut buff = [0u8; 4];
-        buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "Get ip packet src addr error"));
-        Ok(Ipv4Addr::from(buff))
+        pub async fn recv_msg<'a>(socket: &UdpSocket, buff: &'a mut [u8]) -> Result<(UdpMsg<'a>, SocketAddr)> {
+            let (len, from) = socket.recv_from(buff).await?;
+            let packet = &mut buff[..len];
+            todo!()
+        }
     }
 }
