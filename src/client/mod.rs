@@ -30,6 +30,7 @@ use scopeguard::defer;
 
 use crate::{Cipher, ClientConfigFinalize, ProtocolMode, NodeInfoType, TargetGroupFinalize};
 use crate::client::api::api_start;
+use crate::client::nat::{add_nat, del_nat};
 use crate::client::sys_route::SystemRouteHandle;
 use crate::common::{allocator, net};
 use crate::common::allocator::Bytes;
@@ -667,7 +668,6 @@ enum RegisterVirtualAddr {
 }
 
 async fn register<T, K>(
-    config: &'static ClientConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
     stream: &mut T,
     key: &K,
@@ -712,7 +712,7 @@ where
         proto_mod: group.mode.clone(),
         register_time: now,
         nonce: random(),
-        allowed_ips: config.allowed_ips.clone()
+        allowed_ips: group.allowed_ips.clone()
     };
 
     let len = TcpMsg::register_encode(&reg, &mut buff)?;
@@ -780,6 +780,18 @@ where
 {
     let join = tokio::spawn(async move {
         let mut sys_route_is_sync = false;
+        // use defer must use atomic
+        let is_add_nat = AtomicBool::new(false);
+
+        defer! {
+            if is_add_nat.load(Ordering::Relaxed) && !group.allowed_ips.is_empty() {
+                info!("Clear nat list");
+
+                if let Err(e) = nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
+                    error!("{}", e);
+                }
+            }
+        }
 
         let lan_udp_socket_addr = match (&interface.udp_socket, &group.lan_ip_addr) {
             (Some(s), Some(lan_ip)) => Some(SocketAddr::new(*lan_ip, s.local_addr()?.port())),
@@ -790,7 +802,10 @@ where
             None => RegisterVirtualAddr::Auto(None),
             Some(addr) => {
                 let cidr = Ipv4Net::with_netmask(addr.ip, addr.netmask)?.trunc();
+
                 update_tun_addr(&tun, &routing_table, addr.ip, cidr, &*interface)?;
+                add_nat(&group.allowed_ips, cidr)?;
+                is_add_nat.store(true, Ordering::Relaxed);
                 RegisterVirtualAddr::Manual((addr.ip, cidr))
             }
         };
@@ -808,7 +823,6 @@ where
                 let group_info = tokio::time::timeout(
                     Duration::from_secs(30),
                     register(
-                        config,
                         group,
                         &mut stream,
                         key,
@@ -820,7 +834,18 @@ where
 
                 if refresh_route {
                     if let RegisterVirtualAddr::Auto(Some((addr, cidr))) = &tun_addr {
+                        let old_cidr = interface.cidr.load();
+
                         update_tun_addr(&tun, &routing_table, *addr, *cidr, &*interface)?;
+
+                        if old_cidr != *cidr {
+                            if is_add_nat.load(Ordering::Relaxed) {
+                                del_nat(&group.allowed_ips,old_cidr)?;
+                            }
+
+                            add_nat(&group.allowed_ips, *cidr)?;
+                            is_add_nat.store(true, Ordering::Relaxed);
+                        }
                     }
                 }
 
@@ -985,20 +1010,6 @@ pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
 
     let tun = Arc::new(create_device()?);
     tun.set_mtu(config.mtu)?;
-
-    if !config.allowed_ips.is_empty() {
-        nat::add_nat(&config.allowed_ips)?;
-    }
-
-    defer! {
-        if !config.allowed_ips.is_empty() {
-            info!("Clear nat list");
-
-            if let Err(e) = nat::del_nat(&config.allowed_ips) {
-                error!("{}", e);
-            }
-        }
-    }
 
     let mut rt = RoutingTable::new();
 

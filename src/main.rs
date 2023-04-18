@@ -141,6 +141,7 @@ struct TargetGroup {
     key: String,
     mode: Option<ProtocolMode>,
     lan_ip_addr: Option<IpAddr>,
+    allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
 }
 
@@ -157,7 +158,6 @@ struct ClientConfig {
     reconnect_interval_secs: Option<u64>,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
-    allowed_ips: Option<Vec<Ipv4Net>>,
     groups: Vec<TargetGroup>,
 }
 
@@ -169,7 +169,7 @@ struct TargetGroupFinalize<K> {
     key: K,
     mode: ProtocolMode,
     lan_ip_addr: Option<IpAddr>,
-    // todo check ips and tun network conflicts
+    allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
 }
 
@@ -186,8 +186,6 @@ pub struct ClientConfigFinalize<K> {
     reconnect_interval: Duration,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
-    // todo consider move to the group, but can't set NAT when init
-    allowed_ips: Vec<Ipv4Net>,
     groups: Vec<TargetGroupFinalize<K>>,
 }
 
@@ -246,6 +244,7 @@ where
                 key: K::try_from(group.key.as_bytes())?,
                 mode,
                 lan_ip_addr,
+                allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default()
             };
             list.push(group_finalize)
@@ -272,7 +271,6 @@ where
             reconnect_interval: Duration::from_secs(config.reconnect_interval_secs.unwrap_or(3)),
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
-            allowed_ips: config.allowed_ips.unwrap_or_default(),
             groups: list,
         };
         Ok(config_finalize)
