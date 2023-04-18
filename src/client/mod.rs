@@ -424,6 +424,7 @@ where
 
 async fn udp_handler<T, K>(
     config: &'static ClientConfigFinalize<K>,
+    group: &'static TargetGroupFinalize<K>,
     interface: Arc<Interface<K>>,
     tun: T,
 ) -> Result<()>
@@ -624,7 +625,25 @@ where
                                     let mut hc_guard = node.hc.write();
 
                                     if hc_guard.response(seq).is_some() {
-                                        if **node.udp_status.load() == UdpStatus::Unavailable && hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
+                                        let mut flag = true;
+
+                                        match peer_addr {
+                                            SocketAddr::V4(v) => {
+                                                for cidrs in group.ips.values() {
+                                                    for cidr in cidrs {
+                                                        if cidr.contains(v.ip()) {
+                                                            flag = false;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            SocketAddr::V6(_) => ()
+                                        }
+
+                                        if **node.udp_status.load() == UdpStatus::Unavailable &&
+                                            hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
+                                            flag
                                         {
                                             drop(hc_guard);
                                             let status = Arc::new(UdpStatus::Available {
@@ -804,8 +823,12 @@ where
                 let cidr = Ipv4Net::with_netmask(addr.ip, addr.netmask)?.trunc();
 
                 update_tun_addr(&tun, &routing_table, addr.ip, cidr, &*interface)?;
-                add_nat(&group.allowed_ips, cidr)?;
-                is_add_nat.store(true, Ordering::Relaxed);
+
+                if !group.allowed_ips.is_empty() {
+                    add_nat(&group.allowed_ips, cidr)?;
+                    is_add_nat.store(true, Ordering::Relaxed);
+                }
+
                 RegisterVirtualAddr::Manual((addr.ip, cidr))
             }
         };
@@ -838,9 +861,11 @@ where
 
                         update_tun_addr(&tun, &routing_table, *addr, *cidr, &*interface)?;
 
-                        if old_cidr != *cidr {
-                            if is_add_nat.load(Ordering::Relaxed) {
-                                del_nat(&group.allowed_ips,old_cidr)?;
+                        if !group.allowed_ips.is_empty() {
+                            if old_cidr != *cidr {
+                                if is_add_nat.load(Ordering::Relaxed) {
+                                    del_nat(&group.allowed_ips,old_cidr)?;
+                                }
                             }
 
                             add_nat(&group.allowed_ips, *cidr)?;
@@ -1107,6 +1132,7 @@ pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
         if interface.udp_socket.is_some() {
             let fut = udp_handler(
                 config,
+                group,
                 interface,
                 tun.clone(),
             );

@@ -4,38 +4,37 @@ use anyhow::{anyhow, Result};
 use ipnet::Ipv4Net;
 
 #[cfg(target_os = "windows")]
-pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
-    for dst in ranges {
-        let status = Command::new("New-NetNat")
-            .args([
-                "-Name",
-                &format!("fubuki-{}", dst),
-                "-ExternalIPInterfaceAddressPrefix",
-                dst.to_string().as_str(),
-                "-InternalIPInterfaceAddressPrefix",
-                src.to_string().as_str(),
-            ])
-            .output()?
-            .status;
+pub fn add_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+    let output = Command::new("powershell")
+        .args([
+            "New-NetNat",
+            "-Name",
+            &format!("fubuki-{}", src),
+            "-InternalIPInterfaceAddressPrefix",
+            src.to_string().as_str(),
+        ])
+        .output()?;
 
-        if !status.success() {
-            return Err(anyhow!("Failed to add nat"));
-        }
+    if !output.status.success() {
+        return Err(anyhow!("Failed to add nat"));
     }
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
-pub fn del_nat(ranges: &[Ipv4Net], _src: Ipv4Net) -> Result<()> {
-    for range in ranges {
-        let status = Command::new("Remove-NetNat")
-            .args(["-Name", &format!("fubuki-{}", range), "-Confirm:$true"])
-            .output()?
-            .status;
+pub fn del_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+    let status = Command::new("powershell")
+        .args([
+            "Remove-NetNat",
+            "-Name",
+            &format!("fubuki-{}", src),
+            "-Confirm:$false"
+        ])
+        .output()?
+        .status;
 
-        if !status.success() {
-            return Err(anyhow!("Failed to remove nat"));
-        }
+    if !status.success() {
+        return Err(anyhow!("Failed to remove nat"));
     }
     Ok(())
 }
