@@ -422,26 +422,19 @@ where
     join.await?
 }
 
-fn contains_by_ips(ips: &HashMap<VirtualAddr, Vec<Ipv4Net>>, dst: SocketAddr) -> bool {
+fn in_routing_table(routing_table: &RoutingTable, dst: SocketAddr) -> bool {
     match dst {
         SocketAddr::V4(addr) => {
-            for cidrs in ips.values() {
-                for cidr in cidrs {
-                    if cidr.contains(addr.ip()) {
-                        return true;
-                    }
-                }
-            }
+           routing_table.find(*addr.ip()).is_some()
         }
-        SocketAddr::V6(_) => ()
-    };
-
-    false
+        SocketAddr::V6(_) => false
+    }
 }
 
 async fn udp_handler<T, K>(
     config: &'static ClientConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
+    table: Arc<ArcSwap<RoutingTable>>,
     interface: Arc<Interface<K>>,
     tun: T,
 ) -> Result<()>
@@ -532,24 +525,27 @@ where
                                             .as_ref()
                                             .map(|v| **v);
 
+                                        let packet = packet.as_slice();
+                                        let rt = &*table.load_full();
+
+                                        let send  = |peer_addr| async move {
+                                            if !in_routing_table(&rt, peer_addr) {
+                                                socket.send_to(&packet, peer_addr).await?;
+                                            }
+                                            Result::<_, anyhow::Error>::Ok(())
+                                        };
+
                                         if let Some(addr) = addr {
-                                            if addr != lan && addr != wan && !contains_by_ips(&group.ips, addr) {
-                                                socket.send_to(&packet, addr).await?;
+                                            if addr != lan && addr != wan {
+                                                send(addr).await?;
                                             }
                                         }
 
                                         if wan == lan {
-                                            if !contains_by_ips(&group.ips, wan) {
-                                                socket.send_to(&packet, lan).await?;
-                                            }
+                                            send(wan).await?;
                                         } else {
-                                            if !contains_by_ips(&group.ips, lan) {
-                                                socket.send_to(&packet, lan).await?;
-                                            }
-
-                                            if !contains_by_ips(&group.ips, wan) {
-                                                socket.send_to(&packet, wan).await?;
-                                            }
+                                            send(lan).await?;
+                                            send(wan).await?;
                                         }
                                     }
                                 }
@@ -651,7 +647,7 @@ where
                                     if hc_guard.response(seq).is_some() {
                                         if **node.udp_status.load() == UdpStatus::Unavailable &&
                                             hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                            !contains_by_ips(&group.ips, peer_addr)
+                                            !in_routing_table(&table.load(), peer_addr)
                                         {
                                             drop(hc_guard);
                                             let status = Arc::new(UdpStatus::Available {
@@ -803,6 +799,7 @@ where
     K: Cipher + Clone + Send + Sync + 'static,
 {
     let join = tokio::spawn(async move {
+        // todo add non-retryable errors
         let mut sys_route_is_sync = false;
         // use defer must use atomic
         let is_add_nat = AtomicBool::new(false);
@@ -1138,6 +1135,7 @@ pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
             let fut = udp_handler(
                 config,
                 group,
+                rt.clone(),
                 interface,
                 tun.clone(),
             );

@@ -49,28 +49,28 @@ build_socket_ext!(std::os::windows::io::AsRawSocket);
 build_socket_ext!(std::os::unix::io::AsRawFd);
 
 macro_rules! get {
-        ($slice: expr, $index: expr, $error_msg: expr) => {
-            $slice
-                .get($index)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, $error_msg))?
-        };
-        ($slice: expr, $index: expr) => {
-            get!($slice, $index, "Decode error")
-        };
-    }
+    ($slice: expr, $index: expr, $error_msg: expr) => {
+        $slice
+            .get($index)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, $error_msg))?
+    };
+    ($slice: expr, $index: expr) => {
+        get!($slice, $index, "decode error")
+    };
+}
 
 const SRC_ADDR: Range<usize> = 12..16;
 const DST_ADDR: Range<usize> = 16..20;
 
 pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
     let mut buff = [0u8; 4];
-    buff.copy_from_slice(get!(ip_packet, DST_ADDR, "get ip packet dst addr error"));
+    buff.copy_from_slice(get!(ip_packet, DST_ADDR, "get packet source address failed"));
     Ok(Ipv4Addr::from(buff))
 }
 
 pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
     let mut buff = [0u8; 4];
-    buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "get ip packet src addr error"));
+    buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "get packet destination address failed"));
     Ok(Ipv4Addr::from(buff))
 }
 
@@ -194,7 +194,6 @@ pub mod protocol {
     use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    use tokio::net::UdpSocket;
 
     use crate::common::cipher::Cipher;
 
@@ -513,6 +512,7 @@ pub mod protocol {
     }
 
     pub enum UdpMsg<'a> {
+        // todo Heartbeat(from, to, seq, type)
         Heartbeat(VirtualAddr, Seq, HeartbeatType),
         Data(&'a [u8]),
         // todo remove relay
@@ -588,12 +588,6 @@ pub mod protocol {
                 }
                 _ => Err(anyhow!("udp Message error")),
             }
-        }
-
-        pub async fn recv_msg<'a>(socket: &UdpSocket, buff: &'a mut [u8]) -> Result<(UdpMsg<'a>, SocketAddr)> {
-            let (len, from) = socket.recv_from(buff).await?;
-            let packet = &mut buff[..len];
-            todo!()
         }
     }
 }

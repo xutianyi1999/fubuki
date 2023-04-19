@@ -17,7 +17,7 @@ use tokio::time;
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
-use crate::common::net::{HeartbeatCache, SocketExt, UdpStatus};
+use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::GroupFinalize;
 use crate::ServerConfigFinalize;
@@ -86,12 +86,13 @@ impl NodeDb {
             .collect();
 
         tx.send(Arc::new(node_list))
-            .map_err(|_| anyhow!("Sync error"))?;
+            .map_err(|_| anyhow!("sync node_map error"))?;
         Ok(())
     }
 }
 
 async fn udp_handler<K: Cipher>(
+    group: &'static GroupFinalize<K>,
     socket: Arc<UdpSocket>,
     key: K,
     node_db: Arc<NodeDb>,
@@ -117,7 +118,9 @@ async fn udp_handler<K: Cipher>(
                     let heartbeat_status = &mut node.udp_heartbeat_cache;
                     heartbeat_status.check();
 
-                    if node.udp_status != UdpStatus::Unavailable && heartbeat_status.packet_continuous_loss_count >= packet_loss_limit {
+                    if node.udp_status != UdpStatus::Unavailable &&
+                        heartbeat_status.packet_continuous_loss_count >= packet_loss_limit
+                    {
                         node.udp_status = UdpStatus::Unavailable;
                     }
 
@@ -127,7 +130,6 @@ async fn udp_handler<K: Cipher>(
             };
 
             for (sock_addr, seq) in list {
-                // todo check
                 let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
                 let packet = &mut buff[..len];
                 key.encrypt(packet, 0);
@@ -149,7 +151,7 @@ async fn udp_handler<K: Cipher>(
             let (len, peer_addr) = match socket.recv_from(&mut buff).await {
                 Ok(v) => v,
                 Err(e) => {
-                    error!("UDP msg recv error -> {:?}", e);
+                    error!("{} receive udp message error: {:?}", group.name, e);
                     continue;
                 }
             };
@@ -160,22 +162,20 @@ async fn udp_handler<K: Cipher>(
             let msg = match UdpMsg::decode(packet) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    error!("UDP msg recv error -> {:?}", e);
+                    error!("{} receive udp message error: {:?}", group.name, e);
                     continue;
                 }
             };
 
             match msg {
                 UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Req) => {
-                    let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
-                    let packet = &mut buff[..len];
-                    key.encrypt(packet, 0);
-                    socket.send_to(packet, peer_addr).await?;
+                    let mut is_known = false;
 
                     let is_change = {
                         let guard = node_db.mapping.read();
 
                         if let Some(node) = guard.get(&dst_virt_addr) {
+                            is_known = true;
                             node.node.wan_udp_addr != Some(peer_addr)
                         } else {
                             false
@@ -190,6 +190,13 @@ async fn udp_handler<K: Cipher>(
                             node_db.sync(&guard)?;
                         }
                     }
+
+                    if is_known {
+                        let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
+                        let packet = &mut buff[..len];
+                        key.encrypt(packet, 0);
+                        socket.send_to(packet, peer_addr).await?;
+                    }
                 }
                 UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Resp) => {
                     let mut guard = node_db.mapping.write();
@@ -199,7 +206,9 @@ async fn udp_handler<K: Cipher>(
                             continue;
                         }
 
-                        if node.udp_status == UdpStatus::Unavailable && node.udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv {
+                        if node.udp_status == UdpStatus::Unavailable &&
+                            node.udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv
+                        {
                             node.udp_status = UdpStatus::Available {dst_addr: peer_addr};
                         }
                     }
@@ -221,10 +230,20 @@ async fn udp_handler<K: Cipher>(
 
                                         match handle.tx.try_send(buff) {
                                             Ok(_) => {
-                                                debug!("TCP relay to {}", dst_virt_addr);
+                                                if log::max_level() >= log::Level::Debug {
+                                                    let f = || {
+                                                        let src = get_ip_src_addr(packet)?;
+                                                        let dst = get_ip_dst_addr(packet)?;
+                                                        Result::<_, anyhow::Error>::Ok((src, dst))
+                                                    };
+
+                                                    if let Ok((src, dst)) = f() {
+                                                        debug!("{} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                    }
+                                                }
                                                 break;
                                             }
-                                            Err(e) => warn!("{}", e)
+                                            Err(e) => warn!("{} send packet to tcp channel error: {}", group.name, e)
                                         }
                                     }
                                     NetProtocol::UDP => {
@@ -233,13 +252,25 @@ async fn udp_handler<K: Cipher>(
                                             UdpStatus::Unavailable => continue
                                         };
 
-                                        debug!("UDP relay to {}", dst_virt_addr);
+                                        if log::max_level() >= log::Level::Debug {
+                                            let f = || {
+                                                let src = get_ip_src_addr(packet)?;
+                                                let dst = get_ip_dst_addr(packet)?;
+                                                Result::<_, anyhow::Error>::Ok((src, dst))
+                                            };
+
+                                            if let Ok((src, dst)) = f() {
+                                                debug!("{} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                            }
+                                        }
+
                                         key.encrypt(packet, 0);
                                         fut = Some(socket.send_to(packet, dst_addr));
                                         break;
                                     }
                                 }
                             }
+                            warn!("{} udp handler: no route to {}", group.name, dst_virt_addr);
                         }
                     };
 
@@ -249,7 +280,7 @@ async fn udp_handler<K: Cipher>(
                         }
                     }
                 }
-                _ => error!("Invalid UDP msg"),
+                _ => error!("{} receive invalid udp message", group.name),
             };
         };
     };
@@ -700,6 +731,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
             let udp_handle = async {
                 let notify = notify.clone();
                 let fut = udp_handler(
+                    group,
                     udp_socket.clone(),
                     key,
                     node_db.clone(),
@@ -708,6 +740,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
                     config.udp_heartbeat_continuous_recv
                 );
 
+                // todo check
                 tokio::spawn(async move {
                     tokio::select! {
                         res = fut => res,
