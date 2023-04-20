@@ -485,7 +485,7 @@ pub mod protocol {
             key.decrypt(&mut buff[..4], 0);
 
             if buff[0] != MAGIC_NUM {
-                return Err(anyhow!("Magic number not match"));
+                return Err(anyhow!("magic number not match"));
             }
 
             let mode = buff[1];

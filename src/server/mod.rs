@@ -8,7 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Notify, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -18,7 +18,7 @@ use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::GroupFinalize;
 use crate::ServerConfigFinalize;
 
@@ -151,7 +151,7 @@ async fn udp_handler<K: Cipher>(
             let (len, peer_addr) = match socket.recv_from(&mut buff).await {
                 Ok(v) => v,
                 Err(e) => {
-                    error!("{} receive udp message error: {:?}", group.name, e);
+                    error!("group {} receive udp message error: {:?}", group.name, e);
                     continue;
                 }
             };
@@ -162,7 +162,7 @@ async fn udp_handler<K: Cipher>(
             let msg = match UdpMsg::decode(packet) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    error!("{} receive udp message error: {:?}", group.name, e);
+                    error!("group {} receive udp message error: {:?}", group.name, e);
                     continue;
                 }
             };
@@ -238,12 +238,12 @@ async fn udp_handler<K: Cipher>(
                                                     };
 
                                                     if let Ok((src, dst)) = f() {
-                                                        debug!("{} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                        debug!("group {} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
                                                     }
                                                 }
                                                 break;
                                             }
-                                            Err(e) => warn!("{} send packet to tcp channel error: {}", group.name, e)
+                                            Err(e) => warn!("group {} send packet to tcp channel error: {}", group.name, e)
                                         }
                                     }
                                     NetProtocol::UDP => {
@@ -260,7 +260,7 @@ async fn udp_handler<K: Cipher>(
                                             };
 
                                             if let Ok((src, dst)) = f() {
-                                                debug!("{} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                debug!("group {} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
                                             }
                                         }
 
@@ -270,7 +270,7 @@ async fn udp_handler<K: Cipher>(
                                     }
                                 }
                             }
-                            warn!("{} udp handler: no route to {}", group.name, dst_virt_addr);
+                            warn!("group {} udp handler: no route to {}", group.name, dst_virt_addr);
                         }
                     };
 
@@ -280,7 +280,7 @@ async fn udp_handler<K: Cipher>(
                         }
                     }
                 }
-                _ => error!("{} receive invalid udp message", group.name),
+                _ => error!("group {} receive invalid udp message", group.name),
             };
         };
     };
@@ -303,7 +303,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
         let (stream, peer_addr) = tcp_listener
             .accept()
             .await
-            .context("Accept connection error")?;
+            .context("accept connection error")?;
 
         let mut tunnel = Tunnel::new(
             stream,
@@ -317,11 +317,14 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
 
         tokio::spawn(async move {
             if let Err(e) = tunnel.exec().await {
-                error!("Peer addr {} tunnel error -> {:?}", peer_addr, e)
+                match &tunnel.register {
+                    None => error!("group {} address {} tunnel error: {:?}", group.name, peer_addr, e),
+                    Some(v) => error!("group {} node {}-{} tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
+                }
             }
 
-            if let Some(addr) = &tunnel.virtual_addr {
-                warn!("{} disconnected", addr);
+            if let Some(v) = &tunnel.register {
+                warn!("group {} node {}-{} disconnected", group.name, v.node_name, v.virtual_addr);
             }
         });
     }
@@ -335,7 +338,7 @@ struct Tunnel<K: 'static> {
     node_db: Arc<NodeDb>,
     nonce_pool: Arc<NoncePool>,
     address_pool: Arc<AddressPool>,
-    virtual_addr: Option<VirtualAddr>,
+    register: Option<Register>,
     bridge: Option<Bridge>,
 }
 
@@ -357,28 +360,27 @@ impl<K: Cipher> Tunnel<K> {
             node_db,
             nonce_pool,
             address_pool,
-            virtual_addr: None,
+            register: None,
             bridge: None,
         }
     }
 
     async fn init(&mut self) -> Result<()> {
         let buff = &mut vec![0u8; TCP_BUFF_SIZE];
-        let (rx, mut tx) = self.stream.split();
-        let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
+        let stream = &mut self.stream;
         let key = &self.group.key;
 
         loop {
             let nonce_pool = &self.nonce_pool;
-            let msg = TcpMsg::read_msg(&mut rx, key, buff).await?
-                .ok_or_else(|| anyhow!("Client connection closed"))?;
+            let msg = TcpMsg::read_msg(stream, key, buff).await?
+                .ok_or_else(|| anyhow!("client connection closed"))?;
 
             match msg {
                 TcpMsg::GetIdleVirtualAddr => {
                     let addr = self.address_pool.get_idle_addr()
                         .map(|v| (v, self.group.address_range));
                     let len = TcpMsg::get_idle_virtual_addr_res_encode(addr, buff)?;
-                    TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
+                    TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
                 }
                 TcpMsg::Register(msg) => {
                     let now = Utc::now().timestamp();
@@ -386,8 +388,8 @@ impl<K: Cipher> Tunnel<K> {
 
                     if !(-10..=10).contains(&remain) {
                         let len = TcpMsg::register_res_encode(&RegisterResult::Timeout, buff)?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
-                        return Err(anyhow!("Register message timeout"));
+                        TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+                        return Err(anyhow!("register message timeout"));
                     }
 
                     let res = {
@@ -403,8 +405,8 @@ impl<K: Cipher> Tunnel<K> {
 
                     if !res {
                         let len = TcpMsg::register_res_encode(&RegisterResult::NonceRepeat, buff)?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
-                        return Err(anyhow!("Nonce repeat"));
+                        TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+                        return Err(anyhow!("nonce repeat"));
                     }
 
                     let nonce_pool = nonce_pool.clone();
@@ -416,19 +418,11 @@ impl<K: Cipher> Tunnel<K> {
 
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
                         let len = TcpMsg::register_res_encode(&RegisterResult::InvalidVirtualAddress(e), buff)?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
+                        TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
                         return Err(anyhow!(e))
                     };
 
-                    let gi = GroupInfo {
-                        name: self.group.name.clone(),
-                        cidr: self.group.address_range
-                    };
-
-                    let len = TcpMsg::register_res_encode(&RegisterResult::Success(gi), buff)?;
-                    TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
-
-                    self.virtual_addr = Some(msg.virtual_addr);
+                    self.register = Some(msg.clone());
 
                     let node = Node {
                         name: msg.node_name,
@@ -440,12 +434,18 @@ impl<K: Cipher> Tunnel<K> {
                         register_time: msg.register_time,
                         register_nonce: msg.nonce
                     };
-
                     let bridge = self.node_db.insert(node)?;
                     self.bridge = Some(bridge);
-                    return Ok(());
+
+                    let gi = GroupInfo {
+                        name: self.group.name.clone(),
+                        cidr: self.group.address_range
+                    };
+
+                    let len = TcpMsg::register_res_encode(&RegisterResult::Success(gi), buff)?;
+                    return TcpMsg::write_msg(stream, key, &mut buff[..len]).await;
                 }
-                _ => return Err(anyhow!("Message error")),
+                _ => return Err(anyhow!("init message error")),
             }
         }
     }
@@ -454,8 +454,8 @@ impl<K: Cipher> Tunnel<K> {
         self.stream.set_keepalive()?;
         self.init().await?;
 
-        let (bridge, virtual_addr) = match (&mut self.bridge, self.virtual_addr) {
-            (Some(bridge), Some(addr)) => (bridge, addr),
+        let (bridge, virtual_addr) = match (&mut self.bridge, &self.register) {
+            (Some(bridge), Some(reg)) => (bridge, reg.virtual_addr),
             _ => unreachable!(),
         };
 
@@ -464,9 +464,8 @@ impl<K: Cipher> Tunnel<K> {
 
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
 
+        // todo check
         let heartbeat_schedule = async {
-            let mut is_send = false;
-
             loop {
                 let seq = {
                     let mut guard = self.node_db.mapping.write();
@@ -476,19 +475,16 @@ impl<K: Cipher> Tunnel<K> {
                         Some(node) => &mut node.tcp_heartbeat_cache
                     };
 
-                    if is_send {
-                        hc.check();
+                    hc.check();
 
-                        if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
-                            return Err(anyhow!("Heartbeat recv timeout"))
-                        }
+                    if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
+                        return Err(anyhow!("Heartbeat recv timeout"))
                     }
 
                     hc.request();
                     hc.seq
                 };
 
-                is_send = true;
                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                 TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
                 key.encrypt(&mut buff, 0);
@@ -609,14 +605,16 @@ impl<K: Cipher> Tunnel<K> {
 
 impl<T> Drop for Tunnel<T> {
     fn drop(&mut self) {
-        if let Some(addr) = self.virtual_addr.take() {
+        if let Some(reg) = &self.register {
             {
                 let mut guard = self.node_db.mapping.write();
-                guard.remove(&addr);
-                self.node_db.sync(&guard).expect("Sync node mapping failure");
+
+                if guard.remove(&reg.virtual_addr).is_some() {
+                    self.node_db.sync(&guard).expect("sync node mapping failure");
+                }
             }
 
-            self.address_pool.inner.lock().release(&addr)
+            self.address_pool.inner.lock().release(&reg.virtual_addr)
         }
     }
 }
@@ -718,13 +716,13 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
 
             let udp_socket = Arc::new(udp_socket);
 
-            info!("{} udp socket listening on {}", group.name, listen_addr);
+            info!("group {} udp socket listening on {}", group.name, listen_addr);
 
             let tcp_listener = TcpListener::bind(listen_addr)
                 .await
                 .with_context(|| format!("tcp socket bind {} error", listen_addr))?;
 
-            info!("{} tcp socket listening on {}", group.name, listen_addr);
+            info!("group {} tcp socket listening on {}", group.name, listen_addr);
 
             let notify = Arc::new(Notify::new());
 
@@ -740,7 +738,6 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
                     config.udp_heartbeat_continuous_recv
                 );
 
-                // todo check
                 tokio::spawn(async move {
                     tokio::select! {
                         res = fut => res,
@@ -777,10 +774,10 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
         };
 
         futures.push(async {
-            info!("{} server start", group.name);
+            info!("group {} server start", group.name);
 
             if let Err(e) = fut.await {
-                error!("{} server error: {:?}", group.name, e)
+                error!("group {} server error: {:?}", group.name, e)
             }
         });
     }
