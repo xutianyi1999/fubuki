@@ -205,42 +205,42 @@ where
         for group in config.groups {
             let mode = group.mode.unwrap_or_default();
 
-            if mode.direct.contains(&NetProtocol::TCP) {
-                return Err(anyhow!("Direct only support UDP"))
+            if mode.p2p.contains(&NetProtocol::TCP) {
+                return Err(anyhow!("p2p only support udp protocol"))
             }
 
             let resolve_server_addr = group
                 .server_addr
                 .to_socket_addrs()?
                 .next()
-                .ok_or_else(|| anyhow!("Server host not found"))?;
+                .ok_or_else(|| anyhow!("{} lookup failed", group.server_addr))?;
 
-            let lan_ip_addr = match group.lan_ip_addr {
-                None => {
-                    if mode.is_use_udp() {
-                        let lan_addr = get_interface_addr(resolve_server_addr)?;
-                        Some(lan_addr)
-                    } else {
-                        None
+            let lan_ip_addr = if mode.is_use_udp() {
+                let lan_ip_addr = match group.lan_ip_addr {
+                    None => {
+                        get_interface_addr(resolve_server_addr)?
                     }
-                }
-                Some(addr) => {
-                    if addr.is_loopback() {
-                        return Err(anyhow!("LAN address cannot be a loopback address"));
-                    }
+                    Some(addr) => {
+                        if addr.is_loopback() {
+                            return Err(anyhow!("lan address cannot be a loopback address"));
+                        }
 
-                    if addr.is_unspecified() {
-                        return Err(anyhow!("LAN address cannot be unspecified address"));
+                        if addr.is_unspecified() {
+                            return Err(anyhow!("lan address cannot be unspecified address"));
+                        }
+                        addr
                     }
-                    Some(addr)
-                }
+                };
+                Some(lan_ip_addr)
+            } else {
+                None
             };
 
             let group_finalize = TargetGroupFinalize {
                 node_name: group.node_name,
                 server_addr: {
                     if resolve_server_addr.ip().is_loopback() {
-                        return Err(anyhow!("Server address cannot be a loopback address"));
+                        return Err(anyhow!("server address cannot be a loopback address"));
                     }
                     group.server_addr
                 },

@@ -19,7 +19,7 @@ impl SystemRouteHandle {
             let mut stream = pin!(stream);
 
             while let Some(v) = stream.next().await {
-                info!("Route change: {:?}", v)
+                info!("route change: {:?}", v)
             }
         });
 

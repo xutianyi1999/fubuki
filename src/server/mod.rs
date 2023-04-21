@@ -17,7 +17,7 @@ use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::GroupFinalize;
 use crate::ServerConfigFinalize;
 
@@ -363,7 +363,7 @@ impl<K: Cipher> Tunnel<K> {
     }
 
     async fn init(&mut self) -> Result<()> {
-        let buff = &mut vec![0u8; TCP_BUFF_SIZE];
+        let buff = &mut allocator::alloc(1024);
         let stream = &mut self.stream;
         let key = &self.group.key;
 
@@ -384,7 +384,7 @@ impl<K: Cipher> Tunnel<K> {
                     let remain = now - msg.register_time;
 
                     if !(-10..=10).contains(&remain) {
-                        let len = TcpMsg::register_res_encode(&RegisterResult::Timeout, buff)?;
+                        let len = TcpMsg::register_res_encode(&Err(RegisterError::Timeout), buff)?;
                         TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
                         return Err(anyhow!("register message timeout"));
                     }
@@ -401,7 +401,7 @@ impl<K: Cipher> Tunnel<K> {
                     };
 
                     if !res {
-                        let len = TcpMsg::register_res_encode(&RegisterResult::NonceRepeat, buff)?;
+                        let len = TcpMsg::register_res_encode(&Err(RegisterError::NonceRepeat), buff)?;
                         TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
                         return Err(anyhow!("nonce repeat"));
                     }
@@ -414,7 +414,7 @@ impl<K: Cipher> Tunnel<K> {
                     });
 
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
-                        let len = TcpMsg::register_res_encode(&RegisterResult::InvalidVirtualAddress(e), buff)?;
+                        let len = TcpMsg::register_res_encode(&Err(RegisterError::InvalidVirtualAddress(e)), buff)?;
                         TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
                         return Err(anyhow!(e))
                     };
@@ -439,7 +439,7 @@ impl<K: Cipher> Tunnel<K> {
                         cidr: self.group.address_range
                     };
 
-                    let len = TcpMsg::register_res_encode(&RegisterResult::Success(gi), buff)?;
+                    let len = TcpMsg::register_res_encode(&Ok(gi), buff)?;
                     return TcpMsg::write_msg(stream, key, &mut buff[..len]).await;
                 }
                 _ => return Err(anyhow!("init message error")),

@@ -226,14 +226,14 @@ pub mod protocol {
 
     #[derive(Clone, Debug, Encode, Decode, Serialize, Deserialize)]
     pub struct ProtocolMode {
-        pub direct: Vec<NetProtocol>,
+        pub p2p: Vec<NetProtocol>,
         pub relay: Vec<NetProtocol>,
     }
 
     impl Default for ProtocolMode {
         fn default() -> Self {
             ProtocolMode {
-                direct: vec![NetProtocol::UDP],
+                p2p: vec![NetProtocol::UDP],
                 relay: vec![NetProtocol::UDP, NetProtocol::TCP],
             }
         }
@@ -241,11 +241,11 @@ pub mod protocol {
 
     impl ProtocolMode {
         pub fn is_use_udp(&self) -> bool {
-            self.direct.contains(&NetProtocol::UDP) || self.relay.contains(&NetProtocol::UDP)
+            self.p2p.contains(&NetProtocol::UDP) || self.relay.contains(&NetProtocol::UDP)
         }
 
         pub fn is_use_tcp(&self) -> bool {
-            self.direct.contains(&NetProtocol::TCP) || self.relay.contains(&NetProtocol::TCP)
+            self.p2p.contains(&NetProtocol::TCP) || self.relay.contains(&NetProtocol::TCP)
         }
     }
 
@@ -284,13 +284,20 @@ pub mod protocol {
 
     impl Error for AllocateError {}
 
-    #[derive(Clone, Encode, Decode)]
-    pub enum RegisterResult {
-        Success(GroupInfo),
+    #[derive(Clone, Copy, Debug, Encode, Decode)]
+    pub enum RegisterError {
         InvalidVirtualAddress(AllocateError),
         Timeout,
         NonceRepeat,
     }
+
+    impl Display for RegisterError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self)
+        }
+    }
+
+    impl Error for RegisterError {}
 
     #[derive(Encode, Decode, Deserialize, Serialize, Clone)]
     pub struct Node {
@@ -328,7 +335,7 @@ pub mod protocol {
         // address, netmask
         GetIdleVirtualAddrRes(Option<(VirtualAddr, Ipv4Net)>),
         Register(Register),
-        RegisterRes(RegisterResult),
+        RegisterRes(Result<GroupInfo, RegisterError>),
         NodeMap(HashMap<VirtualAddr, Node>),
         // todo convert to data
         Relay(VirtualAddr, &'a [u8]),
@@ -386,7 +393,7 @@ pub mod protocol {
             Ok(TCP_MSG_HEADER_LEN + size)
         }
 
-        pub fn register_res_encode(register_res: &RegisterResult, out: &mut [u8]) -> Result<usize> {
+        pub fn register_res_encode(register_res: &Result<GroupInfo, RegisterError>, out: &mut [u8]) -> Result<usize> {
             out[0] = MAGIC_NUM;
             out[1] = REGISTER_RESULT;
 
@@ -427,7 +434,7 @@ pub mod protocol {
                     TcpMsg::Register(register)
                 }
                 REGISTER_RESULT => {
-                    let (res, _) = bincode::decode_from_slice::<RegisterResult, _>(
+                    let (res, _) = bincode::decode_from_slice::<Result<GroupInfo, RegisterError>, _>(
                         data,
                         config::standard(),
                     )?;

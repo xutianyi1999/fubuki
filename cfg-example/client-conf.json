@@ -21,7 +21,7 @@
       },
       "key": "123",
       "mode": {
-        "direct": ["UDP"],
+        "p2p": ["UDP"],
         "relay": ["UDP", "TCP"]
       },
       "lan_ip_addr": "192.168.0.2",

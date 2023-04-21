@@ -26,6 +26,7 @@ use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
+use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::{Cipher, ClientConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
@@ -35,7 +36,7 @@ use crate::client::sys_route::SystemRouteHandle;
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterResult, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::common::routing_table::RoutingTable;
 use crate::tun::create_device;
 use crate::tun::TunDevice;
@@ -256,7 +257,7 @@ async fn send<K: Cipher>(
     buff: &mut [u8],
     packet_range: Range<usize>
 ) -> Result<()> {
-    if (!inter.mode.direct.is_empty()) && (!dst_node.node.mode.direct.is_empty()) {
+    if (!inter.mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty()) {
         let udp_status = **dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
@@ -445,7 +446,7 @@ where
     let join = tokio::spawn(async move {
         let socket = interface.udp_socket.as_ref().expect("Must need udp socket");
         let key = &interface.key;
-        let is_direct = interface.mode.direct.contains(&NetProtocol::UDP);
+        let is_direct = interface.mode.p2p.contains(&NetProtocol::UDP);
 
         let heartbeat_schedule =  async {
             let mut packet = vec![0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
@@ -487,7 +488,7 @@ where
                         let node_map = interface.node_map.load_full();
 
                         for ext_node in node_map.values() {
-                            if !ext_node.node.mode.direct.contains(&NetProtocol::UDP) {
+                            if !ext_node.node.mode.p2p.contains(&NetProtocol::UDP) {
                                 continue;
                             }
 
@@ -710,15 +711,15 @@ where
             TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
 
             let msg = TcpMsg::read_msg(stream, key, &mut buff).await?
-                .ok_or_else(|| anyhow!("Server connection closed"))?;
+                .ok_or_else(|| anyhow!("server connection closed"))?;
 
             match msg {
                 TcpMsg::GetIdleVirtualAddrRes(Some((addr, cidr))) => {
                     *register_addr = RegisterVirtualAddr::Auto(Some((addr, cidr)));
                     (addr, cidr)
                 },
-                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("Insufficient address pool")),
-                _ => return Err(anyhow!("Invalid Message")),
+                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("insufficient address pool")),
+                _ => return Err(anyhow!("invalid message")),
             }
         }
     };
@@ -739,13 +740,10 @@ where
     TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
 
     let ret = TcpMsg::read_msg(stream, key, &mut buff).await?
-        .ok_or_else(|| anyhow!("Server connection closed"))?;
+        .ok_or_else(|| anyhow!("server connection closed"))?;
 
     let group_info = match ret {
-        TcpMsg::RegisterRes(RegisterResult::Success(group_info)) => group_info,
-        TcpMsg::RegisterRes(RegisterResult::Timeout) => return Err(anyhow!("Register timeout")),
-        TcpMsg::RegisterRes(RegisterResult::NonceRepeat) => return Err(anyhow!("Nonce repeat")),
-        TcpMsg::RegisterRes(RegisterResult::InvalidVirtualAddress(e)) => {
+        TcpMsg::RegisterRes(Err(RegisterError::InvalidVirtualAddress(e))) => {
             if e == AllocateError::IpAlreadyInUse {
                 if let RegisterVirtualAddr::Auto(v) = register_addr {
                     *v = None;
@@ -753,11 +751,12 @@ where
             }
             return Err(anyhow!(e))
         }
-        _ => return Err(anyhow!("Response message not match")),
+        TcpMsg::RegisterRes(res) => res?,
+        _ => return Err(anyhow!("response message not match")),
     };
 
     if cidr != group_info.cidr {
-        return Err(anyhow!("Cidr not match"));
+        return Err(anyhow!("group cidr not match"));
     }
     Ok(group_info)
 }
@@ -765,18 +764,20 @@ where
 fn update_tun_addr<T: TunDevice, K>(
     tun: &T,
     rt: &ArcSwap<RoutingTable>,
+    interface: &Interface<K>,
+    old_addr: VirtualAddr,
     addr: VirtualAddr,
+    old_cidr: Ipv4Net,
     cidr: Ipv4Net,
-    interface: &Interface<K>
 ) -> Result<()> {
     rt.rcu(|v| {
         let mut t = (**v).clone();
-        t.remove(&cidr);
+        t.remove(&old_cidr);
         t.add(cidr, addr, interface.index);
         t
     });
 
-    tun.delete_addr(addr, cidr.netmask())?;
+    tun.delete_addr(old_addr, old_cidr.netmask())?;
     tun.add_addr(addr, cidr.netmask())?;
 
     interface.addr.store(addr);
@@ -798,15 +799,14 @@ where
     T: TunDevice + Clone + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
 {
-    let join = tokio::spawn(async move {
-        // todo add non-retryable errors
+    let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut sys_route_is_sync = false;
         // use defer must use atomic
         let is_add_nat = AtomicBool::new(false);
 
         defer! {
             if is_add_nat.load(Ordering::Relaxed) && !group.allowed_ips.is_empty() {
-                info!("Clear nat list");
+                info!("clear nat list");
 
                 if let Err(e) = nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
                     error!("{}", e);
@@ -824,7 +824,15 @@ where
             Some(addr) => {
                 let cidr = Ipv4Net::with_netmask(addr.ip, addr.netmask)?.trunc();
 
-                update_tun_addr(&tun, &routing_table, addr.ip, cidr, &*interface)?;
+                update_tun_addr(
+                    &tun,
+                    &routing_table,
+                    &*interface,
+                    addr.ip,
+                    VirtualAddr::UNSPECIFIED,
+                    cidr,
+                    Ipv4Net::default()
+                )?;
 
                 if !group.allowed_ips.is_empty() {
                     add_nat(&group.allowed_ips, cidr)?;
@@ -838,10 +846,12 @@ where
         let key = &group.key;
 
         loop {
+            let mut non_retryable = false;
+
             let process = async {
                 let mut stream = TcpStream::connect(&group.server_addr)
                     .await
-                    .with_context(|| format!("Connect to {} error", &group.server_addr))?;
+                    .with_context(|| format!("connect to {} error", &group.server_addr))?;
 
                 let mut refresh_route= false;
 
@@ -855,23 +865,41 @@ where
                         lan_udp_socket_addr,
                         &mut refresh_route
                     )
-                ).await??;
+                ).await.with_context(|| format!("register to {} timeout", group.server_addr))??;
 
+                // todo check
                 if refresh_route {
                     if let RegisterVirtualAddr::Auto(Some((addr, cidr))) = &tun_addr {
+                        let old_addr = interface.addr.load();
                         let old_cidr = interface.cidr.load();
 
-                        update_tun_addr(&tun, &routing_table, *addr, *cidr, &*interface)?;
+                        let f = || {
+                            update_tun_addr(
+                                &tun,
+                                &routing_table,
+                                &*interface,
+                                old_addr,
+                                *addr,
+                                old_cidr,
+                                *cidr,
+                            )?;
 
-                        if !group.allowed_ips.is_empty() {
-                            if old_cidr != *cidr {
-                                if is_add_nat.load(Ordering::Relaxed) {
-                                    del_nat(&group.allowed_ips,old_cidr)?;
+                            if !group.allowed_ips.is_empty() {
+                                if old_cidr != *cidr {
+                                    if is_add_nat.load(Ordering::Relaxed) {
+                                        del_nat(&group.allowed_ips,old_cidr)?;
+                                    }
                                 }
-                            }
 
-                            add_nat(&group.allowed_ips, *cidr)?;
-                            is_add_nat.store(true, Ordering::Relaxed);
+                                add_nat(&group.allowed_ips, *cidr)?;
+                                is_add_nat.store(true, Ordering::Relaxed);
+                            }
+                            Result::<_, anyhow::Error>::Ok(())
+                        };
+
+                        if let Err(e) = f() {
+                            non_retryable = true;
+                            return Err(e);
                         }
                     }
                 }
@@ -1026,10 +1054,11 @@ where
             time::sleep(config.reconnect_interval).await;
         }
     });
-    join.await?
+
+    join.await?.with_context(|| format!("node {} tcp handler error", group.node_name))
 }
 
-pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
+pub async fn start<K>(config: ClientConfigFinalize<K>) -> Result<()>
     where
         K: Cipher + Send + Sync + Clone + 'static
 {
@@ -1072,7 +1101,7 @@ pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
 
                 let udp_socket = UdpSocket::bind((bind_addr, 0))
                     .await
-                    .context("Failed to create UDP socket")?;
+                    .context("create udp socket failed")?;
 
                 if let Some(v) = config.udp_socket_recv_buffer_size {
                     udp_socket.set_recv_buffer_size(v)?;
@@ -1176,7 +1205,6 @@ pub async fn start<K: >(config: ClientConfigFinalize<K>) -> Result<()>
             },
         };
     }
-
 
     Ok(())
 }
