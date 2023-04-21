@@ -8,7 +8,6 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Notify, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -226,7 +225,6 @@ async fn udp_handler<K: Cipher>(
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
                                         TcpMsg::relay_encode(dst_virt_addr, data.len(), &mut buff);
                                         buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(data);
-                                        key.encrypt(&mut buff, 0);
 
                                         match handle.tx.try_send(buff) {
                                             Ok(_) => {
@@ -270,7 +268,6 @@ async fn udp_handler<K: Cipher>(
                                     }
                                 }
                             }
-                            warn!("group {} udp handler: no route to {}", group.name, dst_virt_addr);
                         }
                     };
 
@@ -464,21 +461,21 @@ impl<K: Cipher> Tunnel<K> {
 
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
 
-        // todo check
         let heartbeat_schedule = async {
             loop {
                 let seq = {
+                    // todo need to optimize
                     let mut guard = self.node_db.mapping.write();
 
                     let hc = match guard.get_mut(&virtual_addr) {
-                        None => return Result::<(), _>::Err(anyhow!("Can't get current environment node")),
+                        None => return Result::<(), _>::Err(anyhow!("can't get current environment node")),
                         Some(node) => &mut node.tcp_heartbeat_cache
                     };
 
                     hc.check();
 
                     if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
-                        return Err(anyhow!("Heartbeat recv timeout"))
+                        return Err(anyhow!("heartbeat receive timeout"))
                     }
 
                     hc.request();
@@ -487,7 +484,6 @@ impl<K: Cipher> Tunnel<K> {
 
                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                 TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
-                key.encrypt(&mut buff, 0);
 
                 local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
                 tokio::time::sleep(self.config.tcp_heartbeat_interval).await;
@@ -519,13 +515,11 @@ impl<K: Cipher> Tunnel<K> {
                                             let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet.len());
                                             TcpMsg::relay_encode(dst_virt_addr, packet.len(), &mut buff);
                                             buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(packet);
-                                            key.encrypt(&mut buff, 0);
 
-                                            if let Err(e) = handle.tx.try_send(buff) {
-                                                warn!("{}", e);
-                                                continue;
+                                            match handle.tx.try_send(buff) {
+                                                Ok(_) => break,
+                                                Err(e) => warn!("group {} send packet to tcp channel error: {}", self.group.name, e)
                                             }
-                                            break;
                                         }
                                         NetProtocol::UDP =>  {
                                             let addr = match handle.udp_status {
@@ -582,12 +576,12 @@ impl<K: Cipher> Tunnel<K> {
                         TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
                     }
                     res = bridge.channel_rx.recv() => {
-                        let buff = res.ok_or_else(|| anyhow!("Node {} channel closed", virtual_addr))?;
-                        tx.write_all(&buff).await?;
+                        let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                        TcpMsg::write_msg(&mut tx, key, &mut buff).await?;
                     }
                     res = local_channel_rx.recv() => {
-                        let buff = res.ok_or_else(|| anyhow!("Local node {} channel closed", virtual_addr))?;
-                        tx.write_all(&buff).await?;
+                        let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                        TcpMsg::write_msg(&mut tx, key, &mut buff).await?;
                     }
                 }
             }

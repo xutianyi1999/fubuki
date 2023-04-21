@@ -32,14 +32,6 @@ impl DerefMut for Bytes {
     }
 }
 
-impl From<&[u8]> for Bytes {
-    fn from(value: &[u8]) -> Self {
-        let mut new_buff = alloc(value.len());
-        new_buff.copy_from_slice(value);
-        new_buff
-    }
-}
-
 impl Bytes {
     pub fn new(len: usize) -> Bytes {
         Bytes {
