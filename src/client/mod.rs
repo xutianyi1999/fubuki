@@ -706,7 +706,6 @@ where
         RegisterVirtualAddr::Manual(addr) => *addr,
         RegisterVirtualAddr::Auto(Some(addr)) => *addr,
         RegisterVirtualAddr::Auto(None) => {
-            *refresh_route = true;
             let len = TcpMsg::get_idle_virtual_addr_encode(&mut buff);
             TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
 
@@ -714,10 +713,7 @@ where
                 .ok_or_else(|| anyhow!("server connection closed"))?;
 
             match msg {
-                TcpMsg::GetIdleVirtualAddrRes(Some((addr, cidr))) => {
-                    *register_addr = RegisterVirtualAddr::Auto(Some((addr, cidr)));
-                    (addr, cidr)
-                },
+                TcpMsg::GetIdleVirtualAddrRes(Some((addr, cidr))) => (addr, cidr),
                 TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("insufficient address pool")),
                 _ => return Err(anyhow!("invalid message")),
             }
@@ -757,6 +753,11 @@ where
 
     if cidr != group_info.cidr {
         return Err(anyhow!("group cidr not match"));
+    }
+
+    if let RegisterVirtualAddr::Auto(None) = register_addr {
+        *register_addr = RegisterVirtualAddr::Auto(Some((virtual_addr, cidr)));
+        *refresh_route = true;
     }
     Ok(group_info)
 }
@@ -867,7 +868,6 @@ where
                     )
                 ).await.with_context(|| format!("register to {} timeout", group.server_addr))??;
 
-                // todo check
                 if refresh_route {
                     if let RegisterVirtualAddr::Auto(Some((addr, cidr))) = &tun_addr {
                         let old_addr = interface.addr.load();
@@ -912,7 +912,7 @@ where
                 }
 
                 interface.server_is_connected.store(true, Ordering::Relaxed);
-                info!("Server {} connected", group.server_addr);
+                info!("group {} connected", group_info.name);
 
                 let (rx, mut tx) = stream.split();
                 let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
@@ -924,7 +924,7 @@ where
 
                     loop {
                         let msg = TcpMsg::read_msg(&mut rx, key, &mut buff).await?
-                            .ok_or_else(|| anyhow!("Server connection closed"))?;
+                            .ok_or_else(|| anyhow!("server connection closed"))?;
 
                         match msg {
                             TcpMsg::NodeMap(map) => {
@@ -948,9 +948,6 @@ where
                                     }
                                 }
 
-                                let new_map = Arc::new(new_map);
-                                interface.node_map.store(new_map.clone());
-
                                 let mut hb = hostsfile::HostsBuilder::new("FUBUKI");
 
                                 for node in new_map.values() {
@@ -960,10 +957,13 @@ where
 
                                 tokio::task::spawn_blocking(move || {
                                     match hb.write() {
-                                        Ok(_) => info!("Update hosts file"),
-                                        Err(e) => error!("Update hosts file error: {}", e)
+                                        Ok(_) => info!("update hosts"),
+                                        Err(e) => error!("update hosts error: {}", e)
                                     }
                                 });
+
+                                // todo check
+                                interface.node_map.store(Arc::new(new_map));
                             }
                             TcpMsg::Relay(_, buff) => {
                                 tun.send_packet(buff).await?;
@@ -1047,7 +1047,10 @@ where
             };
 
             if let Err(e) = process.await {
-                error!("{} TCP node handler error -> {:?}", &group.server_addr, e)
+                if non_retryable {
+                    return Err(e)
+                }
+                error!("node {} tcp handler error: {:?}", &group.node_name, e)
             }
 
             interface.server_is_connected.store(false, Ordering::Relaxed);

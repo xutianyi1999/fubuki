@@ -44,6 +44,8 @@ impl SystemRouteHandle {
         for x in &self.routes {
             self.handle.delete(x).await?;
         }
+
+        self.routes = Vec::new();
         Ok(())
     }
 }
@@ -51,14 +53,14 @@ impl SystemRouteHandle {
 impl Drop for SystemRouteHandle {
     fn drop(&mut self) {
         if !self.routes.is_empty() {
-            info!("Clear route");
+            info!("clear all routes");
 
             let rt= self.rt.clone();
 
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     if let Err(e) = rt.block_on(self.clear()) {
-                        warn!("Delete route failure: {}", e)
+                        warn!("delete route failure: {}", e)
                     }
                 });
             });
