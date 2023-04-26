@@ -6,7 +6,7 @@ use netconfig::Interface;
 use parking_lot::Mutex;
 use std::future::Future;
 use std::net::Ipv4Addr;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
@@ -92,6 +92,7 @@ impl TunDevice for Wintun {
                 ADAPTER_NAME,
                 &format!("mtu={}", mtu),
             ])
+            .stderr(Stdio::inherit())
             .output()?
             .status;
 

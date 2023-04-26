@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use ahash::{HashMap, HashMapExt};
+use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
@@ -16,7 +16,7 @@ use hyper::{Body, Method, Request};
 use hyper::body::Buf;
 use ipnet::Ipv4Net;
 use net_route::Route;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
 use rand::random;
 use scopeguard::defer;
@@ -118,9 +118,9 @@ struct Interface<K> {
     mode: ProtocolMode,
     node_map: ArcSwap<NodeMap>,
     server_addr: String,
-    // todo use ArcSwap
     server_udp_hc: RwLock<HeartbeatCache>,
     server_udp_status: ArcSwap<UdpStatus>,
+    // todo use arc swap
     server_tcp_hc: RwLock<HeartbeatCache>,
     server_is_connected: AtomicBool,
     tcp_handler_channel: Option<Sender<Bytes>>,
@@ -444,13 +444,12 @@ where
     K: Cipher + Clone + Send + Sync + 'static,
 {
     let join = tokio::spawn(async move {
-        let socket = interface.udp_socket.as_ref().expect("Must need udp socket");
+        let socket = interface.udp_socket.as_ref().expect("must need udp socket");
         let key = &interface.key;
-        let is_direct = interface.mode.p2p.contains(&NetProtocol::UDP);
+        let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
         let heartbeat_schedule =  async {
             let mut packet = vec![0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
-            let mut is_send = false;
 
             loop {
                 let interface_addr = interface.addr.load();
@@ -459,20 +458,17 @@ where
                     let server_hc = &interface.server_udp_hc;
                     let seq = {
                         let mut server_hc_guard = server_hc.write();
+                        server_hc_guard.check();
 
-                        if is_send {
-                            server_hc_guard.check();
-
-                            if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss && **interface.server_udp_status.load() != UdpStatus::Unavailable {
-                                interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
-                            }
+                        if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss &&
+                            **interface.server_udp_status.load() != UdpStatus::Unavailable
+                        {
+                            interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
                         }
 
                         server_hc_guard.request();
                         server_hc_guard.seq
                     };
-
-                    is_send = true;
 
                     UdpMsg::heartbeat_encode(
                         interface_addr,
@@ -484,7 +480,7 @@ where
                     key.encrypt(&mut packet, 0);
                     socket.send_to(&packet, &interface.server_addr).await?;
 
-                    if is_direct {
+                    if is_p2p {
                         let node_map = interface.node_map.load_full();
 
                         for ext_node in node_map.values() {
@@ -518,9 +514,7 @@ where
                                     }
                                 }
                                 _ => {
-                                    if let (Some(lan), Some(wan)) =
-                                        (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr)
-                                    {
+                                    if let (Some(lan), Some(wan)) = (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr) {
                                         let addr = ext_node.peer_addr
                                             .load()
                                             .as_ref()
@@ -571,7 +565,7 @@ where
                             const WSAECONNRESET: i32 = 10054;
 
                             if e.raw_os_error() == Some(WSAECONNRESET) {
-                                error!("Receive udp packet error {}", e);
+                                error!("node {} receive udp packet error {}", group.node_name, e);
                                 continue;
                             }
                         }
@@ -589,7 +583,7 @@ where
 
                             if from_addr == SERVER_VIRTUAL_ADDR {
                                 is_known = true;
-                            } else if is_direct {
+                            } else if is_p2p {
                                 if let Some(en) = interface.node_map.load().get(&from_addr) {
                                     let old = en.peer_addr.load().as_ref().map(|v| **v);
 
@@ -634,14 +628,16 @@ where
                                         if lookup_host(&interface.server_addr).await == Some(peer_addr)  {
                                             let mut server_hc_guard = interface.server_udp_hc.write();
 
-                                            if server_hc_guard.response(seq).is_some() && server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv {
+                                            if server_hc_guard.response(seq).is_some() &&
+                                                server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
+                                            {
                                                 drop(server_hc_guard);
                                                 interface.server_udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
                                             }
                                         }
                                     }
                                 };
-                            } else if is_direct {
+                            } else if is_p2p {
                                 if let Some(node) = interface.node_map.load_full().get(&from_addr) {
                                     let mut hc_guard = node.hc.write();
 
@@ -651,25 +647,35 @@ where
                                             !in_routing_table(&table.load(), peer_addr)
                                         {
                                             drop(hc_guard);
+
                                             let status = Arc::new(UdpStatus::Available {
                                                 dst_addr: peer_addr,
                                             });
                                             node.udp_status.store(status);
                                         }
                                     }
-                                    continue;
                                 }
                             };
                         }
                         UdpMsg::Data(packet) => {
-                            debug!("Recv packet from {}", peer_addr);
+                            if log::max_level() >= log::Level::Debug {
+                                let f = || {
+                                    let src = get_ip_src_addr(packet)?;
+                                    let dst = get_ip_dst_addr(packet)?;
+                                    Result::<_, anyhow::Error>::Ok((src, dst))
+                                };
 
-                            tun.send_packet(packet).await.context("Write packet to tun error")?;
+                                if let Ok((src, dst)) = f() {
+                                    debug!("node {} udp handler: udp p2p to tun; packet {}->{}", group.node_name, src, dst);
+                                }
+                            }
+                            // todo check
+                            tun.send_packet(packet).await.context("send packet to tun error")?;
                         }
                         UdpMsg::Relay(_, packet) => {
                             // debug!("Recv packet from {}; {}->{}", peer_addr, src, dst);
 
-                            tun.send_packet(packet).await.context("Write packet to tun error")?;
+                            tun.send_packet(packet).await.context("send packet to tun error")?;
                         }
                     }
                 }
@@ -804,10 +810,27 @@ where
         let mut sys_route_is_sync = false;
         // use defer must use atomic
         let is_add_nat = AtomicBool::new(false);
+        let host_records = Mutex::new(HashSet::new());
 
         defer! {
+            {
+                let guard = host_records.lock();
+
+                if !guard.is_empty() {
+                    info!("clear node {} host records", group.node_name);
+
+                    for host in &*host_records.lock() {
+                        let hb = hostsfile::HostsBuilder::new(host);
+
+                        if let Err(e) = hb.write() {
+                            error!("{}", e);
+                        }
+                    }
+                }
+            }
+
             if is_add_nat.load(Ordering::Relaxed) && !group.allowed_ips.is_empty() {
-                info!("clear nat list");
+                info!("clear node {} nat list", group.node_name);
 
                 if let Err(e) = nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
                     error!("{}", e);
@@ -948,24 +971,39 @@ where
                                     }
                                 }
 
-                                let mut hb = hostsfile::HostsBuilder::new("FUBUKI");
+                                let host_key = format!("FUBUKI-{}", group_info.name);
+                                let mut hb = hostsfile::HostsBuilder::new(&host_key);
+                                host_records.lock().insert(host_key);
 
                                 for node in new_map.values() {
                                     let node = &node.node;
                                     hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
                                 }
 
+                                let node_name = group.node_name.clone();
+
                                 tokio::task::spawn_blocking(move || {
                                     match hb.write() {
-                                        Ok(_) => info!("update hosts"),
-                                        Err(e) => error!("update hosts error: {}", e)
+                                        Ok(_) => info!("node {} update hosts", node_name),
+                                        Err(e) => error!("node {} update hosts error: {}", node_name, e)
                                     }
                                 });
 
-                                // todo check
                                 interface.node_map.store(Arc::new(new_map));
                             }
                             TcpMsg::Relay(_, buff) => {
+                                if log::max_level() >= log::Level::Debug {
+                                    let f = || {
+                                        let src = get_ip_src_addr(buff)?;
+                                        let dst = get_ip_dst_addr(buff)?;
+                                        Result::<_, anyhow::Error>::Ok((src, dst))
+                                    };
+
+                                    if let Ok((src, dst)) = f() {
+                                        debug!("node {} tcp handler: tcp relay to tun; packet {}->{}", group.node_name, src, dst);
+                                    }
+                                }
+
                                 tun.send_packet(buff).await?;
                             }
                             TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
@@ -1012,26 +1050,19 @@ where
                 };
 
                 let heartbeat_schedule = async {
-                    let mut is_send = false;
-
                     loop {
                         let seq = {
                             let mut guard = interface.server_tcp_hc.write();
+                            guard.check();
 
-                            if is_send {
-                                guard.check();
-
-                                if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
-                                    guard.packet_continuous_loss_count = 0;
-                                    return Result::<(), _>::Err(anyhow!("Recv tcp heartbeat timeout"));
-                                }
+                            if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
+                                guard.packet_continuous_loss_count = 0;
+                                return Result::<(), _>::Err(anyhow!("receive tcp heartbeat timeout"));
                             }
 
                             guard.request();
                             guard.seq
                         };
-
-                        is_send = true;
 
                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                         TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);

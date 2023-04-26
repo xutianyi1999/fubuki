@@ -151,7 +151,6 @@ impl HeartbeatCache {
     }
 
     pub fn request(&mut self) {
-        // todo remove other place is_send
         self.is_send = true;
         self.elapsed = None;
         self.send_time = Instant::now();
