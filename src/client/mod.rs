@@ -350,7 +350,7 @@ where
             let data = match tun
                 .recv_packet(&mut buff[START..])
                 .await
-                .context("Read packet from tun error")?
+                .context("receive packet from tun error")?
             {
                 0 => continue,
                 len => &buff[START..START + len],
@@ -669,11 +669,21 @@ where
                                     debug!("node {} udp handler: udp p2p to tun; packet {}->{}", group.node_name, src, dst);
                                 }
                             }
-                            // todo check
+
                             tun.send_packet(packet).await.context("send packet to tun error")?;
                         }
                         UdpMsg::Relay(_, packet) => {
-                            // debug!("Recv packet from {}; {}->{}", peer_addr, src, dst);
+                            if log::max_level() >= log::Level::Debug {
+                                let f = || {
+                                    let src = get_ip_src_addr(packet)?;
+                                    let dst = get_ip_dst_addr(packet)?;
+                                    Result::<_, anyhow::Error>::Ok((src, dst))
+                                };
+
+                                if let Ok((src, dst)) = f() {
+                                    debug!("node {} udp handler: udp relay to tun; packet {}->{}", group.node_name, src, dst);
+                                }
+                            }
 
                             tun.send_packet(packet).await.context("send packet to tun error")?;
                         }
@@ -681,10 +691,12 @@ where
                 }
             }
         };
+
         let res: Result<((), ()), anyhow::Error> = tokio::try_join!(heartbeat_schedule, recv_handler);
         res
     });
-    join.await??;
+
+    join.await?.with_context(|| format!("node {} udp handler error", group.node_name))?;
     Ok(())
 }
 
