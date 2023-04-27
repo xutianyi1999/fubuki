@@ -350,7 +350,7 @@ where
             let data = match tun
                 .recv_packet(&mut buff[START..])
                 .await
-                .context("receive packet from tun error")?
+                .context("error receive packet from tun")?
             {
                 0 => continue,
                 len => &buff[START..START + len],
