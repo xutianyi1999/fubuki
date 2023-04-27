@@ -831,7 +831,7 @@ where
                 if !guard.is_empty() {
                     info!("clear node {} host records", group.node_name);
 
-                    for host in &*host_records.lock() {
+                    for host in &*guard {
                         let hb = hostsfile::HostsBuilder::new(host);
 
                         if let Err(e) = hb.write() {

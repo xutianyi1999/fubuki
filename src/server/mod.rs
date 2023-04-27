@@ -547,7 +547,6 @@ impl<K: Cipher> Tunnel<K> {
                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                         TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
 
-                        key.encrypt(&mut buff, 0);
                         local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
                     }
                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
