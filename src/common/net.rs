@@ -474,7 +474,7 @@ pub mod protocol {
                     >(data, config::standard())?;
                     TcpMsg::GetIdleVirtualAddrRes(opt.0)
                 }
-                _ => return Err(anyhow!("TCP msg error")),
+                _ => return Err(anyhow!("invalid tcp msg")),
             };
             Ok(msg)
         }
@@ -491,7 +491,7 @@ pub mod protocol {
             key.decrypt(&mut buff[..4], 0);
 
             if buff[0] != MAGIC_NUM {
-                return Err(anyhow!("magic number not match"));
+                return Err(anyhow!("magic number miss match"));
             }
 
             let mode = buff[1];
@@ -562,7 +562,7 @@ pub mod protocol {
             let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(anyhow!("magic number not match"))
+                return Err(anyhow!("magic number miss match"))
             };
 
             match mode {
@@ -588,11 +588,11 @@ pub mod protocol {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => return Err(anyhow!("udp message error")),
+                        _ => return Err(anyhow!("invalid udp message")),
                     };
                     Ok(UdpMsg::Heartbeat(virtual_addr, seq, heartbeat_type))
                 }
-                _ => Err(anyhow!("udp Message error")),
+                _ => Err(anyhow!("invalid udp message")),
             }
         }
     }
