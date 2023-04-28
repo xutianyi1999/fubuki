@@ -128,6 +128,6 @@ impl TunDevice for Linuxtun {
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().unwrap()
+        self.inter.index().expect("can't get interface index")
     }
 }
