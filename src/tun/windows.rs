@@ -14,8 +14,8 @@ use simple_wintun::LUID;
 
 use crate::tun::TunDevice;
 
-const ADAPTER_NAME: &str = "Wintun";
-const TUNNEL_TYPE: &str = "proxy";
+const ADAPTER_NAME: &str = "fubuki-tun";
+const TUNNEL_TYPE: &str = "vpn";
 const ADAPTER_GUID: &str = "{248B1B2B-94FA-0E20-150F-5C2D2FB4FBF9}";
 //1MB
 const ADAPTER_BUFF_SIZE: u32 = 0x100000;
@@ -33,7 +33,7 @@ fn get_interface(luid: LUID) -> Result<Interface> {
             return Ok(x);
         }
     }
-    Err(anyhow!("Not fount interface"))
+    Err(anyhow!("cannot found interface"))
 }
 
 impl Wintun {
@@ -97,7 +97,7 @@ impl TunDevice for Wintun {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("Failed to set tun mtu"));
+            return Err(anyhow!("failed to set mtu of tun"));
         }
         Ok(())
     }
@@ -112,6 +112,7 @@ impl TunDevice for Wintun {
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
             .map_err(|e| anyhow!(e.to_string()))?;
+
         guard.insert(addr);
         Ok(())
     }
@@ -126,11 +127,12 @@ impl TunDevice for Wintun {
         self.inter
             .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
             .map_err(|e| anyhow!(e.to_string()))?;
+
         guard.remove(&addr);
         Ok(())
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().unwrap()
+        self.inter.index().expect("can't get interface index")
     }
 }

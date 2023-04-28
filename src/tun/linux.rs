@@ -42,7 +42,7 @@ impl Linuxtun {
             }
         }
 
-        Err(anyhow!("Not fount interface"))
+        Err(anyhow!("cannot found interface"))
     }
 }
 
@@ -69,12 +69,12 @@ impl TunDevice for Linuxtun {
                     let (src, dst) = match f() {
                         Ok(v) => v,
                         Err(e) => {
-                            error!("{}", e);
+                            error!("tun: {}", e);
                             return Ok(())
                         }
                     };
 
-                    error!("Write packet to tun error: {}; {} -> {}", e, src, dst);
+                    error!("tun: send packet to tun error: {}; packet {}->{}", e, src, dst);
                     Ok(())
                 }
                 res => res.map(|_| ()).map_err(|e| anyhow!(e))
@@ -107,6 +107,7 @@ impl TunDevice for Linuxtun {
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
             .map_err(|e| anyhow!(e.to_string()))?;
+
         guard.insert(addr);
         Ok(())
     }
@@ -121,6 +122,7 @@ impl TunDevice for Linuxtun {
         self.inter
             .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
             .map_err(|e| anyhow!(e.to_string()))?;
+
         guard.remove(&addr);
         Ok(())
     }

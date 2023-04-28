@@ -236,7 +236,7 @@ async fn udp_handler<K: Cipher>(
                                                     };
 
                                                     if let Ok((src, dst)) = f() {
-                                                        debug!("group {} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                        debug!("group {} udp handler: tcp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
                                                     }
                                                 }
                                                 break;
@@ -258,7 +258,7 @@ async fn udp_handler<K: Cipher>(
                                             };
 
                                             if let Ok((src, dst)) = f() {
-                                                debug!("group {} udp handler: tcp relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                debug!("group {} udp handler: tcp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
                                             }
                                         }
 
@@ -451,6 +451,8 @@ impl<K: Cipher> Tunnel<K> {
         self.stream.set_keepalive()?;
         self.init().await?;
 
+        info!("tcp handler: node {} is registered", self.register.as_ref().unwrap().node_name);
+
         let (bridge, virtual_addr) = match (&mut self.bridge, &self.register) {
             (Some(bridge), Some(reg)) => (bridge, reg.virtual_addr),
             _ => unreachable!(),
@@ -517,7 +519,10 @@ impl<K: Cipher> Tunnel<K> {
                                             buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(packet);
 
                                             match handle.tx.try_send(buff) {
-                                                Ok(_) => break,
+                                                Ok(_) => {
+                                                    debug!("tcp handler: tcp message relay to node {}", handle.node.name);
+                                                    break;
+                                                },
                                                 Err(e) => warn!("group {} send packet to tcp channel error: {}", self.group.name, e)
                                             }
                                         }
@@ -526,6 +531,8 @@ impl<K: Cipher> Tunnel<K> {
                                                 UdpStatus::Available { dst_addr } => dst_addr,
                                                 UdpStatus::Unavailable => continue
                                             };
+
+                                            debug!("tcp handler: udp message relay to node {}", handle.node.name);
 
                                             let packet_len = packet.len();
                                             let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
@@ -551,11 +558,11 @@ impl<K: Cipher> Tunnel<K> {
                     }
                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
                         match self.node_db.mapping.write().get_mut(&virtual_addr) {
-                            None => return Err(anyhow!("Can't get current environment node")),
+                            None => return Err(anyhow!("can't get current environment node")),
                             Some(node) => node.tcp_heartbeat_cache.response(recv_seq)
                         };
                     }
-                    _ => return Result::<()>::Err(anyhow!("Invalid TCP msg")),
+                    _ => return Result::<()>::Err(anyhow!("invalid tcp msg")),
                 }
             }
         };

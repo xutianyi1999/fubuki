@@ -120,7 +120,6 @@ struct Interface<K> {
     server_addr: String,
     server_udp_hc: RwLock<HeartbeatCache>,
     server_udp_status: ArcSwap<UdpStatus>,
-    // todo use arc swap
     server_tcp_hc: RwLock<HeartbeatCache>,
     server_is_connected: AtomicBool,
     tcp_handler_channel: Option<Sender<Bytes>>,
@@ -261,6 +260,8 @@ async fn send<K: Cipher>(
         let udp_status = **dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
+            debug!("tun handler: udp message p2p to node {}", dst_node.node.name);
+
             let socket = match &inter.udp_socket {
                 None => unreachable!(),
                 Some(socket) => socket,
@@ -284,15 +285,18 @@ async fn send<K: Cipher>(
                     };
 
                     const DATA_START: usize = TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
-                    let mut packet = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet_range.len());
+                    let mut packet = allocator::alloc(DATA_START + packet_range.len());
                     packet[DATA_START..].copy_from_slice(&buff[packet_range.start..packet_range.end]);
 
                     TcpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), &mut packet);
                     inter.key.encrypt(&mut packet, 0);
 
                     match tx.try_send(packet) {
-                        Ok(_) => return Ok(()),
-                        Err(e) => error!("{}", e)
+                        Ok(_) => {
+                            debug!("tun handler: tcp message relay to node {}", dst_node.node.name);
+                            return Ok(());
+                        },
+                        Err(e) => error!("tun handler: tunnel error: {}", e)
                     }
                 }
                 NetProtocol::UDP => {
@@ -306,6 +310,8 @@ async fn send<K: Cipher>(
                         UdpStatus::Unavailable => continue,
                     };
 
+                    debug!("tun handler: udp message relay to node {}", dst_node.node.name);
+
                     let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSP_HEADER_LEN..packet_range.end];
 
                     UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
@@ -317,7 +323,7 @@ async fn send<K: Cipher>(
         }
     }
 
-    warn!("No route to {}", dst_node.node.virtual_addr);
+    warn!("no route to {}", dst_node.node.name);
     Ok(())
 }
 
@@ -335,7 +341,7 @@ where
     T: TunDevice + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
 {
-    let join = tokio::spawn(async move {
+    let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut rh_cache = Cache::new(&*routing_table);
 
         let mut interfaces_cache: Vec<InterfaceCache<K>> = interfaces.iter()
@@ -362,7 +368,10 @@ where
 
             let rt = &**rh_cache.load();
             let item = match rt.find(dst_addr) {
-                None => continue,
+                None => {
+                    warn!("tun handler: no route to {}", dst_addr);
+                    continue;
+                },
                 Some(item) => item,
             };
 
@@ -389,25 +398,29 @@ where
             let server_us = &**interface_cache.server_udp_status.load();
             let node_map = &**interface_cache.node_map.load();
 
-            let inter = &interfaces[item.interface_index];
+            let inter = &*interfaces[item.interface_index];
 
             match transfer_type {
                 TransferType::Unicast(addr) => {
+                    debug!("tun handler: packet {}->{}; gateway: {}", src_addr, dst_addr, item.gateway);
+
                     if interface_addr == addr {
-                        tun.send_packet(data).await.context("Write packet to tun error")?;
+                        tun.send_packet(data).await.context("error send packet to tun")?;
                         continue;
                     }
 
                     let node = match node_map.get(&addr) {
-                        None => continue,
+                        None => {
+                            warn!("cannot find node {}", addr);
+                            continue;
+                        },
                         Some(node) => node
                     };
 
-                    debug!("{} -> {}; gateway: {}", src_addr, dst_addr, addr);
                     send(inter, node, server_us, &mut buff, packet_range).await?
                 }
                 TransferType::Broadcast => {
-                    debug!("{} -> {}", src_addr, dst_addr);
+                    debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
 
                     for node in node_map.values() {
                         if node.node.virtual_addr == interface_addr {
@@ -420,7 +433,7 @@ where
             }
         }
     });
-    join.await?
+    join.await?.context("tun handler error")
 }
 
 fn in_routing_table(routing_table: &RoutingTable, dst: SocketAddr) -> bool {
@@ -666,7 +679,7 @@ where
                                 };
 
                                 if let Ok((src, dst)) = f() {
-                                    debug!("node {} udp handler: udp p2p to tun; packet {}->{}", group.node_name, src, dst);
+                                    debug!("node {} udp handler: udp message p2p to tun; packet {}->{}", group.node_name, src, dst);
                                 }
                             }
 
@@ -681,7 +694,7 @@ where
                                 };
 
                                 if let Ok((src, dst)) = f() {
-                                    debug!("node {} udp handler: udp relay to tun; packet {}->{}", group.node_name, src, dst);
+                                    debug!("node {} udp handler: udp message relay to tun; packet {}->{}", group.node_name, src, dst);
                                 }
                             }
 
@@ -1012,7 +1025,7 @@ where
                                     };
 
                                     if let Ok((src, dst)) = f() {
-                                        debug!("node {} tcp handler: tcp relay to tun; packet {}->{}", group.node_name, src, dst);
+                                        debug!("node {} tcp handler: tcp message relay to tun; packet {}->{}", group.node_name, src, dst);
                                     }
                                 }
 
