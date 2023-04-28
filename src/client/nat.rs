@@ -41,6 +41,18 @@ pub fn del_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+    let status = Command::new("sysctl")
+        .args([
+            "-w", "net.ipv4.ip_forward=1"
+        ])
+        .stderr(Stdio::inherit())
+        .output()?
+        .status;
+
+    if !status.success() {
+        return Err(anyhow!("open net.ipv4.ip_forward option failed"));
+    }
+
     for dst in ranges {
         let status = Command::new("iptables")
             .args([
