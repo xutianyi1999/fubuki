@@ -877,10 +877,10 @@ where
                     &tun,
                     &routing_table,
                     &*interface,
-                    addr.ip,
                     VirtualAddr::UNSPECIFIED,
+                    addr.ip,
+                    Ipv4Net::default(),
                     cidr,
-                    Ipv4Net::default()
                 )?;
 
                 if !group.allowed_ips.is_empty() {
