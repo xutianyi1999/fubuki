@@ -13,7 +13,6 @@
   "reconnect_interval_secs": 3,
   "udp_socket_recv_buffer_size": 8192,
   "udp_socket_send_buffer_size": 8192,
-  "allowed_ips": ["192.168.200.0/24"],
   "groups": [
     {
       "node_name": "t1",
@@ -28,6 +27,7 @@
         "relay": ["UDP", "TCP"]
       },
       "lan_ip_addr": "192.168.0.2",
+      "allowed_ips": ["192.168.200.0/24"],
       "ips": {
         "10.0.0.2": ["192.168.201.0/24"]
       }
@@ -47,7 +47,6 @@
 - reconnect_interval_secs(可选): TCP 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
-- allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
 - groups: 配置多组网段
     - node_name: 节点名称
     - server_addr: 该网段发现服务器与中转服务器地址
@@ -59,6 +58,7 @@
         - p2p: 直连的协议，目前仅支持UDP
         - relay: 中转的协议，支持UDP与TCP
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
+    - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
 
 ### server-config.json
