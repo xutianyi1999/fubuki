@@ -368,10 +368,7 @@ where
 
             let rt = &**rh_cache.load();
             let item = match rt.find(dst_addr) {
-                None => {
-                    warn!("tun handler: no route to {}", dst_addr);
-                    continue;
-                },
+                None => continue,
                 Some(item) => item,
             };
 
