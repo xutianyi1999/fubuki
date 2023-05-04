@@ -9,6 +9,9 @@ mod linux;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 pub trait TunDevice {
     type SendFut<'a>: Future<Output = Result<()>> + Send + Sync
     where
@@ -67,10 +70,14 @@ pub(crate) fn create_device() -> Result<impl TunDevice + Send + Sync> {
     {
         tun = windows::Wintun::create()?;
     }
+
     #[cfg(target_os = "linux")]
     {
         tun = linux::Linuxtun::create()?;
     }
 
+    #[cfg(target_os = "macos")]
+    {
+    }
     Ok(tun)
 }

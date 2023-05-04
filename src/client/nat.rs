@@ -94,3 +94,13 @@ pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+    Err(anyhow!("macos does not support nat"))
+}
+
+#[cfg(target_os = "macos")]
+pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+    Err(anyhow!("macos does not support nat"))
+}
