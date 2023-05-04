@@ -855,7 +855,7 @@ where
                 }
             }
 
-            if is_add_nat.load(Ordering::Relaxed) && !group.allowed_ips.is_empty() {
+            if is_add_nat.load(Ordering::Relaxed) {
                 info!("clear node {} nat list", group.node_name);
 
                 if let Err(e) = nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
