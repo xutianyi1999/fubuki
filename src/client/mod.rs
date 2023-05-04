@@ -742,7 +742,7 @@ where
 
             match msg {
                 TcpMsg::GetIdleVirtualAddrRes(Some((addr, cidr))) => (addr, cidr),
-                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("insufficient address pool")),
+                TcpMsg::GetIdleVirtualAddrRes(None) => return Err(anyhow!("insufficient address")),
                 _ => return Err(anyhow!("invalid message")),
             }
         }
@@ -780,6 +780,10 @@ where
     };
 
     if cidr != group_info.cidr {
+        if let RegisterVirtualAddr::Auto(v) = register_addr {
+            *v = None;
+        }
+
         return Err(anyhow!("group cidr not match"));
     }
 
@@ -930,14 +934,17 @@ where
                             )?;
 
                             if !group.allowed_ips.is_empty() {
-                                if old_cidr != *cidr {
-                                    if is_add_nat.load(Ordering::Relaxed) {
-                                        del_nat(&group.allowed_ips,old_cidr)?;
-                                    }
+                                if old_cidr != *cidr &&
+                                    is_add_nat.load(Ordering::Relaxed)
+                                {
+                                    del_nat(&group.allowed_ips,old_cidr)?;
+                                    is_add_nat.store(false, Ordering::Relaxed);
                                 }
 
-                                add_nat(&group.allowed_ips, *cidr)?;
-                                is_add_nat.store(true, Ordering::Relaxed);
+                                if !is_add_nat.load(Ordering::Relaxed) {
+                                    add_nat(&group.allowed_ips, *cidr)?;
+                                    is_add_nat.store(true, Ordering::Relaxed);
+                                }
                             }
                             Result::<_, anyhow::Error>::Ok(())
                         };
@@ -951,6 +958,7 @@ where
 
                 interface.group_name.store(Some(Arc::new(group_info.name.clone())));
 
+                // tun must first set the ip address
                 if !sys_route_is_sync {
                     sys_route_is_sync = true;
                     sys_routing.lock().await.add(&routes).await?;

@@ -54,6 +54,7 @@ impl TunDevice for Linuxtun {
         let fd = unsafe { &mut *self.fd.get() };
 
         async {
+            // todo add from ip address message
             const INVALID_ARGUMENT: i32 = 22;
 
             let res = fd.write(packet).await;
