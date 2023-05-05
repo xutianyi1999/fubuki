@@ -1,4 +1,4 @@
-### client-conf.json
+### node-conf.json
 
 ```json
 {

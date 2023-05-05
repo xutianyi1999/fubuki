@@ -27,13 +27,13 @@ use log::LevelFilter;
 use mimalloc::MiMalloc;
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
-use crate::client::info;
+use crate::node::info;
 
 use crate::common::cipher::{Cipher, XorCipher};
 use crate::common::net::get_interface_addr;
 use crate::common::net::protocol::{NetProtocol, ProtocolMode, SERVER_VIRTUAL_ADDR, VirtualAddr};
 
-mod client;
+mod node;
 mod common;
 mod server;
 mod tun;
@@ -150,7 +150,7 @@ struct TargetGroup {
 }
 
 #[derive(Deserialize, Clone)]
-struct ClientConfig {
+struct NodeConfig {
     mtu: Option<usize>,
     channel_limit: Option<usize>,
     api_addr: Option<SocketAddr>,
@@ -178,7 +178,7 @@ struct TargetGroupFinalize<K> {
 }
 
 #[derive(Clone)]
-pub struct ClientConfigFinalize<K> {
+pub struct NodeConfigFinalize<K> {
     mtu: usize,
     channel_limit: usize,
     api_addr: SocketAddr,
@@ -193,13 +193,13 @@ pub struct ClientConfigFinalize<K> {
     groups: Vec<TargetGroupFinalize<K>>,
 }
 
-impl<K: Clone> TryFrom<ClientConfig> for ClientConfigFinalize<K>
+impl<K: Clone> TryFrom<NodeConfig> for NodeConfigFinalize<K>
 where
     for<'a> K: InnerTryFrom<'a>,
 {
     type Error = anyhow::Error;
 
-    fn try_from(config: ClientConfig) -> Result<Self> {
+    fn try_from(config: NodeConfig) -> Result<Self> {
         let mut list = Vec::with_capacity(config.groups.len());
 
         for group in config.groups {
@@ -254,7 +254,7 @@ where
             list.push(group_finalize)
         }
 
-        let config_finalize = ClientConfigFinalize {
+        let config_finalize = NodeConfigFinalize {
             // 1500 - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
             mtu: config.mtu.unwrap_or(1458),
             channel_limit: config.channel_limit.unwrap_or(100),
@@ -283,9 +283,16 @@ where
 
 #[derive(Clone, Copy, Subcommand)]
 enum NodeInfoType {
-    Interface,
+    Interface {
+        /// show more data for the specified interface
+        #[arg(short, long)]
+        index: Option<usize>,
+    },
     NodeMap {
-        interface_id: usize
+        interface_index: usize,
+        /// show more data for the specified node
+        #[arg(short, long)]
+        node_ip: Option<VirtualAddr>,
     }
 }
 
@@ -377,10 +384,10 @@ fn launch(args: Args) -> Result<()> {
         Args::Node { cmd } => {
             match cmd {
                 NodeCmd::Daemon { config_path } => {
-                    let config: ClientConfig = load_config(&config_path)?;
-                    let c: ClientConfigFinalize<Key> = ClientConfigFinalize::try_from(config)?;
+                    let config: NodeConfig = load_config(&config_path)?;
+                    let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
                     let rt = Runtime::new()?;
-                    rt.block_on(client::start(c))?;
+                    rt.block_on(node::start(c))?;
                 }
                 NodeCmd::Info { api, info_type } => {
                     let rt = tokio::runtime::Builder::new_current_thread()

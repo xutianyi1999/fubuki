@@ -6,7 +6,7 @@ use anyhow::Result;
 use hyper::{Body, http, Request, Response};
 use hyper::service::{make_service_fn, service_fn};
 
-use crate::client::{Interface, InterfaceInfo};
+use crate::node::{Interface, InterfaceInfo};
 
 #[cfg(feature = "web")]
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
@@ -30,7 +30,7 @@ fn info<K>(
     let resp = match serde_json::to_vec(&list) {
         Ok(v) => Response::new(Body::from(v)),
         Err(e) => {
-            error!("API server error: {}", e);
+            error!("api server error: {}", e);
 
             Response::builder()
                 .status(500)

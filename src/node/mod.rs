@@ -29,10 +29,10 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::{Cipher, ClientConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
-use crate::client::api::api_start;
-use crate::client::nat::{add_nat, del_nat};
-use crate::client::sys_route::SystemRouteHandle;
+use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
+use crate::node::api::api_start;
+use crate::node::nat::{add_nat, del_nat};
+use crate::node::sys_route::SystemRouteHandle;
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
@@ -443,7 +443,7 @@ fn in_routing_table(routing_table: &RoutingTable, dst: SocketAddr) -> bool {
 }
 
 async fn udp_handler<T, K>(
-    config: &'static ClientConfigFinalize<K>,
+    config: &'static NodeConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
     table: Arc<ArcSwap<RoutingTable>>,
     interface: Arc<Interface<K>>,
@@ -819,7 +819,7 @@ fn update_tun_addr<T: TunDevice, K>(
 }
 
 async fn tcp_handler<T, K>(
-    config: &'static ClientConfigFinalize<K>,
+    config: &'static NodeConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
     routing_table: Arc<ArcSwap<RoutingTable>>,
     interface: Arc<Interface<K>>,
@@ -1122,7 +1122,7 @@ where
     join.await?.with_context(|| format!("node {} tcp handler error", group.node_name))
 }
 
-pub async fn start<K>(config: ClientConfigFinalize<K>) -> Result<()>
+pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
     where
         K: Cipher + Send + Sync + Clone + 'static
 {
@@ -1287,7 +1287,7 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
     if parts.status != 200 {
         let bytes = hyper::body::to_bytes(body).await?;
         let msg = String::from_utf8(bytes.to_vec())?;
-        return Err(anyhow!("HTTP response code: {}, message: {}", parts.status.as_u16(), msg));
+        return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
     }
 
     let body = hyper::body::aggregate(body).await?;
@@ -1296,34 +1296,48 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
     let mut table = Table::new();
 
     match info_type {
-        NodeInfoType::Interface => {
-            table.add_row(row!["INDEX", "NAME", "GROUP", "IP", "CIDR", "SERVER_ADDRESS", "IS_CONNECTED", "UDP_STATUS", "UDP DELAY&LOSS_RATE", "TCP DELAY&LOSS_RATE", "PROTOCOL_MODE"]);
+        NodeInfoType::Interface{ index: None } => {
+            table.add_row(row!["INDEX", "NAME", "GROUP", "IP"]);
 
             for info in interfaces_info {
                 table.add_row(row![
                     info.index,
                     info.node_name,
-                    format!("{:?}", info.group_name),
+                    info.group_name.unwrap_or_default(),
                     info.addr,
-                    info.cidr,
-                    info.server_addr,
-                    info.server_is_connected,
-                    info.server_udp_status,
-                    format!("{:?}-{}%", info.server_udp_hc.elapsed, info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32),
-                    format!("{:?}-{}%", info.server_tcp_hc.elapsed, info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32),
-                    format!("{:?}", info.mode)
                 ]);
             }
         }
-        NodeInfoType::NodeMap{interface_id} => {
-            table.add_row(row!["NAME", "IP", "LAN_ADDRESS", "WAN_ADDRESS", "PROTOCOL_MODE", "ALLOWED_IPS", "REGISTER_TIME", "UDP_STATUS", "UDP DELAY&LOSS_RATE"]);
+        NodeInfoType::Interface{ index: Some(index) } => {
+            for info in interfaces_info {
+                if info.index == index {
+                    table.add_row(row!["INDEX", info.index]);
+                    table.add_row(row!["NAME", info.node_name]);
+                    table.add_row(row!["GROUP", info.group_name.unwrap_or_default()]);
+                    table.add_row(row!["IP", info.addr]);
+                    table.add_row(row!["CIDR", info.cidr]);
+                    table.add_row(row!["SERVER_ADDRESS", info.server_addr]);
+                    table.add_row(row!["PROTOCOL_MODE", format!("{:?}", info.mode)]);
+                    table.add_row(row!["IS_CONNECTED", info.server_is_connected]);
+                    table.add_row(row!["UDP_STATUS", info.server_udp_status]);
+                    table.add_row(row!["UDP_LATENCY", format!("{:?}", info.server_udp_hc.elapsed)]);
+                    table.add_row(row!["UDP_LOSS_RATE", format!("{}%", info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32)]);
+                    table.add_row(row!["TCP_LATENCY", format!("{:?}", info.server_tcp_hc.elapsed)]);
+                    table.add_row(row!["TCP_LOSS_RATE", format!("{}%", info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32)]);
+
+                    break;
+                }
+            }
+        }
+        NodeInfoType::NodeMap{ interface_index, node_ip: None } => {
+            table.add_row(row!["NAME", "IP", "REGISTER_TIME"]);
 
             for info in interfaces_info {
-                if info.index == interface_id {
-                    for (_, node) in info.node_map {
+                if info.index == interface_index {
+                    for node in info.node_map.values() {
                         let register_time = {
                             let utc: DateTime<Utc> = DateTime::from_utc(
-                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("Can't convert timestamp"))?,
+                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
                                 Utc,
                             );
                             let local_time: DateTime<Local> = DateTime::from(utc);
@@ -1333,15 +1347,40 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                         table.add_row(row![
                             node.node.name,
                             node.node.virtual_addr,
-                            format!("{:?}", node.node.lan_udp_addr),
-                            format!("{:?}", node.node.wan_udp_addr),
-                            format!("{:?}", node.node.mode),
-                            format!("{:?}", node.node.allowed_ips),
                             register_time,
-                            node.udp_status,
-                            format!("{:?}-{}%", node.hc.elapsed, node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32),
                         ]);
                     }
+                    break;
+                }
+            }
+        }
+        NodeInfoType::NodeMap{ interface_index, node_ip: Some(ip) } => {
+            for info in interfaces_info {
+                if info.index == interface_index {
+                    let opt = info.node_map.values().find(|v| v.node.virtual_addr == ip);
+
+                    if let Some(node) = opt {
+                        let register_time = {
+                            let utc: DateTime<Utc> = DateTime::from_utc(
+                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
+                                Utc,
+                            );
+                            let local_time: DateTime<Local> = DateTime::from(utc);
+                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
+                        };
+
+                        table.add_row(row!["NAME", node.node.name]);
+                        table.add_row(row!["IP", node.node.virtual_addr]);
+                        table.add_row(row!["LAN_ADDRESS", format!("{:?}", node.node.lan_udp_addr)]);
+                        table.add_row(row!["WAN_ADDRESS", format!("{:?}", node.node.wan_udp_addr)]);
+                        table.add_row(row!["PROTOCOL_MODE",  format!("{:?}", node.node.mode)]);
+                        table.add_row(row!["ALLOWED_IPS",  format!("{:?}", node.node.allowed_ips)]);
+                        table.add_row(row!["REGISTER_TIME", register_time]);
+                        table.add_row(row!["UDP_STATUS", node.udp_status]);
+                        table.add_row(row!["LATENCY", format!("{:?}", node.hc.elapsed)]);
+                        table.add_row(row!["LOSS_RATE", format!("{}%", node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32)]);
+                    }
+
                     break;
                 }
             }

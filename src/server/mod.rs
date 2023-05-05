@@ -370,7 +370,7 @@ impl<K: Cipher> Tunnel<K> {
         loop {
             let nonce_pool = &self.nonce_pool;
             let msg = TcpMsg::read_msg(stream, key, buff).await?
-                .ok_or_else(|| anyhow!("client connection closed"))?;
+                .ok_or_else(|| anyhow!("node connection closed"))?;
 
             match msg {
                 TcpMsg::GetIdleVirtualAddr => {
