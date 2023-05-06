@@ -331,7 +331,7 @@ pub mod protocol {
 
     pub enum TcpMsg<'a> {
         GetIdleVirtualAddr,
-        // address, netmask
+        // ip address, cidr
         GetIdleVirtualAddrRes(Option<(VirtualAddr, Ipv4Net)>),
         Register(Register),
         RegisterRes(Result<GroupInfo, RegisterError>),
