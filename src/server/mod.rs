@@ -116,10 +116,9 @@ impl NodeDb {
 
     fn sync(&self) -> Result<()> {
         let (tx, _) = &self.watch;
+        let guard = self.mapping.read();
 
-        let node_list: HashMap<NodeId, Node> = self
-            .mapping
-            .read()
+        let node_list: HashMap<NodeId, Node> = guard
             .iter()
             .map(|(node_id, handle)| (*node_id, handle.node.clone()))
             .collect();
