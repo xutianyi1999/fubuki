@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{anyhow, Context, Result};
+use arc_swap::ArcSwap;
 use chrono::Utc;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
@@ -24,10 +25,10 @@ use crate::ServerConfigFinalize;
 pub type NodeMap = HashMap<VirtualAddr, Node>;
 
 struct NodeHandle {
-    node: Node,
-    udp_status: UdpStatus,
-    udp_heartbeat_cache: HeartbeatCache,
-    tcp_heartbeat_cache: HeartbeatCache,
+    node: ArcSwap<Node>,
+    udp_status: ArcSwap<UdpStatus>,
+    udp_heartbeat_cache: RwLock<HeartbeatCache>,
+    tcp_heartbeat_cache: RwLock<HeartbeatCache>,
     tx: Sender<Bytes>,
 }
 
@@ -60,11 +61,11 @@ impl NodeDb {
         mp_guard.insert(
             node.virtual_addr,
             NodeHandle {
-                node,
+                node: ArcSwap::from_pointee(node),
                 tx,
-                udp_status: UdpStatus::Unavailable,
-                udp_heartbeat_cache: HeartbeatCache::new(),
-                tcp_heartbeat_cache: HeartbeatCache::new()
+                udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
+                udp_heartbeat_cache: RwLock::new(HeartbeatCache::new()),
+                tcp_heartbeat_cache: RwLock::new(HeartbeatCache::new())
             },
         );
         self.sync(&mp_guard)?;
@@ -81,7 +82,7 @@ impl NodeDb {
 
         let node_list: HashMap<VirtualAddr, Node> = node_map
             .iter()
-            .map(|(addr, handle)| (*addr, handle.node.clone()))
+            .map(|(addr, handle)| (*addr, (**handle.node.load()).clone()))
             .collect();
 
         tx.send(Arc::new(node_list))
@@ -106,21 +107,21 @@ async fn udp_handler<K: Cipher>(
             let mut list = Vec::new();
 
             {
-                let mut guard = node_db.mapping.write();
+                let guard = node_db.mapping.read();
 
-                for node in guard.values_mut() {
-                    let socket_addr = match node.node.wan_udp_addr {
+                for node in guard.values() {
+                    let socket_addr = match node.node.load().wan_udp_addr {
                         None => continue,
                         Some(v) => v
                     };
 
-                    let heartbeat_status = &mut node.udp_heartbeat_cache;
+                    let mut heartbeat_status = node.udp_heartbeat_cache.write();
                     heartbeat_status.check();
 
-                    if node.udp_status != UdpStatus::Unavailable &&
+                    if **node.udp_status.load() != UdpStatus::Unavailable &&
                         heartbeat_status.packet_continuous_loss_count >= packet_loss_limit
                     {
-                        node.udp_status = UdpStatus::Unavailable;
+                        node.udp_status.store(Arc::new(UdpStatus::Unavailable));
                     }
 
                     heartbeat_status.request();
@@ -170,25 +171,22 @@ async fn udp_handler<K: Cipher>(
                 UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Req) => {
                     let mut is_known = false;
 
-                    let is_change = {
+                    {
                         let guard = node_db.mapping.read();
 
-                        if let Some(node) = guard.get(&dst_virt_addr) {
+                        if let Some(handle) = guard.get(&dst_virt_addr) {
                             is_known = true;
-                            node.node.wan_udp_addr != Some(peer_addr)
-                        } else {
-                            false
+                            let node = handle.node.load();
+
+                            if node.wan_udp_addr != Some(peer_addr) {
+                                let mut new_node = (**node).clone();
+                                new_node.wan_udp_addr = Some(peer_addr);
+                                drop(node);
+                                handle.node.store(Arc::new(new_node));
+                                node_db.sync(&guard)?;
+                            }
                         }
                     };
-
-                    if is_change {
-                        let mut guard = node_db.mapping.write();
-
-                        if let Some(node) = guard.get_mut(&dst_virt_addr) {
-                            node.node.wan_udp_addr = Some(peer_addr);
-                            node_db.sync(&guard)?;
-                        }
-                    }
 
                     if is_known {
                         let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
@@ -198,17 +196,19 @@ async fn udp_handler<K: Cipher>(
                     }
                 }
                 UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Resp) => {
-                    let mut guard = node_db.mapping.write();
+                    let guard = node_db.mapping.read();
 
-                    if let Some(node) = guard.get_mut(&dst_virt_addr) {
-                        if node.udp_heartbeat_cache.response(seq).is_none() {
+                    if let Some(node) = guard.get(&dst_virt_addr) {
+                        let mut udp_heartbeat_cache = node.udp_heartbeat_cache.write();
+
+                        if udp_heartbeat_cache.response(seq).is_none() {
                             continue;
                         }
 
-                        if node.udp_status == UdpStatus::Unavailable &&
-                            node.udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv
+                        if **node.udp_status.load() == UdpStatus::Unavailable &&
+                            udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv
                         {
-                            node.udp_status = UdpStatus::Available {dst_addr: peer_addr};
+                            node.udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
                         }
                     }
                 }
@@ -219,7 +219,7 @@ async fn udp_handler<K: Cipher>(
                         let guard = node_db.mapping.read();
 
                         if let Some(handle) = guard.get(&dst_virt_addr) {
-                            for np in &handle.node.mode.relay {
+                            for np in &handle.node.load().mode.relay {
                                 match np {
                                     NetProtocol::TCP => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
@@ -245,7 +245,7 @@ async fn udp_handler<K: Cipher>(
                                         }
                                     }
                                     NetProtocol::UDP => {
-                                        let dst_addr = match handle.udp_status {
+                                        let dst_addr = match **handle.udp_status.load() {
                                             UdpStatus::Available { dst_addr } => dst_addr,
                                             UdpStatus::Unavailable => continue
                                         };
@@ -466,14 +466,14 @@ impl<K: Cipher> Tunnel<K> {
         let heartbeat_schedule = async {
             loop {
                 let seq = {
-                    // todo need to optimize
-                    let mut guard = self.node_db.mapping.write();
+                    let guard = self.node_db.mapping.read();
 
-                    let hc = match guard.get_mut(&virtual_addr) {
+                    let hc = match guard.get(&virtual_addr) {
                         None => return Result::<(), _>::Err(anyhow!("can't get current environment node")),
-                        Some(node) => &mut node.tcp_heartbeat_cache
+                        Some(node) => &node.tcp_heartbeat_cache
                     };
 
+                    let mut hc = hc.write();
                     hc.check();
 
                     if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
@@ -511,7 +511,9 @@ impl<K: Cipher> Tunnel<K> {
                             let guard = self.node_db.mapping.read();
 
                             if let Some(handle) = guard.get(&dst_virt_addr) {
-                                for np in &handle.node.mode.relay {
+                                let node = handle.node.load();
+
+                                for np in &node.mode.relay {
                                     match np {
                                         NetProtocol::TCP => {
                                             let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet.len());
@@ -520,19 +522,19 @@ impl<K: Cipher> Tunnel<K> {
 
                                             match handle.tx.try_send(buff) {
                                                 Ok(_) => {
-                                                    debug!("tcp handler: tcp message relay to node {}", handle.node.name);
+                                                    debug!("tcp handler: tcp message relay to node {}", node.name);
                                                     break;
                                                 },
                                                 Err(e) => warn!("group {} send packet to tcp channel error: {}", self.group.name, e)
                                             }
                                         }
                                         NetProtocol::UDP =>  {
-                                            let addr = match handle.udp_status {
+                                            let addr = match **handle.udp_status.load() {
                                                 UdpStatus::Available { dst_addr } => dst_addr,
                                                 UdpStatus::Unavailable => continue
                                             };
 
-                                            debug!("tcp handler: udp message relay to node {}", handle.node.name);
+                                            debug!("tcp handler: udp message relay to node {}", node.name);
 
                                             let packet_len = packet.len();
                                             let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
@@ -557,9 +559,9 @@ impl<K: Cipher> Tunnel<K> {
                         local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
                     }
                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                        match self.node_db.mapping.write().get_mut(&virtual_addr) {
+                        match self.node_db.mapping.read().get(&virtual_addr) {
                             None => return Err(anyhow!("can't get current environment node")),
-                            Some(node) => node.tcp_heartbeat_cache.response(recv_seq)
+                            Some(node) => node.tcp_heartbeat_cache.write().response(recv_seq)
                         };
                     }
                     _ => return Result::<()>::Err(anyhow!("invalid tcp msg")),
