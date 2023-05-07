@@ -1,0 +1,29 @@
+<div class="group-item">
+
+  <div class="node" *ngFor="let nodeInfo of nodeList">
+    <div class="nodeColumn" *ngFor="let nodeColumn of this.nodeColumns">
+      {{nodeInfo.node[nodeColumn]}}
+    </div>
+  </div>
+
+  <mat-list>
+    <div mat-subheader>Nodes</div>
+    <mat-divider></mat-divider>
+  
+    <mat-card *ngFor="let nodeInfo of this.nodeList">
+      <mat-list-item class="nodeInfo">
+        <mat-divider></mat-divider>
+        <!-- <mat-icon matListItemIcon>lan</mat-icon> -->
+        <div matListItemTitle>
+          {{nodeInfo.node.name}}
+        </div>
+        <div matListItemLine>
+          {{nodeInfo.node.virtual_addr}}
+        </div>
+      </mat-list-item>
+    </mat-card>
+  
+  </mat-list>
+
+
+</div>

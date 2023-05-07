@@ -1,0 +1,24 @@
+<div class="group-list">
+    <!-- https://material.angular.io/components/list/examples -->
+    <mat-list>
+      <div mat-subheader>Groups</div>
+      <mat-divider></mat-divider>
+
+      <mat-card *ngFor="let groupInfo of this.groupList | async">
+        <a [routerLink]="['/group', groupInfo.group_name]" [title]="groupInfo.group_name">
+          <mat-list-item class="groupInfo">
+            <mat-divider></mat-divider>
+            <mat-icon matListItemIcon>lan</mat-icon>
+            <div matListItemTitle>
+              {{groupInfo.group_name}}
+            </div>
+            <div matListItemLine>
+              {{groupInfo.server_addr}}
+            </div>
+          </mat-list-item>
+        </a>
+      </mat-card>
+      
+    </mat-list>
+
+</div>
