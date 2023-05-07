@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::Result;
 use hyper::{Body, http, Request, Response};
 use hyper::service::{make_service_fn, service_fn};
-use static_files::Resource;
 
 use crate::node::{Interface, InterfaceInfo};
 
