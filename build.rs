@@ -3,10 +3,10 @@ fn main() {
     {
         use static_files::NpmBuild;
 
-        NpmBuild::new("./web")
+        NpmBuild::new("/fubuki-webui")
             .install().unwrap() // runs npm install
             .run("build").unwrap() // runs npm run build
-            .target("./web/dist")
+            .target("/fubuki-webui/dist")
             .to_resource_dir()
             .build().unwrap();
     }

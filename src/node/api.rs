@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use hyper::{Body, http, Request, Response};
 use hyper::service::{make_service_fn, service_fn};
+use static_files::Resource;
 
 use crate::node::{Interface, InterfaceInfo};
 
@@ -44,32 +45,34 @@ fn router<K>(
     ctx: Arc<Context<K>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, http::Error> {
-    let path = req.uri()
-        .path()
-        .trim_start_matches('/');
+    let path = req.uri().path();
 
     match path {
-        "info" => info(req, ctx.interfaces.as_slice()),
+        "/info" => info(req, ctx.interfaces.as_slice()),
         #[cfg(feature = "web")]
-        path if path.starts_with("static") => {
-            match ctx.static_files.get(path) {
+        path => {
+            const INDEX_PATH: &str = "fubuki-webui/index.html";
+            let join = format!("fubuki-webui{}", path);
+
+            let sf = &ctx.static_files;
+            let resource = match sf.get(join.as_str()) {
+                None => sf.get(INDEX_PATH),
+                r => r
+            };
+
+            match resource {
                 None =>  {
                     Response::builder()
-                        .status(404)
+                        .status(200)
                         .body(Body::empty())
                 }
                 Some(resource) => {
                     Response::builder()
                         .header("Content-Type", resource.mime_type)
                         .status(200)
-                        .body(Body::empty())
+                        .body(Body::from(resource.data))
                 }
             }
-        }
-        _ => {
-            Response::builder()
-                .status(404)
-                .body(Body::empty())
         }
     }
 }
@@ -84,6 +87,9 @@ pub(super) async fn api_start<K: Send + Sync + 'static>(
         static_files: generate()
     };
 
+    for x in ctx.static_files.keys() {
+        println!("{}", x)
+    }
     let ctx = Arc::new(ctx);
 
     let make_svc = make_service_fn(move |_conn|  {
