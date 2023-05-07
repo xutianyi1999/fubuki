@@ -50,11 +50,10 @@ fn router<K>(
         "/info" => info(req, ctx.interfaces.as_slice()),
         #[cfg(feature = "web")]
         path => {
-            const INDEX_PATH: &str = "fubuki-webui/index.html";
-            let join = format!("fubuki-webui{}", path);
+            const INDEX_PATH: &str = "index.html";
 
             let sf = &ctx.static_files;
-            let resource = match sf.get(join.as_str()) {
+            let resource = match sf.get(path) {
                 None => sf.get(INDEX_PATH),
                 r => r
             };
