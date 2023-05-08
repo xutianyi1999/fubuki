@@ -61,7 +61,7 @@ fn router<K>(
             match resource {
                 None =>  {
                     Response::builder()
-                        .status(200)
+                        .status(404)
                         .body(Body::empty())
                 }
                 Some(resource) => {
@@ -71,6 +71,12 @@ fn router<K>(
                         .body(Body::from(resource.data))
                 }
             }
+        }
+        #[cfg(not(feature = "web"))]
+        _ => {
+            Response::builder()
+                .status(404)
+                .body(Body::empty())
         }
     }
 }
@@ -85,9 +91,6 @@ pub(super) async fn api_start<K: Send + Sync + 'static>(
         static_files: generate()
     };
 
-    for x in ctx.static_files.keys() {
-        println!("{}", x)
-    }
     let ctx = Arc::new(ctx);
 
     let make_svc = make_service_fn(move |_conn|  {
