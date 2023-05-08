@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,14 +13,18 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Notify, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time;
+use serde::{Deserialize, Serialize};
 
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
-use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::GroupFinalize;
+use crate::server::api::api_start;
 use crate::ServerConfigFinalize;
+
+mod api;
 
 pub type NodeMap = HashMap<VirtualAddr, Node>;
 
@@ -32,27 +36,55 @@ struct NodeHandle {
     tx: Sender<Bytes>,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct NodeInfo {
+    node: Node,
+    udp_status: UdpStatus,
+    udp_heartbeat_cache: HeartbeatInfo,
+    tcp_heartbeat_cache: HeartbeatInfo
+}
+
+impl From<&NodeHandle> for NodeInfo {
+    fn from(value: &NodeHandle) -> Self {
+        NodeInfo {
+            node: (**value.node.load()).clone(),
+            udp_status: **value.udp_status.load(),
+            udp_heartbeat_cache: HeartbeatInfo::from(&*value.udp_heartbeat_cache.read()),
+            tcp_heartbeat_cache: HeartbeatInfo::from(&*value.tcp_heartbeat_cache.read())
+        }
+    }
+}
+
 struct Bridge {
     channel_rx: Receiver<Bytes>,
     watch_rx: watch::Receiver<Arc<HashMap<VirtualAddr, Node>>>,
 }
 
-struct NodeDb {
+struct GroupHandle {
+    name: String,
+    listen_addr: SocketAddr,
+    address_range: Ipv4Net,
     limit: usize,
     mapping: RwLock<HashMap<VirtualAddr, NodeHandle>>,
     watch: (watch::Sender<Arc<NodeMap>>, watch::Receiver<Arc<NodeMap>>),
 }
 
-impl NodeDb {
-    fn new(channel_limit: usize) -> Self {
-        NodeDb {
+impl GroupHandle {
+    fn new<K>(
+        channel_limit: usize,
+        group_config: &GroupFinalize<K>
+    ) -> Self {
+        GroupHandle {
+            name: group_config.name.clone(),
+            listen_addr: group_config.listen_addr,
+            address_range: group_config.address_range,
             limit: channel_limit,
             mapping: RwLock::new(HashMap::new()),
             watch: watch::channel(Arc::new(HashMap::new())),
         }
     }
 
-    fn insert(&self, node: Node) -> Result<Bridge> {
+    fn join(&self, node: Node) -> Result<Bridge> {
         let (_, watch_rx) = &self.watch;
         let (tx, rx) = mpsc::channel(self.limit);
 
@@ -91,11 +123,35 @@ impl NodeDb {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct GroupInfo {
+    name: String,
+    listen_addr: SocketAddr,
+    address_range: Ipv4Net,
+    node_map: HashMap<VirtualAddr, NodeInfo>
+}
+
+impl From<&GroupHandle> for GroupInfo {
+    fn from(value: &GroupHandle) -> Self {
+        GroupInfo {
+            name: value.name.clone(),
+            listen_addr: value.listen_addr,
+            address_range: value.address_range,
+            node_map: {
+                value.mapping.read()
+                    .iter()
+                    .map(|(k, v)| (*k, NodeInfo::from(v)))
+                    .collect()
+            }
+        }
+    }
+}
+
 async fn udp_handler<K: Cipher>(
     group: &'static GroupFinalize<K>,
     socket: Arc<UdpSocket>,
     key: K,
-    node_db: Arc<NodeDb>,
+    group_handle: Arc<GroupHandle>,
     heartbeat_interval: Duration,
     packet_loss_limit: u64,
     packet_continuous_recv: u64,
@@ -107,7 +163,7 @@ async fn udp_handler<K: Cipher>(
             let mut list = Vec::new();
 
             {
-                let guard = node_db.mapping.read();
+                let guard = group_handle.mapping.read();
 
                 for node in guard.values() {
                     let socket_addr = match node.node.load().wan_udp_addr {
@@ -172,7 +228,7 @@ async fn udp_handler<K: Cipher>(
                     let mut is_known = false;
 
                     {
-                        let guard = node_db.mapping.read();
+                        let guard = group_handle.mapping.read();
 
                         if let Some(handle) = guard.get(&dst_virt_addr) {
                             is_known = true;
@@ -183,7 +239,7 @@ async fn udp_handler<K: Cipher>(
                                 new_node.wan_udp_addr = Some(peer_addr);
                                 drop(node);
                                 handle.node.store(Arc::new(new_node));
-                                node_db.sync(&guard)?;
+                                group_handle.sync(&guard)?;
                             }
                         }
                     };
@@ -196,7 +252,7 @@ async fn udp_handler<K: Cipher>(
                     }
                 }
                 UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Resp) => {
-                    let guard = node_db.mapping.read();
+                    let guard = group_handle.mapping.read();
 
                     if let Some(node) = guard.get(&dst_virt_addr) {
                         let mut udp_heartbeat_cache = node.udp_heartbeat_cache.write();
@@ -216,10 +272,10 @@ async fn udp_handler<K: Cipher>(
                     let mut fut = None;
 
                     {
-                        let guard = node_db.mapping.read();
+                        let guard = group_handle.mapping.read();
 
                         if let Some(handle) = guard.get(&dst_virt_addr) {
-                            for np in &handle.node.load().mode.relay {
+                            for np in handle.node.load().mode.relay.clone() {
                                 match np {
                                     NetProtocol::TCP => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
@@ -291,7 +347,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
     udp_socket: Arc<UdpSocket>,
     config: &'static ServerConfigFinalize<K>,
     group: &'static GroupFinalize<K>,
-    node_db: Arc<NodeDb>,
+    group_handle: Arc<GroupHandle>,
 ) -> Result<()> {
     let nonce_pool = Arc::new(NoncePool::new());
     let address_pool = Arc::new(AddressPool::new(group.address_range)?);
@@ -307,7 +363,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
             udp_socket.clone(),
             config,
             group,
-            node_db.clone(),
+            group_handle.clone(),
             nonce_pool.clone(),
             address_pool.clone(),
         );
@@ -332,7 +388,7 @@ struct Tunnel<K: 'static> {
     group: &'static GroupFinalize<K>,
     stream: TcpStream,
     udp_socket: Arc<UdpSocket>,
-    node_db: Arc<NodeDb>,
+    group_handle: Arc<GroupHandle>,
     nonce_pool: Arc<NoncePool>,
     address_pool: Arc<AddressPool>,
     register: Option<Register>,
@@ -345,7 +401,7 @@ impl<K: Cipher> Tunnel<K> {
         udp_socket: Arc<UdpSocket>,
         config: &'static ServerConfigFinalize<K>,
         group: &'static GroupFinalize<K>,
-        node_db: Arc<NodeDb>,
+        group_handle: Arc<GroupHandle>,
         nonce_pool: Arc<NoncePool>,
         address_pool: Arc<AddressPool>,
     ) -> Self {
@@ -354,7 +410,7 @@ impl<K: Cipher> Tunnel<K> {
             udp_socket,
             config,
             group,
-            node_db,
+            group_handle,
             nonce_pool,
             address_pool,
             register: None,
@@ -431,15 +487,15 @@ impl<K: Cipher> Tunnel<K> {
                         register_time: msg.register_time,
                         register_nonce: msg.nonce
                     };
-                    let bridge = self.node_db.insert(node)?;
+                    let bridge = self.group_handle.join(node)?;
                     self.bridge = Some(bridge);
 
-                    let gi = GroupInfo {
+                    let gc = GroupContent {
                         name: self.group.name.clone(),
                         cidr: self.group.address_range
                     };
 
-                    let len = TcpMsg::register_res_encode(&Ok(gi), buff)?;
+                    let len = TcpMsg::register_res_encode(&Ok(gc), buff)?;
                     return TcpMsg::write_msg(stream, key, &mut buff[..len]).await;
                 }
                 _ => return Err(anyhow!("init message error")),
@@ -466,7 +522,7 @@ impl<K: Cipher> Tunnel<K> {
         let heartbeat_schedule = async {
             loop {
                 let seq = {
-                    let guard = self.node_db.mapping.read();
+                    let guard = self.group_handle.mapping.read();
 
                     let hc = match guard.get(&virtual_addr) {
                         None => return Result::<(), _>::Err(anyhow!("can't get current environment node")),
@@ -508,7 +564,7 @@ impl<K: Cipher> Tunnel<K> {
                     TcpMsg::Relay(dst_virt_addr, packet) => {
                         let mut fut = None;
                         {
-                            let guard = self.node_db.mapping.read();
+                            let guard = self.group_handle.mapping.read();
 
                             if let Some(handle) = guard.get(&dst_virt_addr) {
                                 let node = handle.node.load();
@@ -559,7 +615,7 @@ impl<K: Cipher> Tunnel<K> {
                         local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
                     }
                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                        match self.node_db.mapping.read().get(&virtual_addr) {
+                        match self.group_handle.mapping.read().get(&virtual_addr) {
                             None => return Err(anyhow!("can't get current environment node")),
                             Some(node) => node.tcp_heartbeat_cache.write().response(recv_seq)
                         };
@@ -609,10 +665,10 @@ impl<T> Drop for Tunnel<T> {
     fn drop(&mut self) {
         if let Some(reg) = &self.register {
             {
-                let mut guard = self.node_db.mapping.write();
+                let mut guard = self.group_handle.mapping.write();
 
                 if guard.remove(&reg.virtual_addr).is_some() {
-                    self.node_db.sync(&guard).expect("sync node mapping failure");
+                    self.group_handle.sync(&guard).expect("sync node mapping failure");
                 }
             }
 
@@ -699,18 +755,21 @@ impl NoncePool {
     }
 }
 
-pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
+pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
     where
         K: Cipher + Clone + Send + Sync + 'static
 {
     let config = &*Box::leak(Box::new(config));
     let mut futures = Vec::with_capacity(config.groups.len());
+    let mut group_handles = Vec::with_capacity(config.groups.len());
 
     for group in &config.groups {
+        let gh = Arc::new(GroupHandle::new(config.channel_limit, group));
+        group_handles.push(gh.clone());
+
         let fut = async {
             let key = group.key.clone();
             let listen_addr = group.listen_addr;
-            let node_db = Arc::new(NodeDb::new(config.channel_limit));
 
             let udp_socket = UdpSocket::bind(listen_addr)
                 .await
@@ -727,6 +786,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
             info!("group {} tcp socket listening on {}", group.name, listen_addr);
 
             let notify = Arc::new(Notify::new());
+            let gh1 = gh.clone();
 
             let udp_handle = async {
                 let notify = notify.clone();
@@ -734,7 +794,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
                     group,
                     udp_socket.clone(),
                     key,
-                    node_db.clone(),
+                    gh1,
                     config.udp_heartbeat_interval,
                     config.udp_heartbeat_continuous_loss,
                     config.udp_heartbeat_continuous_recv
@@ -757,7 +817,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
                     udp_socket.clone(),
                     config,
                     group,
-                    node_db.clone(),
+                    gh,
                 );
 
                 tokio::spawn(async move {
@@ -784,5 +844,12 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>)
         });
     }
 
-    futures_util::future::join_all(futures).await;
+    let handle = async {
+        futures_util::future::join_all(futures).await;
+        Ok(())
+    };
+
+    let api_handle = api_start(config.api_addr, group_handles);
+    tokio::try_join!(handle, api_handle)?;
+    Ok(())
 }

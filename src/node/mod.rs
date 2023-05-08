@@ -36,7 +36,7 @@ use crate::node::sys_route::SystemRouteHandle;
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupInfo, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::common::routing_table::RoutingTable;
 use crate::tun::create_device;
 use crate::tun::TunDevice;
@@ -82,8 +82,8 @@ struct Inner {
 
 impl From<Ipv4Net> for AtomicCidr {
     fn from(value: Ipv4Net) -> Self {
-        let inner: AtomicU64 = unsafe {
-            std::mem::transmute(Inner { v: value })
+        let inner= unsafe {
+            AtomicU64::new(std::mem::transmute(Inner { v: value }))
         };
 
         AtomicCidr {
@@ -239,7 +239,7 @@ impl From<&ExtendedNode> for ExtendedNodeInfo {
     fn from(value: &ExtendedNode) -> Self {
         ExtendedNodeInfo {
             node: value.node.clone(),
-            udp_status: (**value.udp_status.load()),
+            udp_status: **value.udp_status.load(),
             hc: HeartbeatInfo::from(&*value.hc.read())
         }
     }
@@ -723,7 +723,7 @@ async fn register<T, K>(
     register_addr: &mut RegisterVirtualAddr,
     lan_udp_socket_addr: Option<SocketAddr>,
     refresh_route: &mut bool,
-) -> Result<GroupInfo>
+) -> Result<GroupContent>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     K: Cipher + Clone
@@ -1357,9 +1357,7 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
         NodeInfoType::NodeMap{ interface_index, node_ip: Some(ip) } => {
             for info in interfaces_info {
                 if info.index == interface_index {
-                    let opt = info.node_map.values().find(|v| v.node.virtual_addr == ip);
-
-                    if let Some(node) = opt {
+                    if let Some(node) = info.node_map.get(&ip) {
                         let register_time = {
                             let utc: DateTime<Utc> = DateTime::from_utc(
                                 NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,

@@ -254,7 +254,7 @@ pub mod protocol {
     }
 
     #[derive(Encode, Decode, Clone)]
-    pub struct GroupInfo {
+    pub struct GroupContent {
         pub name: String,
         #[bincode(with_serde)]
         pub cidr: Ipv4Net,
@@ -341,7 +341,7 @@ pub mod protocol {
         // ip address, cidr
         GetIdleVirtualAddrRes(Option<(VirtualAddr, Ipv4Net)>),
         Register(Register),
-        RegisterRes(Result<GroupInfo, RegisterError>),
+        RegisterRes(Result<GroupContent, RegisterError>),
         NodeMap(HashMap<VirtualAddr, Node>),
         // todo convert to data
         Relay(VirtualAddr, &'a [u8]),
@@ -399,7 +399,7 @@ pub mod protocol {
             Ok(TCP_MSG_HEADER_LEN + size)
         }
 
-        pub fn register_res_encode(register_res: &Result<GroupInfo, RegisterError>, out: &mut [u8]) -> Result<usize> {
+        pub fn register_res_encode(register_res: &Result<GroupContent, RegisterError>, out: &mut [u8]) -> Result<usize> {
             out[0] = MAGIC_NUM;
             out[1] = REGISTER_RESULT;
 
@@ -440,7 +440,7 @@ pub mod protocol {
                     TcpMsg::Register(register)
                 }
                 REGISTER_RESULT => {
-                    let (res, _) = bincode::decode_from_slice::<Result<GroupInfo, RegisterError>, _>(
+                    let (res, _) = bincode::decode_from_slice::<Result<GroupContent, RegisterError>, _>(
                         data,
                         config::standard(),
                     )?;

@@ -54,6 +54,7 @@ struct Group {
 #[derive(Deserialize, Clone)]
 struct ServerConfig {
     channel_limit: Option<usize>,
+    api_addr: Option<SocketAddr>,
     tcp_heartbeat_interval_secs: Option<u64>,
     tcp_heartbeat_continuous_loss: Option<u64>,
     udp_heartbeat_interval_secs: Option<u64>,
@@ -73,6 +74,7 @@ struct GroupFinalize<K> {
 #[derive(Clone)]
 struct ServerConfigFinalize<K> {
     channel_limit: usize,
+    api_addr: SocketAddr,
     tcp_heartbeat_interval: Duration,
     tcp_heartbeat_continuous_loss: u64,
     udp_heartbeat_interval: Duration,
@@ -92,6 +94,9 @@ where
     fn try_from(config: ServerConfig) -> std::result::Result<Self, Self::Error> {
         let config_finalize = Self {
             channel_limit: config.channel_limit.unwrap_or(100),
+            api_addr: config
+                .api_addr
+                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::LOCALHOST, 3031))),
             tcp_heartbeat_interval: config
                 .tcp_heartbeat_interval_secs
                 .map(Duration::from_secs)
@@ -376,7 +381,7 @@ fn launch(args: Args) -> Result<()> {
                     let t: ServerConfig = load_config(&config_path)?;
                     let config: ServerConfigFinalize<Key> = ServerConfigFinalize::try_from(t)?;
                     let rt = Runtime::new()?;
-                    rt.block_on(server::start(config));
+                    rt.block_on(server::start(config))?;
                 }
                 ServerCmd::Info { .. } => {}
             }

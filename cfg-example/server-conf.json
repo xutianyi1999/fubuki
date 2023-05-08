@@ -1,5 +1,6 @@
 {
   "channel_limit": 100,
+  "api_addr": "127.0.0.1:3031",
   "tcp_heartbeat_interval_secs": 5,
   "tcp_heartbeat_continuous_loss": 5,
   "udp_heartbeat_interval_secs": 5,

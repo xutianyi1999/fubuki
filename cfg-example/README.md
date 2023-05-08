@@ -66,6 +66,7 @@
 ```json
 {
   "channel_limit": 100,
+  "api_addr": "127.0.0.1:3031",
   "tcp_heartbeat_interval_secs": 5,
   "tcp_heartbeat_continuous_loss": 5,
   "udp_heartbeat_interval_secs": 5,
@@ -83,6 +84,7 @@
 ```
 
 - channel_limit(可选): 转发队列大小，超过limit丢包，默认100
+- api_addr(可选): API监听地址，默认`127.0.0.1:3031`
 - tcp_heartbeat_interval_secs(可选): TCP 心跳包发送间隔，最长10秒，5秒
 - tcp_heartbeat_continuous_loss(可选): TCP 心跳包连续丢失次数，等于或超过次数则中断连接，默认5
 - udp_heartbeat_interval_secs(可选): UDP 心跳包发送间隔，默认5秒
