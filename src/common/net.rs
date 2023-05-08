@@ -189,6 +189,7 @@ pub mod protocol {
 
     use ahash::HashMap;
     use anyhow::{anyhow, Result};
+    use arrayvec::ArrayVec;
     use bincode::{config, Decode, Encode};
     use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
@@ -216,24 +217,28 @@ pub mod protocol {
     pub const RESP: u8 = 0x01;
 
     pub type Seq = u32;
+    pub type NetProtocols = ArrayVec<NetProtocol, 2>;
 
-    #[derive(Debug, Copy, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+    #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
     pub enum NetProtocol {
         TCP,
         UDP,
     }
 
-    #[derive(Clone, Debug, Encode, Decode, Serialize, Deserialize)]
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ProtocolMode {
-        pub p2p: Vec<NetProtocol>,
-        pub relay: Vec<NetProtocol>,
+        pub p2p: NetProtocols,
+        pub relay: NetProtocols,
     }
 
     impl Default for ProtocolMode {
         fn default() -> Self {
+            let mut p2p = NetProtocols::new();
+            p2p.push(NetProtocol::UDP);
+
             ProtocolMode {
-                p2p: vec![NetProtocol::UDP],
-                relay: vec![NetProtocol::UDP, NetProtocol::TCP],
+                p2p,
+                relay: NetProtocols::from([NetProtocol::UDP, NetProtocol::TCP]),
             }
         }
     }
@@ -260,6 +265,7 @@ pub mod protocol {
         pub node_name: String,
         pub virtual_addr: VirtualAddr,
         pub lan_udp_socket_addr: Option<SocketAddr>,
+        #[bincode(with_serde)]
         pub proto_mod: ProtocolMode,
         #[bincode(with_serde)]
         pub allowed_ips: Vec<Ipv4Net>,
@@ -304,6 +310,7 @@ pub mod protocol {
         pub virtual_addr: VirtualAddr,
         pub lan_udp_addr: Option<SocketAddr>,
         pub wan_udp_addr: Option<SocketAddr>,
+        #[bincode(with_serde)]
         pub mode: ProtocolMode,
         #[bincode(with_serde)]
         pub allowed_ips: Vec<Ipv4Net>,
