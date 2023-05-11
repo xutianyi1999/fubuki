@@ -1,0 +1,61 @@
+<div class="group-item">
+
+  <div mat-subheader><b>Group Details</b></div>
+  <mat-divider></mat-divider>
+
+  <!-- mat-elevation-z1 ? -->
+  <table mat-table [dataSource]="groupList" class="mat-elevation-z1">
+  <!--- Note that these columns can be defined in any order.
+      The actual rendered columns are set as a property on the row definition" -->
+
+    <ng-container matColumnDef={{groupColumnName}} *ngFor="let groupColumnName of groupColumns">
+      <th mat-header-cell *matHeaderCellDef> {{groupColumnName}} </th>
+      <td mat-cell *matCellDef="let groupInfo"> {{groupInfo[groupColumnName]}} </td>
+    </ng-container>
+  
+    <tr mat-header-row *matHeaderRowDef="groupColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: groupColumns;"></tr>
+  </table>
+
+  <br>
+
+  <div mat-subheader><b>Node List</b></div>
+  <mat-divider></mat-divider>
+  
+  <table mat-table [dataSource]="nodeList" class="mat-elevation-z1">
+  
+    <ng-container matColumnDef="firstColumn">
+      <th mat-header-cell *matHeaderCellDef> </th>
+      <td mat-cell *matCellDef="let nodeInfo"> <mat-icon matListItemIcon>computer</mat-icon> </td>
+    </ng-container>
+  
+    <ng-container matColumnDef={{nodeColumnName}} *ngFor="let nodeColumnName of nodeColumns">
+      <th mat-header-cell *matHeaderCellDef> {{nodeColumnName}} </th>
+      <td mat-cell *matCellDef="let nodeInfo"> {{nodeInfo.node[nodeColumnName]}} </td>
+    </ng-container>
+  
+    <tr mat-header-row *matHeaderRowDef="nodeColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: nodeColumns;"></tr>
+  </table>
+
+
+  <!-- <mat-list>
+    <div mat-subheader><b>Nodes</b></div>
+    <mat-divider></mat-divider>
+  
+    <mat-card *ngFor="let nodeInfo of this.nodeList">
+      <mat-list-item class="nodeInfo">
+        <mat-divider></mat-divider>
+        <mat-icon matListItemIcon>computer</mat-icon>
+        <div matListItemTitle>
+          {{nodeInfo.node.name}}
+        </div>
+        <div matListItemLine>
+          {{nodeInfo.node.virtual_addr}}
+        </div>
+      </mat-list-item>
+    </mat-card>
+  </mat-list> -->
+
+
+</div>

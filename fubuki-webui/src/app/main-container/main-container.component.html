@@ -1,0 +1,38 @@
+<!-- <mat-slide-toggle>Toggle me!</mat-slide-toggle> -->
+<div class="main-container">
+
+  <mat-accordion>
+
+    <mat-expansion-panel hideToggle>
+      <mat-expansion-panel-header>
+        <div class="groupColumn" *ngFor="let groupColumn of this.groupColumns">
+          <mat-panel-title>
+            {{groupColumn}}
+          </mat-panel-title>
+        </div>
+      </mat-expansion-panel-header>
+    </mat-expansion-panel>
+
+    <div class="group-list" *ngFor="let groupInfo of this.info">
+      <mat-divider></mat-divider>
+      <div class="group">
+        <mat-expansion-panel>
+          <mat-expansion-panel-header>
+            <div class="groupColumn" *ngFor="let groupColumn of this.groupColumns">
+              <mat-panel-title>
+                {{groupInfo[groupColumn]}}  
+              </mat-panel-title>
+            </div>
+          </mat-expansion-panel-header>
+
+          <div class="node" *ngFor="let nodeInfo of getNodeMapValues(groupInfo.node_map)">
+            <div class="nodeColumn" *ngFor="let nodeColumn of this.nodeColumns">
+              {{nodeInfo.node[nodeColumn]}}
+            </div>
+          </div>
+        </mat-expansion-panel>
+      </div>
+    </div>
+  </mat-accordion>
+
+</div>
