@@ -79,6 +79,8 @@ pub(super) async fn api_start(
         }
     });
 
+    info!("api listening on http://{}", bind);
+
     tokio::spawn(hyper::server::Server::try_bind(&bind)?
         .serve(make_svc)).await??;
 

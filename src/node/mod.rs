@@ -965,7 +965,8 @@ where
                 }
 
                 interface.server_is_connected.store(true, Ordering::Relaxed);
-                info!("group {} connected", group_info.name);
+                info!("node {} has joined group {}", group.node_name, group_info.name);
+                info!("group {} address range {}", group_info.name, group_info.cidr);
 
                 let (rx, mut tx) = stream.split();
                 let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
