@@ -27,7 +27,6 @@ use log::LevelFilter;
 use mimalloc::MiMalloc;
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
-use crate::node::info;
 
 use crate::common::cipher::{Cipher, XorCipher};
 use crate::common::net::get_interface_addr;
@@ -315,6 +314,17 @@ enum NodeCmd {
     }
 }
 
+#[derive(Clone, Subcommand)]
+enum ServerInfoType {
+    Group,
+    NodeMap {
+        group_name: String,
+        /// show more data for the specified node
+        #[arg(short, long)]
+        node_ip: Option<VirtualAddr>,
+    }
+}
+
 #[derive(Subcommand)]
 enum ServerCmd {
     Daemon {
@@ -323,6 +333,9 @@ enum ServerCmd {
     Info {
         #[arg(short, long, default_value = "127.0.0.1:3030")]
         api: String,
+
+        #[command(subcommand)]
+        info_type: ServerInfoType,
     }
 }
 
@@ -383,7 +396,13 @@ fn launch(args: Args) -> Result<()> {
                     let rt = Runtime::new()?;
                     rt.block_on(server::start(config))?;
                 }
-                ServerCmd::Info { .. } => {}
+                ServerCmd::Info { api, info_type } => {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+
+                    rt.block_on(server::info(&api, info_type))?;
+                }
             }
         }
         Args::Node { cmd } => {
@@ -399,7 +418,7 @@ fn launch(args: Args) -> Result<()> {
                         .enable_all()
                         .build()?;
 
-                    rt.block_on(info(&api, info_type))?;
+                    rt.block_on(node::info(&api, info_type))?;
                 }
             }
         }

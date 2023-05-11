@@ -6,21 +6,24 @@ use std::time::Duration;
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
-use chrono::Utc;
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use hyper::{Body, Method, Request};
+use hyper::body::Buf;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
+use prettytable::{row, Table};
+use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Notify, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time;
-use serde::{Deserialize, Serialize};
 
+use crate::{GroupFinalize, ServerInfoType};
 use crate::common::allocator;
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
-use crate::GroupFinalize;
 use crate::server::api::api_start;
 use crate::ServerConfigFinalize;
 
@@ -851,5 +854,98 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 
     let api_handle = api_start(config.api_addr, group_handles);
     tokio::try_join!(handle, api_handle)?;
+    Ok(())
+}
+
+pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()> {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(format!("http://{}/info", api_addr))
+        .body(Body::empty())?;
+
+    let c = hyper::client::Client::new();
+    let resp = c.request(req).await?;
+
+    let (parts, body) = resp.into_parts();
+
+    if parts.status != 200 {
+        let bytes = hyper::body::to_bytes(body).await?;
+        let msg = String::from_utf8(bytes.to_vec())?;
+        return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
+    }
+
+    let body = hyper::body::aggregate(body).await?;
+    let groups: Vec<GroupInfo> = serde_json::from_reader(body.reader())?;
+
+    let mut table = Table::new();
+
+    match info_type {
+        ServerInfoType::Group => {
+            table.add_row(row!["NAME", "LISTENING_ADDRESS", "ADDRESS_RANGE"]);
+
+            for group in groups {
+                table.add_row(row![
+                    group.name,
+                    group.listen_addr,
+                    group.address_range
+                ]);
+            }
+        }
+        ServerInfoType::NodeMap { group_name, node_ip: None } => {
+            table.add_row(row!["NAME", "IP", "REGISTER_TIME"]);
+
+            for group in groups {
+                if group.name == group_name {
+                    for node in group.node_map.values() {
+                        let register_time = {
+                            let utc: DateTime<Utc> = DateTime::from_utc(
+                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
+                                Utc,
+                            );
+                            let local_time: DateTime<Local> = DateTime::from(utc);
+                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
+                        };
+
+                        table.add_row(row![
+                            node.node.name,
+                            node.node.virtual_addr,
+                            register_time,
+                        ]);
+                    }
+                    break;
+                }
+            }
+        }
+        ServerInfoType::NodeMap { group_name, node_ip: Some(ip) } => {
+            for group in groups {
+                if group.name == group_name {
+                    if let Some(node) = group.node_map.get(&ip) {
+                        let register_time = {
+                            let utc: DateTime<Utc> = DateTime::from_utc(
+                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
+                                Utc,
+                            );
+                            let local_time: DateTime<Local> = DateTime::from(utc);
+                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
+                        };
+
+                        table.add_row(row!["NAME", node.node.name]);
+                        table.add_row(row!["IP", node.node.virtual_addr]);
+                        table.add_row(row!["LAN_ADDRESS", format!("{:?}", node.node.lan_udp_addr)]);
+                        table.add_row(row!["WAN_ADDRESS", format!("{:?}", node.node.wan_udp_addr)]);
+                        table.add_row(row!["PROTOCOL_MODE",  format!("{:?}", node.node.mode)]);
+                        table.add_row(row!["ALLOWED_IPS",  format!("{:?}", node.node.allowed_ips)]);
+                        table.add_row(row!["REGISTER_TIME", register_time]);
+                        table.add_row(row!["UDP_STATUS", node.udp_status]);
+                        table.add_row(row!["UDP_LATENCY", format!("{:?}", node.udp_heartbeat_cache.elapsed)]);
+                        table.add_row(row!["UDP_LOSS_RATE", format!("{}%", node.udp_heartbeat_cache.packet_loss_count as f32 / node.udp_heartbeat_cache.send_count as f32 * 100f32)]);
+                        table.add_row(row!["TCP_LATENCY", format!("{:?}", node.tcp_heartbeat_cache.elapsed)]);
+                        table.add_row(row!["TCP_LOSS_RATE", format!("{}%", node.udp_heartbeat_cache.packet_loss_count as f32 / node.tcp_heartbeat_cache.send_count as f32 * 100f32)]);
+                    }
+                    break;
+                }
+            }
+        }
+    }
     Ok(())
 }
