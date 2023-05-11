@@ -43,6 +43,10 @@ fn router(
 
     match path {
         "/info" => info(req, ctx.group_handles.as_slice()),
+        "/type" => Ok(Response::new(Body::from("server"))),
+        #[cfg(feature = "web")]
+        path => crate::web::static_files(path.trim_start_matches('/')),
+        #[cfg(not(feature = "web"))]
         _ => {
             Response::builder()
                 .status(404)

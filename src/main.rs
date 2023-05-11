@@ -5,6 +5,7 @@
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
 #![feature(impl_trait_in_assoc_type)]
+#![feature(lazy_cell)]
 
 #[macro_use]
 extern crate log;
@@ -36,6 +37,8 @@ mod node;
 mod common;
 mod server;
 mod tun;
+#[cfg(feature = "web")]
+mod web;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;

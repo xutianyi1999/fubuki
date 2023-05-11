@@ -8,13 +8,8 @@ use hyper::service::{make_service_fn, service_fn};
 
 use crate::node::{Interface, InterfaceInfo};
 
-#[cfg(feature = "web")]
-include!(concat!(env!("OUT_DIR"), "/generated.rs"));
-
 struct Context<K> {
     interfaces: Vec<Arc<Interface<K>>>,
-    #[cfg(feature = "web")]
-    static_files: std::collections::HashMap<&'static str, static_files::Resource>
 }
 
 fn info<K>(
@@ -48,30 +43,9 @@ fn router<K>(
 
     match path {
         "/info" => info(req, ctx.interfaces.as_slice()),
+        "/type" => Ok(Response::new(Body::from("node"))),
         #[cfg(feature = "web")]
-        path => {
-            const INDEX_PATH: &str = "index.html";
-
-            let sf = &ctx.static_files;
-            let resource = match sf.get(path) {
-                None => sf.get(INDEX_PATH),
-                r => r
-            };
-
-            match resource {
-                None =>  {
-                    Response::builder()
-                        .status(404)
-                        .body(Body::empty())
-                }
-                Some(resource) => {
-                    Response::builder()
-                        .header("Content-Type", resource.mime_type)
-                        .status(200)
-                        .body(Body::from(resource.data))
-                }
-            }
-        }
+        path => crate::web::static_files(path.trim_start_matches('/')),
         #[cfg(not(feature = "web"))]
         _ => {
             Response::builder()
@@ -87,8 +61,6 @@ pub(super) async fn api_start<K: Send + Sync + 'static>(
 ) -> Result<()> {
     let ctx = Context {
         interfaces,
-        #[cfg(feature = "web")]
-        static_files: generate()
     };
 
     let ctx = Arc::new(ctx);
