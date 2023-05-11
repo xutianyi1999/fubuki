@@ -9,7 +9,7 @@ use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
-use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use chrono::Utc;
 use futures_util::future::LocalBoxFuture;
 use futures_util::FutureExt;
 use hyper::{Body, Method, Request};
@@ -30,14 +30,14 @@ use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
-use crate::node::api::api_start;
-use crate::node::nat::{add_nat, del_nat};
-use crate::node::sys_route::SystemRouteHandle;
-use crate::common::allocator;
+use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::common::routing_table::RoutingTable;
+use crate::node::api::api_start;
+use crate::node::nat::{add_nat, del_nat};
+use crate::node::sys_route::SystemRouteHandle;
 use crate::tun::create_device;
 use crate::tun::TunDevice;
 
@@ -1335,14 +1335,7 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
             for info in interfaces_info {
                 if info.index == interface_index {
                     for node in info.node_map.values() {
-                        let register_time = {
-                            let utc: DateTime<Utc> = DateTime::from_utc(
-                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
-                                Utc,
-                            );
-                            let local_time: DateTime<Local> = DateTime::from(utc);
-                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
-                        };
+                        let register_time = utc_to_str(node.node.register_time)?;
 
                         table.add_row(row![
                             node.node.name,
@@ -1358,14 +1351,7 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
             for info in interfaces_info {
                 if info.index == interface_index {
                     if let Some(node) = info.node_map.get(&ip) {
-                        let register_time = {
-                            let utc: DateTime<Utc> = DateTime::from_utc(
-                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
-                                Utc,
-                            );
-                            let local_time: DateTime<Local> = DateTime::from(utc);
-                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
-                        };
+                        let register_time = utc_to_str(node.node.register_time)?;
 
                         table.add_row(row!["NAME", node.node.name]);
                         table.add_row(row!["IP", node.node.virtual_addr]);

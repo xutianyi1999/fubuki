@@ -6,7 +6,7 @@ use std::time::Duration;
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
-use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use chrono::Utc;
 use hyper::{Body, Method, Request};
 use hyper::body::Buf;
 use ipnet::Ipv4Net;
@@ -19,7 +19,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time;
 
 use crate::{GroupFinalize, ServerInfoType};
-use crate::common::allocator;
+use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
@@ -897,14 +897,7 @@ pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()
             for group in groups {
                 if group.name == group_name {
                     for node in group.node_map.values() {
-                        let register_time = {
-                            let utc: DateTime<Utc> = DateTime::from_utc(
-                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
-                                Utc,
-                            );
-                            let local_time: DateTime<Local> = DateTime::from(utc);
-                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
-                        };
+                        let register_time = utc_to_str(node.node.register_time)?;
 
                         table.add_row(row![
                             node.node.name,
@@ -920,14 +913,7 @@ pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()
             for group in groups {
                 if group.name == group_name {
                     if let Some(node) = group.node_map.get(&ip) {
-                        let register_time = {
-                            let utc: DateTime<Utc> = DateTime::from_utc(
-                                NaiveDateTime::from_timestamp_opt(node.node.register_time, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
-                                Utc,
-                            );
-                            let local_time: DateTime<Local> = DateTime::from(utc);
-                            local_time.format("%Y-%m-%d %H:%M:%S").to_string()
-                        };
+                        let register_time = utc_to_str(node.node.register_time)?;
 
                         table.add_row(row!["NAME", node.node.name]);
                         table.add_row(row!["IP", node.node.virtual_addr]);
@@ -947,5 +933,7 @@ pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()
             }
         }
     }
+
+    table.printstd();
     Ok(())
 }
