@@ -45,6 +45,9 @@ simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", feat
 [build-dependencies]
 static-files = { version = "0.2", optional = true }
 
+[patch.crates-io]
+advmac = { git = "https://github.com/xutianyi1999/advmac.git" }
+
 [features]
 web = ["static-files"]
 
