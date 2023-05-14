@@ -1,20 +1,20 @@
 import { NgModule } from '@angular/core';
 import { RouterModule, Routes } from '@angular/router';
-import { GroupListComponent } from './group-list/group-list.component';
-import { GroupItemComponent } from './group-item/group-item.component';
+import { InfoListComponent } from './info-list/info-list.component';
+import { InfoItemComponent } from './info-item/info-item.component';
 
 const routes: Routes = [
   {
-    path: '', pathMatch: 'full', component: GroupListComponent
+    path: '', pathMatch: 'full', component: InfoListComponent
   },
   // {
   //   path: '', pathMatch: 'full', redirectTo: 'group'
   // },
   {
-    path: 'group', pathMatch: 'full', component: GroupListComponent
+    path: 'group', pathMatch: 'full', component: InfoListComponent
   },
   {
-    path: 'group/:path', component: GroupItemComponent
+    path: 'group/:path', component: InfoItemComponent
   },
   {
     path: '**', redirectTo: ''

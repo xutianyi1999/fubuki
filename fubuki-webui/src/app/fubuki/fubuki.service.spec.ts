@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 
-import { FubukiNodeService } from './fubuki-node.service';
+import { FubukiNodeService } from './fubuki.service';
 
 describe('FubukiNodeService', () => {
   let service: FubukiNodeService;

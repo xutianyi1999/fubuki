@@ -1,4 +1,6 @@
-<div class="group-item">
+<div class="info-item">
+
+  <div mat-subheader><b>Fubuki {{serverType | titlecase}}</b></div>
 
   <div mat-subheader><b>Group Details</b></div>
   <mat-divider></mat-divider>
@@ -38,6 +40,11 @@
     <tr mat-row *matRowDef="let row; columns: nodeColumns;"></tr>
   </table>
 
+  <!--
+    如果不加mat-list, 会导致mat-subheader缺少样式,
+    如果从info-list组件中路由到当前组件中, 则会带上之前的样式, 刷新或直接进入该组件样式会消失
+  -->
+  <mat-list></mat-list>
 
   <!-- <mat-list>
     <div mat-subheader><b>Nodes</b></div>
