@@ -1,6 +1,10 @@
 {
     "/info": {
-        "target": "http://192.168.31.3:3030",
+        "target": "http://192.168.31.3:3031",
+        "secure": false
+    },
+    "/type": {
+        "target": "http://192.168.31.3:3031",
         "secure": false
     }
 }

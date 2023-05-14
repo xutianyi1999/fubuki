@@ -1,18 +1,18 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
-import { GroupItemComponent } from './group-item.component';
+import { InfoListComponent } from './info-list.component';
 
-describe('GroupItemComponent', () => {
-  let component: GroupItemComponent;
-  let fixture: ComponentFixture<GroupItemComponent>;
+describe('GroupListComponent', () => {
+  let component: InfoListComponent;
+  let fixture: ComponentFixture<InfoListComponent>;
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      declarations: [ GroupItemComponent ]
+      declarations: [ InfoListComponent ]
     })
     .compileComponents();
 
-    fixture = TestBed.createComponent(GroupItemComponent);
+    fixture = TestBed.createComponent(InfoListComponent);
     component = fixture.componentInstance;
     fixture.detectChanges();
   });

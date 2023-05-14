@@ -11,16 +11,16 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatDividerModule } from '@angular/material/divider';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
-import { GroupListComponent } from './group-list/group-list.component';
+import { InfoListComponent } from './info-list/info-list.component';
 import { MatCardModule } from '@angular/material/card';
-import { GroupItemComponent } from './group-item/group-item.component';
+import { InfoItemComponent } from './info-item/info-item.component';
 
 @NgModule({
   declarations: [
     AppComponent,
     MainContainerComponent,
-    GroupListComponent,
-    GroupItemComponent
+    InfoListComponent,
+    InfoItemComponent
   ],
   imports: [
     BrowserModule,
