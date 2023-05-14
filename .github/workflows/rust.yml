@@ -55,3 +55,4 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
           DOCKER_BUILDKIT: 1
           BUILDKIT_PROGRESS: plain
+          CARGO_TERM_COLOR: always
