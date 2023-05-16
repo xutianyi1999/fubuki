@@ -18,7 +18,7 @@ fubuki是网状VPN实现，用于不同内网机器之间支持相互通信
 
 它通过一台公网服务器来同步多个节点的地址映射与存活状态。每个节点启动之后会存在一个唯一的虚拟地址，用于节点间相互通讯，节点加入网段服务端会向所有对等节点同步状态信息并协调节点之间打洞，如受NAT限制等原因通讯建立失败后会回退至服务端中继。
 
-## 使用
+## Usage
 
 ```shell
 root@test1:~# fubuki -h
@@ -50,7 +50,7 @@ Options:
 - 内核需支持tun模块
 - 启用`allowed_ips`配置项时系统须支持iptables
 
-### Fubuki服务端
+### Fubuki server
 
 创建fubuki服务端的配置 server-config.json
 
@@ -78,7 +78,7 @@ Options:
 fubuki server daemon ./server-config.json
 ```
 
-### Fubuki节点
+### Fubuki node
 
 创建fubuki节点的配置 node-config.json
 
@@ -124,7 +124,7 @@ fubuki node daemon ./node-config.json
 ping node2.group
 ```
 
-## 源码构建
+## Build
 
 - Rust nightly toolchain
 - Windows MSVC toolchain
