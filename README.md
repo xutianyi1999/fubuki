@@ -106,15 +106,15 @@ fubuki node daemon ./node-config.json
 
 启动第二个节点
 
-```shell
+```json
 {
-    "groups": [
-        {
-          "node_name": "node2",
-          "server_addr": "{fubuki server address}",
-          "key": "123"
-        }
-  	]
+  "groups": [
+    {
+      "node_name": "node2",
+      "server_addr": "{fubuki server address}",
+      "key": "123"
+    }
+  ]
 }
 ```
 
