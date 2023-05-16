@@ -126,8 +126,8 @@ ping node2.group
 
 ## 源码构建
 
-- Rust环境
-- Windows toolchain 需要为MSVC
+- Rust nightly toolchain
+- Windows MSVC toolchain
 
 ```shell
 cargo +nightly build --release
