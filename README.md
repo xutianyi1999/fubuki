@@ -1,57 +1,144 @@
 # fubuki
 [![Release](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml)
 
-fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
+fubuki是网状VPN实现，用于不同内网机器之间支持相互通信
 
 当前支持的平台：
 
 - Windows
 - Linux
-- macOS
 
-## 工作机制
+受支持的协议类型：
 
-它需要一台公网服务器来维持客户端节点的地址映射，节点相互P2P通信，节点之间可能因NAT受限等问题无法通信时会切换为服务端中继
+- P2P: UDP
+- 中继: UDP, TCP
+
+工作模式：
+
+它通过一台公网服务器来同步多个节点的地址映射与存活状态。每个节点启动之后会存在一个唯一的虚拟地址，用于节点间相互通讯，节点加入网段服务端会向所有对等节点同步状态信息并协调节点之间打洞，如受NAT限制等原因通讯建立失败后会回退至服务端中继。
 
 ## 使用
 
-[配置文件说明](https://github.com/xutianyi1999/fubuki/tree/master/cfg-example)
-### 前置依赖
-
-#### Windows
-需要wintun.dll(https://www.wintun.net) 与执行文件同目录或System32下，并且能以管理员权限运行
-
-#### Linux & macOS
-需要内核支持TUN模块, 并能以root运行
-
-### 客户端命令
-节点启动：
-
 ```shell
-sudo ./fubuki client client-config.json
+root@test1:~# fubuki -h
+Usage: fubuki <COMMAND>
+
+Commands:
+  server  coordinator and data relay server
+  node    fubuki node
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 ```
-查看节点信息：
-```shell
-./fubuki info
+
+[配置文档](https://github.com/xutianyi1999/fubuki/tree/v0.5/cfg-example)
+
+#### 前置依赖
+
+#####  Windows
+
+- 必须以管理员权限运行
+- 需要wintun.dll(https://www.wintun.net) 与程序同目录或System32下
+- 启用`allowed_ips`配置项时系统须支持`NetNat`命令
+
+##### Linux
+
+- 必须以root权限运行
+- 内核需支持tun模块
+- 启用`allowed_ips`配置项时系统须支持iptables
+
+
+### Fubuki服务端
+
+创建fubuki服务端的配置 server-config.json
+
+```json
+{
+	"groups": [
+        {
+          "name": "group",
+          "key": "123",
+          "listen_addr": "0.0.0.0:12345",
+          "address_range": "10.0.0.0/24"
+        }
+  	]
+}
 ```
-或指定API地址
+
+- name: 组名为group
+- key: 该组的预共享密钥
+- listen_addr: fubuki server端口
+- address_range: 配置的虚拟网段
+
+启动 fubuki server
+
 ```shell
-./fubuki info "127.0.0.1:1234"
+fubuki server daemon ./server-config.json
 ```
-### 服务端命令
-服务端启动：
+
+### Fubuki节点
+
+创建fubuki节点的配置 node-config.json
+
+```json
+{
+    "groups": [
+        {
+          "node_name": "node1",
+          "server_addr": "{fubuki server address}",
+          "key": "123"
+        }
+  	]
+}
+```
+
+- node_name: 节点名
+- server_addr: 服务器地址，格式为 IP:PORT
+- key: 预共享密钥
+
+启动 fubuki node
+
 ```shell
-./fubuki server server-config.json
+fubuki node daemon ./node-config.json
+```
+
+启动第二个节点
+
+```shell
+{
+    "groups": [
+        {
+          "node_name": "node2",
+          "server_addr": "{fubuki server address}",
+          "key": "123"
+        }
+  	]
+}
+```
+
+测试节点间通讯
+
+```shell
+ping node2.group
 ```
 
 ## 源码构建
-安装Rust环境
 
-Windows平台toolchain需要为MSVC
+- Rust环境
+- Windows toolchain 需要为MSVC
 
-如果需要开启AES-NI指令集，添加环境变量`RUSTFLAGS="-C target-cpu=native"`
 ```shell
-git clone "https://github.com/xutianyi1999/fubuki";
-cd fubuki;
-RUSTUP_TOOLCHAIN=nightly cargo build --release;
+cargo +nightly build --release
 ```
+
+包含webui
+
+- nodejs
+- angular cli
+
+```shell
+cargo +nightly build --release --features "web"
+```
+
