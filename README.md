@@ -2,7 +2,7 @@
 
 [![Release](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml)
 
-fubuki是网状VPN实现，用于不同内网机器之间支持相互通信
+fubuki是网状VPN实现，用于不同内网机器之间相互通信
 
 当前支持的平台：
 
@@ -16,12 +16,11 @@ fubuki是网状VPN实现，用于不同内网机器之间支持相互通信
 
 工作模式：
 
-它通过一台公网服务器来同步多个节点的地址映射与存活状态。每个节点启动之后会存在一个唯一的虚拟地址，用于节点间相互通讯，节点加入网段服务端会向所有对等节点同步状态信息并协调节点之间打洞，如受NAT限制等原因通讯建立失败后会回退至服务端中继。
+它通过一台公网服务器来同步多个节点的地址映射与存活状态。每个节点启动之后会存在一个唯一的虚拟地址，节点加入网段服务端会向所有对等节点同步状态信息并协调节点之间打洞，如受NAT限制等原因通讯建立失败后会回退至服务端中继。
 
 ## Usage
 
 ```shell
-root@test1:~# fubuki -h
 Usage: fubuki <COMMAND>
 
 Commands:
@@ -69,7 +68,7 @@ Options:
 
 - name: 组名为group
 - key: 该组的预共享密钥
-- listen_addr: fubuki server端口
+- listen_addr: fubuki server监听地址
 - address_range: 配置的虚拟网段
 
 启动 fubuki server
@@ -127,16 +126,17 @@ ping node2.group
 ## Build
 
 - Rust nightly toolchain
-- Windows MSVC toolchain
+- Windows 
+  - MSVC toolchain
 
 ```shell
 cargo +nightly build --release
 ```
 
-包含webui
+包含Web UI
 
-- nodejs
-- angular cli
+- Node.js >= 16.*
+- Angular CLI
 
 ```shell
 cargo +nightly build --release --features "web"
