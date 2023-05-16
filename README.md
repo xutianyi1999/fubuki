@@ -34,7 +34,7 @@ Options:
   -V, --version  Print version
 ```
 
-[配置文档](https://github.com/xutianyi1999/fubuki/tree/v0.5/cfg-example)
+[配置文档](https://github.com/xutianyi1999/fubuki/tree/master/cfg-example)
 
 #### 前置依赖
 
