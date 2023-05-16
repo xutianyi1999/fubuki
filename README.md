@@ -1,4 +1,5 @@
 # fubuki
+
 [![Release](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml)
 
 fubuki是网状VPN实现，用于不同内网机器之间支持相互通信
@@ -37,7 +38,7 @@ Options:
 
 #### 前置依赖
 
-#####  Windows
+##### Windows
 
 - 必须以管理员权限运行
 - 需要wintun.dll(https://www.wintun.net) 与程序同目录或System32下
@@ -49,21 +50,20 @@ Options:
 - 内核需支持tun模块
 - 启用`allowed_ips`配置项时系统须支持iptables
 
-
 ### Fubuki服务端
 
 创建fubuki服务端的配置 server-config.json
 
 ```json
 {
-	"groups": [
-        {
-          "name": "group",
-          "key": "123",
-          "listen_addr": "0.0.0.0:12345",
-          "address_range": "10.0.0.0/24"
-        }
-  	]
+  "groups": [
+    {
+      "name": "group",
+      "key": "123",
+      "listen_addr": "0.0.0.0:12345",
+      "address_range": "10.0.0.0/24"
+    }
+  ]
 }
 ```
 
@@ -84,13 +84,13 @@ fubuki server daemon ./server-config.json
 
 ```json
 {
-    "groups": [
-        {
-          "node_name": "node1",
-          "server_addr": "{fubuki server address}",
-          "key": "123"
-        }
-  	]
+  "groups": [
+    {
+      "node_name": "node1",
+      "server_addr": "{fubuki server address}",
+      "key": "123"
+    }
+  ]
 }
 ```
 
