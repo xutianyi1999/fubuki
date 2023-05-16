@@ -290,13 +290,17 @@ where
 
 #[derive(Clone, Copy, Subcommand)]
 enum NodeInfoType {
+    /// query node interface
     Interface {
         /// show more data for the specified interface
         #[arg(short, long)]
         index: Option<usize>,
     },
+    /// query all peer nodes of a specified interface
     NodeMap {
+        /// interface index
         interface_index: usize,
+
         /// show more data for the specified node
         #[arg(short, long)]
         node_ip: Option<VirtualAddr>,
@@ -305,13 +309,18 @@ enum NodeInfoType {
 
 #[derive(Subcommand)]
 enum NodeCmd {
+    /// start the node process
     Daemon {
+        /// configuration file path
         config_path: String
     },
+    /// query the current state of the node
     Info {
+        /// api address of the node
         #[arg(short, long, default_value = "127.0.0.1:3030")]
         api: String,
 
+        /// query type
         #[command(subcommand)]
         info_type: NodeInfoType,
     }
@@ -319,9 +328,13 @@ enum NodeCmd {
 
 #[derive(Clone, Subcommand)]
 enum ServerInfoType {
+    /// query server group
     Group,
+    /// query the node map of the specified group
     NodeMap {
+        /// group name
         group_name: String,
+
         /// show more data for the specified node
         #[arg(short, long)]
         node_ip: Option<VirtualAddr>,
@@ -330,13 +343,18 @@ enum ServerInfoType {
 
 #[derive(Subcommand)]
 enum ServerCmd {
+    /// start the server process
     Daemon {
+        /// configuration file path
         config_path: String
     },
+    /// query the current state of the server
     Info {
+        /// api address of the server
         #[arg(short, long, default_value = "127.0.0.1:3031")]
         api: String,
 
+        /// query type
         #[command(subcommand)]
         info_type: ServerInfoType,
     }
@@ -345,10 +363,12 @@ enum ServerCmd {
 #[derive(Parser)]
 #[command(version)]
 enum Args {
+    /// coordinator and data relay server
     Server {
         #[command(subcommand)]
         cmd: ServerCmd
     },
+    /// fubuki node
     Node {
         #[command(subcommand)]
         cmd: NodeCmd
