@@ -31,6 +31,7 @@ prettytable-rs = "0.10"
 scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
+gethostname = "0.4"
 
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/GamePad64/netconfig.git" }

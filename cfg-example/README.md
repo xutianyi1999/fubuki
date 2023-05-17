@@ -48,7 +48,7 @@
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
 - groups: 配置多组网段
-    - node_name: 节点名称
+    - node_name(可选): 节点名称, 默认主机名
     - server_addr: 该网段发现服务器与中转服务器地址
     - tun_addr(可选): 本地节点的IP地址与掩码，默认从地址池获取
         - ip: 节点IP地址

@@ -19,6 +19,7 @@ use std::time::Duration;
 use ahash::HashMap;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use gethostname::gethostname;
 use human_panic::setup_panic;
 use ipnet::Ipv4Net;
 use log4rs::append::console::ConsoleAppender;
@@ -146,7 +147,7 @@ struct TunAddr {
 
 #[derive(Deserialize, Clone)]
 struct TargetGroup {
-    node_name: String,
+    node_name: Option<String>,
     server_addr: String,
     tun_addr: Option<TunAddr>,
     key: String,
@@ -244,7 +245,17 @@ where
             };
 
             let group_finalize = TargetGroupFinalize {
-                node_name: group.node_name,
+                node_name: {
+                    match group.node_name {
+                        None => {
+                            gethostname()
+                                .to_str()
+                                .ok_or_else(|| anyhow!("unable to resolve hostname"))?
+                                .to_string()
+                        }
+                        Some(v) => v
+                    }
+                },
                 server_addr: {
                     if resolve_server_addr.ip().is_loopback() {
                         return Err(anyhow!("server address cannot be a loopback address"));
