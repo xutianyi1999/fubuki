@@ -57,7 +57,7 @@ Options:
 {
   "groups": [
     {
-      "name": "group",
+      "name": "mygroup",
       "key": "123",
       "listen_addr": "0.0.0.0:12345",
       "address_range": "10.0.0.0/24"
@@ -66,7 +66,7 @@ Options:
 }
 ```
 
-- name: 组名为group
+- name: 组名为 "mygroup"
 - key: 该组的预共享密钥
 - listen_addr: fubuki server监听地址
 - address_range: 配置的虚拟网段
@@ -117,10 +117,10 @@ fubuki node daemon ./node-config.json
 }
 ```
 
-测试节点间通讯
+`ping` node2节点，可以使用 `{node_name}.{group_name}` 形式
 
 ```shell
-ping node2.group
+ping node2.mygroup
 ```
 
 ## Build
