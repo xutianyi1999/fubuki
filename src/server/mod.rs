@@ -169,7 +169,9 @@ async fn udp_handler<K: Cipher>(
                 let guard = group_handle.mapping.read();
 
                 for node in guard.values() {
-                    let socket_addr = match node.node.load().wan_udp_addr {
+                    let wan = node.node.load().wan_udp_addr;
+
+                    let socket_addr = match wan {
                         None => continue,
                         Some(v) => v
                     };
@@ -239,8 +241,9 @@ async fn udp_handler<K: Cipher>(
 
                             if node.wan_udp_addr != Some(peer_addr) {
                                 let mut new_node = (**node).clone();
-                                new_node.wan_udp_addr = Some(peer_addr);
                                 drop(node);
+
+                                new_node.wan_udp_addr = Some(peer_addr);
                                 handle.node.store(Arc::new(new_node));
                                 group_handle.sync(&guard)?;
                             }
@@ -278,7 +281,9 @@ async fn udp_handler<K: Cipher>(
                         let guard = group_handle.mapping.read();
 
                         if let Some(handle) = guard.get(&dst_virt_addr) {
-                            for np in handle.node.load().mode.relay.clone() {
+                            let relay = handle.node.load().mode.relay.clone();
+
+                            for np in relay {
                                 match np {
                                     NetProtocol::TCP => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
@@ -304,7 +309,9 @@ async fn udp_handler<K: Cipher>(
                                         }
                                     }
                                     NetProtocol::UDP => {
-                                        let dst_addr = match **handle.udp_status.load() {
+                                        let status = **handle.udp_status.load();
+
+                                        let dst_addr = match status {
                                             UdpStatus::Available { dst_addr } => dst_addr,
                                             UdpStatus::Unavailable => continue
                                         };
@@ -588,12 +595,15 @@ impl<K: Cipher> Tunnel<K> {
                                             }
                                         }
                                         NetProtocol::UDP =>  {
-                                            let addr = match **handle.udp_status.load() {
+                                            let udp_status = **handle.udp_status.load();
+
+                                            let addr = match udp_status {
                                                 UdpStatus::Available { dst_addr } => dst_addr,
                                                 UdpStatus::Unavailable => continue
                                             };
 
                                             debug!("tcp handler: udp message relay to node {}", node.name);
+                                            drop(node);
 
                                             let packet_len = packet.len();
                                             let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);

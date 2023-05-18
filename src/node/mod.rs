@@ -533,24 +533,25 @@ where
                                         let packet = packet.as_slice();
                                         let rt = &*table.load_full();
 
-                                        let send  = |peer_addr| async move {
-                                            if !in_routing_table(&rt, peer_addr) {
-                                                socket.send_to(&packet, peer_addr).await?;
-                                            }
-                                            Result::<_, anyhow::Error>::Ok(())
-                                        };
+                                        macro_rules! send {
+                                            ($peer_addr: expr) => {
+                                                if !in_routing_table(&rt, $peer_addr) {
+                                                    socket.send_to(&packet, $peer_addr).await?;
+                                                }
+                                            };
+                                        }
 
                                         if let Some(addr) = addr {
                                             if addr != lan && addr != wan {
-                                                send(addr).await?;
+                                                send!(addr);
                                             }
                                         }
 
                                         if wan == lan {
-                                            send(wan).await?;
+                                            send!(wan);
                                         } else {
-                                            send(lan).await?;
-                                            send(wan).await?;
+                                            send!(lan);
+                                            send!(wan);
                                         }
                                     }
                                 }
@@ -621,9 +622,11 @@ where
                         }
                         UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
                             if from_addr == SERVER_VIRTUAL_ADDR {
-                                match &*interface.server_udp_status.load_full() {
+                                let udp_status = **interface.server_udp_status.load();
+
+                                match udp_status {
                                     UdpStatus::Available { dst_addr } => {
-                                        if *dst_addr == peer_addr {
+                                        if dst_addr == peer_addr {
                                             interface.server_udp_hc.write().response(seq);
                                             continue;
                                         }
@@ -982,22 +985,25 @@ where
 
                         match msg {
                             TcpMsg::NodeMap(map) => {
-                                let old_map = interface.node_map.load_full();
                                 let mut new_map = HashMap::new();
 
-                                for (virtual_addr, node) in map {
-                                    match old_map.get(&virtual_addr) {
-                                        None => {
-                                            new_map.insert(virtual_addr, ExtendedNode::from(node));
-                                        },
-                                        Some(v) => {
-                                            let en = ExtendedNode {
-                                                node,
-                                                hc: v.hc.clone(),
-                                                udp_status: v.udp_status.clone(),
-                                                peer_addr: v.peer_addr.clone()
-                                            };
-                                            new_map.insert(virtual_addr, en);
+                                {
+                                    let old_map = interface.node_map.load();
+
+                                    for (virtual_addr, node) in map {
+                                        match old_map.get(&virtual_addr) {
+                                            None => {
+                                                new_map.insert(virtual_addr, ExtendedNode::from(node));
+                                            },
+                                            Some(v) => {
+                                                let en = ExtendedNode {
+                                                    node,
+                                                    hc: v.hc.clone(),
+                                                    udp_status: v.udp_status.clone(),
+                                                    peer_addr: v.peer_addr.clone()
+                                                };
+                                                new_map.insert(virtual_addr, en);
+                                            }
                                         }
                                     }
                                 }
@@ -1011,9 +1017,9 @@ where
                                     hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
                                 }
 
-                                let node_name = group.node_name.clone();
-
                                 tokio::task::spawn_blocking(move || {
+                                    let node_name = &group.node_name;
+
                                     match hb.write() {
                                         Ok(_) => info!("node {} update hosts", node_name),
                                         Err(e) => error!("node {} update hosts error: {}", node_name, e)
