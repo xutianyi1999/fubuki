@@ -12,6 +12,7 @@ pub fn add_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
             "-InternalIPInterfaceAddressPrefix",
             src.to_string().as_str(),
         ])
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .output()?;
 
@@ -29,6 +30,7 @@ pub fn del_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
             "-Name", &format!("fubuki-{}", src),
             "-Confirm:$false"
         ])
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .output()?
         .status;
