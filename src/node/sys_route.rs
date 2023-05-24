@@ -32,10 +32,9 @@ impl SystemRouteHandle {
     }
 
     pub async fn add(&mut self, routes: &[Route]) -> Result<()> {
-        self.routes.extend(routes.to_vec());
-
         for x in routes {
             self.handle.add(x).await?;
+            self.routes.push(x.clone());
         }
         Ok(())
     }

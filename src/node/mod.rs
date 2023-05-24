@@ -963,8 +963,14 @@ where
 
                 // tun must first set the ip address
                 if !sys_route_is_sync {
+                    let res = sys_routing.lock().await.add(&routes).await;
+
+                    if let Err(e) = res {
+                        non_retryable = true;
+                        return Err(e);
+                    }
+
                     sys_route_is_sync = true;
-                    sys_routing.lock().await.add(&routes).await?;
                 }
 
                 interface.server_is_connected.store(true, Ordering::Relaxed);
@@ -1243,7 +1249,7 @@ pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
         }
     };
 
-    let tun_handler_fut = tun_handler(tun.clone(), rt, interfaces.clone());
+    let tun_handler_fut = tun_handler(tun, rt, interfaces.clone());
     future_list.push(Box::pin(tun_handler_fut));
     future_list.push(Box::pin(api_start(config.api_addr, interfaces)));
 

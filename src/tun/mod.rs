@@ -78,6 +78,7 @@ pub(crate) fn create_device() -> Result<impl TunDevice + Send + Sync> {
 
     #[cfg(target_os = "macos")]
     {
+        tun = macos::Macostun::create()?;
     }
     Ok(tun)
 }

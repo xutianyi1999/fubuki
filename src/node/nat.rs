@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "macos"))]
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Result};
@@ -98,11 +99,11 @@ pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+pub fn add_nat(_ranges: &[Ipv4Net], _src: Ipv4Net) -> Result<()> {
     Err(anyhow!("macos does not support nat"))
 }
 
 #[cfg(target_os = "macos")]
-pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
+pub fn del_nat(_ranges: &[Ipv4Net], _src: Ipv4Net) -> Result<()> {
     Err(anyhow!("macos does not support nat"))
 }
