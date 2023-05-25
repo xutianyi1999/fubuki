@@ -39,6 +39,8 @@ impl SystemRouteHandle {
                 use anyhow::anyhow;
                 use tokio::process::Command;
 
+                let gateway = x.gateway.ok_or_else(|| anyhow!("must have gateway"))?;
+
                 let status = Command::new("route")
                     .args([
                         "-n",
@@ -47,7 +49,7 @@ impl SystemRouteHandle {
                         x.destination.to_string().as_str(),
                         "-netmask",
                         x.mask().to_string().as_str(),
-                        x.gateway.unwrap().to_string().as_str(),
+                        gateway.to_string().as_str(),
                     ])
                     .stderr(Stdio::inherit())
                     .output()

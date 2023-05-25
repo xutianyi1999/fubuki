@@ -86,7 +86,7 @@ impl TunDevice for Macostun {
         }
 
         self.inter
-            .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
+            .add_address(IpNet::V4(cidr))
             .map_err(|e| anyhow!(e.to_string()))?;
 
         let status = Command::new("route")
@@ -120,7 +120,7 @@ impl TunDevice for Macostun {
         }
 
         self.inter
-            .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
+            .remove_address(IpNet::V4(cidr))
             .map_err(|e| anyhow!(e.to_string()))?;
 
         let status = Command::new("route")
@@ -138,7 +138,7 @@ impl TunDevice for Macostun {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("failed to add route"));
+            return Err(anyhow!("failed to delete route"));
         }
 
         guard.remove(&addr);
