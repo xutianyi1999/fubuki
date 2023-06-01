@@ -150,7 +150,7 @@ impl From<&GroupHandle> for GroupInfo {
     }
 }
 
-async fn udp_handler<K: Cipher>(
+async fn udp_handler<K: Cipher + Clone + Send + Sync>(
     group: &'static GroupFinalize<K>,
     socket: Arc<UdpSocket>,
     key: K,
@@ -158,140 +158,186 @@ async fn udp_handler<K: Cipher>(
     heartbeat_interval: Duration,
     packet_loss_limit: u64,
     packet_continuous_recv: u64,
+    notify: Arc<Notify>
 ) -> Result<()> {
     let heartbeat_schedule = async {
-        let mut buff = [0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
+        let group_handle = group_handle.clone();
+        let key = key.clone();
+        let socket = socket.clone();
+        let notify = notify.clone();
 
-        loop {
-            let mut list = Vec::new();
+        tokio::spawn(async move {
+            let fut = async {
+                let mut buff = [0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
 
-            {
-                let guard = group_handle.mapping.read();
+                loop {
+                    let mut list = Vec::new();
 
-                for node in guard.values() {
-                    let wan = node.node.load().wan_udp_addr;
+                    {
+                        let guard = group_handle.mapping.read();
 
-                    let socket_addr = match wan {
-                        None => continue,
-                        Some(v) => v
+                        for node in guard.values() {
+                            let wan = node.node.load().wan_udp_addr;
+
+                            let socket_addr = match wan {
+                                None => continue,
+                                Some(v) => v
+                            };
+
+                            let mut heartbeat_status = node.udp_heartbeat_cache.write();
+                            heartbeat_status.check();
+
+                            if **node.udp_status.load() != UdpStatus::Unavailable &&
+                                heartbeat_status.packet_continuous_loss_count >= packet_loss_limit
+                            {
+                                node.udp_status.store(Arc::new(UdpStatus::Unavailable));
+                            }
+
+                            heartbeat_status.request();
+                            list.push((socket_addr, heartbeat_status.seq));
+                        }
                     };
 
-                    let mut heartbeat_status = node.udp_heartbeat_cache.write();
-                    heartbeat_status.check();
+                    for (sock_addr, seq) in list {
+                        let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
+                        let packet = &mut buff[..len];
+                        key.encrypt(packet, 0);
+                        let res = socket.send_to(packet, sock_addr).await;
 
-                    if **node.udp_status.load() != UdpStatus::Unavailable &&
-                        heartbeat_status.packet_continuous_loss_count >= packet_loss_limit
-                    {
-                        node.udp_status.store(Arc::new(UdpStatus::Unavailable));
+                        if let Err(e) = res {
+                            return Result::<(), _>::Err(anyhow!(e));
+                        }
                     }
 
-                    heartbeat_status.request();
-                    list.push((socket_addr, heartbeat_status.seq));
+                    tokio::time::sleep(heartbeat_interval).await;
                 }
             };
 
-            for (sock_addr, seq) in list {
-                let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
-                let packet = &mut buff[..len];
-                key.encrypt(packet, 0);
-                let res = socket.send_to(packet, sock_addr).await;
-
-                if let Err(e) = res {
-                    return Result::<(), _>::Err(anyhow!(e));
-                }
+            tokio::select! {
+                res = fut => res,
+                _ = notify.notified() => Ok(())
             }
-
-            tokio::time::sleep(heartbeat_interval).await;
-        }
+        }).await?
     };
 
     let recv_handler = async {
-        let mut buff = vec![0u8; UDP_BUFF_SIZE];
+        let group_handle = group_handle.clone();
+        let key = key.clone();
+        let socket = socket.clone();
+        let notify = notify.clone();
 
-        loop {
-            let (len, peer_addr) = match socket.recv_from(&mut buff).await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("group {} receive udp message error: {:?}", group.name, e);
-                    continue;
-                }
-            };
+        tokio::spawn(async move {
+            let fut = async {
+                let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
-            let packet = &mut buff[..len];
-            key.decrypt(packet, 0);
-
-            let msg = match UdpMsg::decode(packet) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    error!("group {} receive udp message error: {:?}", group.name, e);
-                    continue;
-                }
-            };
-
-            match msg {
-                UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Req) => {
-                    let mut is_known = false;
-
-                    {
-                        let guard = group_handle.mapping.read();
-
-                        if let Some(handle) = guard.get(&dst_virt_addr) {
-                            is_known = true;
-                            let node = handle.node.load();
-
-                            if node.wan_udp_addr != Some(peer_addr) {
-                                let mut new_node = (**node).clone();
-                                drop(node);
-
-                                new_node.wan_udp_addr = Some(peer_addr);
-                                handle.node.store(Arc::new(new_node));
-                                group_handle.sync(&guard)?;
-                            }
+                loop {
+                    let (len, peer_addr) = match socket.recv_from(&mut buff).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("group {} receive udp message error: {:?}", group.name, e);
+                            continue;
                         }
                     };
 
-                    if is_known {
-                        let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
-                        let packet = &mut buff[..len];
-                        key.encrypt(packet, 0);
-                        socket.send_to(packet, peer_addr).await?;
-                    }
-                }
-                UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Resp) => {
-                    let guard = group_handle.mapping.read();
+                    let packet = &mut buff[..len];
+                    key.decrypt(packet, 0);
 
-                    if let Some(node) = guard.get(&dst_virt_addr) {
-                        let mut udp_heartbeat_cache = node.udp_heartbeat_cache.write();
-
-                        if udp_heartbeat_cache.response(seq).is_none() {
+                    let msg = match UdpMsg::decode(packet) {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            error!("group {} receive udp message error: {:?}", group.name, e);
                             continue;
                         }
+                    };
 
-                        if **node.udp_status.load() == UdpStatus::Unavailable &&
-                            udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv
-                        {
-                            node.udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                    match msg {
+                        UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Req) => {
+                            let mut is_known = false;
+
+                            {
+                                let guard = group_handle.mapping.read();
+
+                                if let Some(handle) = guard.get(&dst_virt_addr) {
+                                    is_known = true;
+                                    let node = handle.node.load();
+
+                                    if node.wan_udp_addr != Some(peer_addr) {
+                                        let mut new_node = (**node).clone();
+                                        drop(node);
+
+                                        new_node.wan_udp_addr = Some(peer_addr);
+                                        handle.node.store(Arc::new(new_node));
+                                        group_handle.sync(&guard)?;
+                                    }
+                                }
+                            };
+
+                            if is_known {
+                                let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
+                                let packet = &mut buff[..len];
+                                key.encrypt(packet, 0);
+                                socket.send_to(packet, peer_addr).await?;
+                            }
                         }
-                    }
-                }
-                UdpMsg::Relay(dst_virt_addr, data) => {
-                    let mut fut = None;
+                        UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Resp) => {
+                            let guard = group_handle.mapping.read();
 
-                    {
-                        let guard = group_handle.mapping.read();
+                            if let Some(node) = guard.get(&dst_virt_addr) {
+                                let mut udp_heartbeat_cache = node.udp_heartbeat_cache.write();
 
-                        if let Some(handle) = guard.get(&dst_virt_addr) {
-                            let relay = handle.node.load().mode.relay.clone();
+                                if udp_heartbeat_cache.response(seq).is_none() {
+                                    continue;
+                                }
 
-                            for np in relay {
-                                match np {
-                                    NetProtocol::TCP => {
-                                        let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
-                                        TcpMsg::relay_encode(dst_virt_addr, data.len(), &mut buff);
-                                        buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(data);
+                                if **node.udp_status.load() == UdpStatus::Unavailable &&
+                                    udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv
+                                {
+                                    node.udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                                }
+                            }
+                        }
+                        UdpMsg::Relay(dst_virt_addr, data) => {
+                            let mut fut = None;
 
-                                        match handle.tx.try_send(buff) {
-                                            Ok(_) => {
+                            {
+                                let guard = group_handle.mapping.read();
+
+                                if let Some(handle) = guard.get(&dst_virt_addr) {
+                                    let relay = handle.node.load().mode.relay.clone();
+
+                                    for np in relay {
+                                        match np {
+                                            NetProtocol::TCP => {
+                                                let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
+                                                TcpMsg::relay_encode(dst_virt_addr, data.len(), &mut buff);
+                                                buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(data);
+
+                                                match handle.tx.try_send(buff) {
+                                                    Ok(_) => {
+                                                        if log::max_level() >= log::Level::Debug {
+                                                            let f = || {
+                                                                let src = get_ip_src_addr(packet)?;
+                                                                let dst = get_ip_dst_addr(packet)?;
+                                                                Result::<_, anyhow::Error>::Ok((src, dst))
+                                                            };
+
+                                                            if let Ok((src, dst)) = f() {
+                                                                debug!("group {} udp handler: tcp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                            }
+                                                        }
+                                                        break;
+                                                    }
+                                                    Err(e) => warn!("group {} send packet to tcp channel error: {}", group.name, e)
+                                                }
+                                            }
+                                            NetProtocol::UDP => {
+                                                let status = **handle.udp_status.load();
+
+                                                let dst_addr = match status {
+                                                    UdpStatus::Available { dst_addr } => dst_addr,
+                                                    UdpStatus::Unavailable => continue
+                                                };
+
                                                 if log::max_level() >= log::Level::Debug {
                                                     let f = || {
                                                         let src = get_ip_src_addr(packet)?;
@@ -303,49 +349,32 @@ async fn udp_handler<K: Cipher>(
                                                         debug!("group {} udp handler: tcp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
                                                     }
                                                 }
+
+                                                key.encrypt(packet, 0);
+                                                fut = Some(socket.send_to(packet, dst_addr));
                                                 break;
                                             }
-                                            Err(e) => warn!("group {} send packet to tcp channel error: {}", group.name, e)
                                         }
                                     }
-                                    NetProtocol::UDP => {
-                                        let status = **handle.udp_status.load();
+                                }
+                            };
 
-                                        let dst_addr = match status {
-                                            UdpStatus::Available { dst_addr } => dst_addr,
-                                            UdpStatus::Unavailable => continue
-                                        };
-
-                                        if log::max_level() >= log::Level::Debug {
-                                            let f = || {
-                                                let src = get_ip_src_addr(packet)?;
-                                                let dst = get_ip_dst_addr(packet)?;
-                                                Result::<_, anyhow::Error>::Ok((src, dst))
-                                            };
-
-                                            if let Ok((src, dst)) = f() {
-                                                debug!("group {} udp handler: tcp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
-                                            }
-                                        }
-
-                                        key.encrypt(packet, 0);
-                                        fut = Some(socket.send_to(packet, dst_addr));
-                                        break;
-                                    }
+                            if let Some(fut) = fut {
+                                if let Err(e) = fut.await {
+                                    return Result::<(), _>::Err(anyhow!(e));
                                 }
                             }
                         }
+                        _ => error!("group {} receive invalid udp message", group.name),
                     };
-
-                    if let Some(fut) = fut {
-                        if let Err(e) = fut.await {
-                            return Result::<(), _>::Err(anyhow!(e));
-                        }
-                    }
-                }
-                _ => error!("group {} receive invalid udp message", group.name),
+                };
             };
-        };
+
+            tokio::select! {
+                res = fut => res,
+                _ = notify.notified() => Ok(())
+            }
+        }).await?
     };
 
     tokio::try_join!(heartbeat_schedule, recv_handler)?;
@@ -802,7 +831,6 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
             let gh1 = gh.clone();
 
             let udp_handle = async {
-                let notify = notify.clone();
                 let fut = udp_handler(
                     group,
                     udp_socket.clone(),
@@ -810,17 +838,14 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                     gh1,
                     config.udp_heartbeat_interval,
                     config.udp_heartbeat_continuous_loss,
-                    config.udp_heartbeat_continuous_recv
+                    config.udp_heartbeat_continuous_recv,
+                    notify.clone()
                 );
 
-                tokio::spawn(async move {
-                    tokio::select! {
-                        res = fut => res,
-                        _ = notify.notified() => Ok(())
-                    }
-                })
-                .await?
-                .context("udp handler error")
+                tokio::select! {
+                    res = fut => res.context("udp handler error"),
+                    _ = notify.notified() => Ok(())
+                }
             };
 
             let tcp_handle = async {
