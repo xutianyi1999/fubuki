@@ -574,8 +574,13 @@ where
                         #[cfg(target_os = "windows")]
                         {
                             const WSAECONNRESET: i32 = 10054;
+                            const WSAENETRESET: i32 = 10052;
 
-                            if e.raw_os_error() == Some(WSAECONNRESET) {
+                            let err = e.raw_os_error();
+
+                            if err == Some(WSAECONNRESET) ||
+                                err == Some(WSAENETRESET)
+                            {
                                 error!("node {} receive udp packet error {}", group.node_name, e);
                                 continue;
                             }
