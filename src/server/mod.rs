@@ -14,9 +14,9 @@ use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{mpsc, Notify, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::time;
+use tokio::{sync, time};
 
 use crate::{GroupFinalize, ServerInfoType};
 use crate::common::{allocator, utc_to_str};
@@ -158,13 +158,13 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
     heartbeat_interval: Duration,
     packet_loss_limit: u64,
     packet_continuous_recv: u64,
-    notify: Arc<Notify>
+    notified: watch::Receiver<()>
 ) -> Result<()> {
     let heartbeat_schedule = async {
         let group_handle = group_handle.clone();
         let key = key.clone();
         let socket = socket.clone();
-        let notify = notify.clone();
+        let mut notified = notified.clone();
 
         tokio::spawn(async move {
             let fut = async {
@@ -215,7 +215,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
             tokio::select! {
                 res = fut => res,
-                _ = notify.notified() => Ok(())
+                _ = notified.changed() => Err(anyhow!("abort task"))
             }
         }).await?
     };
@@ -224,7 +224,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
         let group_handle = group_handle.clone();
         let key = key.clone();
         let socket = socket.clone();
-        let notify = notify.clone();
+        let mut notified = notified.clone();
 
         tokio::spawn(async move {
             let fut = async {
@@ -372,7 +372,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
             tokio::select! {
                 res = fut => res,
-                _ = notify.notified() => Ok(())
+                _ = notified.changed() => Err(anyhow!("abort task"))
             }
         }).await?
     };
@@ -381,12 +381,13 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
     Ok(())
 }
 
-async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
+async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
     tcp_listener: TcpListener,
     udp_socket: Arc<UdpSocket>,
     config: &'static ServerConfigFinalize<K>,
     group: &'static GroupFinalize<K>,
     group_handle: Arc<GroupHandle>,
+    notified: watch::Receiver<()>
 ) -> Result<()> {
     let nonce_pool = Arc::new(NoncePool::new());
     let address_pool = Arc::new(AddressPool::new(group.address_range)?);
@@ -405,13 +406,14 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
             group_handle.clone(),
             nonce_pool.clone(),
             address_pool.clone(),
+            notified.clone()
         );
 
         tokio::spawn(async move {
             if let Err(e) = tunnel.exec().await {
                 match &tunnel.register {
                     None => error!("group {} address {} tunnel error: {:?}", group.name, peer_addr, e),
-                    Some(v) => error!("group {} node {}-{} tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
+                    Some(v) => error!("group {} node {}({}) tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
                 }
             }
 
@@ -425,16 +427,17 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync + 'static>(
 struct Tunnel<K: 'static> {
     config: &'static ServerConfigFinalize<K>,
     group: &'static GroupFinalize<K>,
-    stream: TcpStream,
+    stream: Option<TcpStream>,
     udp_socket: Arc<UdpSocket>,
     group_handle: Arc<GroupHandle>,
     nonce_pool: Arc<NoncePool>,
     address_pool: Arc<AddressPool>,
     register: Option<Register>,
     bridge: Option<Bridge>,
+    notified: watch::Receiver<()>
 }
 
-impl<K: Cipher> Tunnel<K> {
+impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
     fn new(
         stream: TcpStream,
         udp_socket: Arc<UdpSocket>,
@@ -443,15 +446,17 @@ impl<K: Cipher> Tunnel<K> {
         group_handle: Arc<GroupHandle>,
         nonce_pool: Arc<NoncePool>,
         address_pool: Arc<AddressPool>,
+        notified: watch::Receiver<()>
     ) -> Self {
         Self {
-            stream,
+            stream: Some(stream),
             udp_socket,
             config,
             group,
             group_handle,
             nonce_pool,
             address_pool,
+            notified,
             register: None,
             bridge: None,
         }
@@ -459,7 +464,7 @@ impl<K: Cipher> Tunnel<K> {
 
     async fn init(&mut self) -> Result<()> {
         let buff = &mut allocator::alloc(1024);
-        let stream = &mut self.stream;
+        let stream = self.stream.as_mut().unwrap();
         let key = &self.group.key;
 
         loop {
@@ -543,163 +548,202 @@ impl<K: Cipher> Tunnel<K> {
     }
 
     async fn exec(&mut self) -> Result<()> {
-        self.stream.set_keepalive()?;
+        self.stream.as_ref().unwrap().set_keepalive()?;
         self.init().await?;
 
         info!("tcp handler: node {} is registered", self.register.as_ref().unwrap().node_name);
 
-        let (bridge, virtual_addr) = match (&mut self.bridge, &self.register) {
+        let (mut bridge, virtual_addr) = match (self.bridge.take(), &self.register) {
             (Some(bridge), Some(reg)) => (bridge, reg.virtual_addr),
             _ => unreachable!(),
         };
 
-        let (mut rx, mut tx) = self.stream.split();
-        let key = &self.group.key;
+        let (mut rx, mut tx) = self.stream
+            .take()
+            .unwrap()
+            .into_split();
 
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
+        let (_notify, inner_notified) = sync::watch::channel(());
 
         let heartbeat_schedule = async {
-            loop {
-                let seq = {
-                    let guard = self.group_handle.mapping.read();
+            let mut notified = inner_notified.clone();
+            let group_handle = self.group_handle.clone();
+            let config = self.config;
+            let local_channel_tx = local_channel_tx.clone();
 
-                    let hc = match guard.get(&virtual_addr) {
-                        None => return Result::<(), _>::Err(anyhow!("can't get current environment node")),
-                        Some(node) => &node.tcp_heartbeat_cache
-                    };
+            tokio::spawn(async move {
+                let fut = async {
+                    loop {
+                        let seq = {
+                            let guard = group_handle.mapping.read();
 
-                    let mut hc = hc.write();
-                    hc.check();
+                            let hc = match guard.get(&virtual_addr) {
+                                None => return Result::<(), _>::Err(anyhow!("can't get current environment node")),
+                                Some(node) => &node.tcp_heartbeat_cache
+                            };
 
-                    if hc.packet_continuous_loss_count >= self.config.tcp_heartbeat_continuous_loss {
-                        return Err(anyhow!("heartbeat receive timeout"))
+                            let mut hc = hc.write();
+                            hc.check();
+
+                            if hc.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
+                                return Err(anyhow!("heartbeat receive timeout"))
+                            }
+
+                            hc.request();
+                            hc.seq
+                        };
+
+                        let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
+                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
+
+                        local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
+                        tokio::time::sleep(config.tcp_heartbeat_interval).await;
                     }
-
-                    hc.request();
-                    hc.seq
                 };
 
-                let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
-
-                local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
-                tokio::time::sleep(self.config.tcp_heartbeat_interval).await;
-            }
+                tokio::select! {
+                    res = fut => res,
+                    _ = notified.changed() => Err(anyhow!("abort task"))
+                }
+            }).await?
         };
 
         let recv_handler = async {
-            let mut buff = vec![0u8; TCP_BUFF_SIZE];
+            let mut notified = inner_notified.clone();
+            let group_handle = self.group_handle.clone();
+            let udp_socket = self.udp_socket.clone();
+            let group = self.group;
+            let local_channel_tx = local_channel_tx.clone();
+            let key = self.group.key.clone();
 
-            loop {
-                let sub_buff = &mut buff[UDP_MSP_HEADER_LEN..];
-                let msg = TcpMsg::read_msg(&mut rx, key, sub_buff).await?;
+            tokio::spawn(async move {
+                let fut = async {
+                    let mut buff = vec![0u8; TCP_BUFF_SIZE];
 
-                let msg = match msg {
-                    None => return Ok(()),
-                    Some(msg) => msg
-                };
+                    loop {
+                        let sub_buff = &mut buff[UDP_MSP_HEADER_LEN..];
+                        let msg = TcpMsg::read_msg(&mut rx, &key, sub_buff).await?;
 
-                match msg {
-                    TcpMsg::Relay(dst_virt_addr, packet) => {
-                        let mut fut = None;
-                        {
-                            let guard = self.group_handle.mapping.read();
+                        let msg = match msg {
+                            None => return Ok(()),
+                            Some(msg) => msg
+                        };
 
-                            if let Some(handle) = guard.get(&dst_virt_addr) {
-                                let node = handle.node.load();
+                        match msg {
+                            TcpMsg::Relay(dst_virt_addr, packet) => {
+                                let mut fut = None;
+                                {
+                                    let guard = group_handle.mapping.read();
 
-                                for np in &node.mode.relay {
-                                    match np {
-                                        NetProtocol::TCP => {
-                                            let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet.len());
-                                            TcpMsg::relay_encode(dst_virt_addr, packet.len(), &mut buff);
-                                            buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(packet);
+                                    if let Some(handle) = guard.get(&dst_virt_addr) {
+                                        let node = handle.node.load();
 
-                                            match handle.tx.try_send(buff) {
-                                                Ok(_) => {
-                                                    debug!("tcp handler: tcp message relay to node {}", node.name);
+                                        for np in &node.mode.relay {
+                                            match np {
+                                                NetProtocol::TCP => {
+                                                    let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet.len());
+                                                    TcpMsg::relay_encode(dst_virt_addr, packet.len(), &mut buff);
+                                                    buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(packet);
+
+                                                    match handle.tx.try_send(buff) {
+                                                        Ok(_) => {
+                                                            debug!("tcp handler: tcp message relay to node {}", node.name);
+                                                            break;
+                                                        },
+                                                        Err(e) => warn!("group {} send packet to tcp channel error: {}", group.name, e)
+                                                    }
+                                                }
+                                                NetProtocol::UDP =>  {
+                                                    let udp_status = **handle.udp_status.load();
+
+                                                    let addr = match udp_status {
+                                                        UdpStatus::Available { dst_addr } => dst_addr,
+                                                        UdpStatus::Unavailable => continue
+                                                    };
+
+                                                    debug!("tcp handler: udp message relay to node {}", node.name);
+                                                    drop(node);
+
+                                                    let packet_len = packet.len();
+                                                    let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
+                                                    key.encrypt(&mut buff[..len], 0);
+
+                                                    fut = Some(udp_socket.send_to(&buff[..len], addr));
                                                     break;
-                                                },
-                                                Err(e) => warn!("group {} send packet to tcp channel error: {}", self.group.name, e)
+                                                }
                                             }
-                                        }
-                                        NetProtocol::UDP =>  {
-                                            let udp_status = **handle.udp_status.load();
-
-                                            let addr = match udp_status {
-                                                UdpStatus::Available { dst_addr } => dst_addr,
-                                                UdpStatus::Unavailable => continue
-                                            };
-
-                                            debug!("tcp handler: udp message relay to node {}", node.name);
-                                            drop(node);
-
-                                            let packet_len = packet.len();
-                                            let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
-                                            key.encrypt(&mut buff[..len], 0);
-
-                                            fut = Some(self.udp_socket.send_to(&buff[..len], addr));
-                                            break;
                                         }
                                     }
                                 }
+
+                                if let Some(fut) = fut {
+                                    fut.await?;
+                                }
                             }
-                        }
+                            TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                                let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
+                                TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
 
-                        if let Some(fut) = fut {
-                            fut.await?;
+                                local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
+                            }
+                            TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                                match group_handle.mapping.read().get(&virtual_addr) {
+                                    None => return Err(anyhow!("can't get current environment node")),
+                                    Some(node) => node.tcp_heartbeat_cache.write().response(recv_seq)
+                                };
+                            }
+                            _ => return Result::<()>::Err(anyhow!("invalid tcp msg")),
                         }
                     }
-                    TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
-                        let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
+                };
 
-                        local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
-                    }
-                    TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                        match self.group_handle.mapping.read().get(&virtual_addr) {
-                            None => return Err(anyhow!("can't get current environment node")),
-                            Some(node) => node.tcp_heartbeat_cache.write().response(recv_seq)
-                        };
-                    }
-                    _ => return Result::<()>::Err(anyhow!("invalid tcp msg")),
+                tokio::select! {
+                    res = fut => res,
+                    _ = notified.changed() => Err(anyhow!("abort task"))
                 }
-            }
+            }).await?
         };
 
         let send_handler = async {
-            let mut buff = vec![0u8; TCP_BUFF_SIZE];
+            let mut notified = inner_notified.clone();
+            let key = self.group.key.clone();
 
-            loop {
-                tokio::select! {
-                    res = bridge.watch_rx.changed() => {
-                        if let Err(e) = res {
-                            return Result::<(), _>::Err(anyhow!(e));
+            tokio::spawn(async move {
+                let mut buff = vec![0u8; TCP_BUFF_SIZE];
+
+                loop {
+                    tokio::select! {
+                        res = bridge.watch_rx.changed() => {
+                            if let Err(e) = res {
+                                return Result::<(), _>::Err(anyhow!(e));
+                            }
+
+                            let node_list: Arc<NodeMap> = bridge.watch_rx.borrow().clone();
+                            let len = TcpMsg::node_map_encode(&node_list, &mut buff)?;
+                            TcpMsg::write_msg(&mut tx, &key, &mut buff[..len]).await?;
                         }
-
-                        let node_list: Arc<NodeMap> = bridge.watch_rx.borrow().clone();
-                        let len = TcpMsg::node_map_encode(&node_list, &mut buff)?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff[..len]).await?;
-                    }
-                    res = bridge.channel_rx.recv() => {
-                        let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff).await?;
-                    }
-                    res = local_channel_rx.recv() => {
-                        let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
-                        TcpMsg::write_msg(&mut tx, key, &mut buff).await?;
+                        res = bridge.channel_rx.recv() => {
+                            let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                            TcpMsg::write_msg(&mut tx, &key, &mut buff).await?;
+                        }
+                        res = local_channel_rx.recv() => {
+                            let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                            TcpMsg::write_msg(&mut tx, &key, &mut buff).await?;
+                        }
+                        _ = notified.changed() => return Err(anyhow!("abort task"))
                     }
                 }
-            }
+            }).await?
         };
 
+        // A single task ends normally
         tokio::select! {
-            res = heartbeat_schedule => res?,
-            res = recv_handler => res?,
-            res = send_handler => res?
+            res = heartbeat_schedule => res,
+            res = recv_handler => res,
+            res = send_handler => res,
+            _ = self.notified.changed() => Err(anyhow!("abort task"))
         }
-
-        Ok(())
     }
 }
 
@@ -827,7 +871,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 
             info!("group {} tcp socket listening on {}", group.name, listen_addr);
 
-            let notify = Arc::new(Notify::new());
+            let (_notify, notified) = watch::channel(());
             let gh1 = gh.clone();
 
             let udp_handle = async {
@@ -839,38 +883,35 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                     config.udp_heartbeat_interval,
                     config.udp_heartbeat_continuous_loss,
                     config.udp_heartbeat_continuous_recv,
-                    notify.clone()
+                    notified.clone()
                 );
 
-                tokio::select! {
-                    res = fut => res.context("udp handler error"),
-                    _ = notify.notified() => Ok(())
-                }
+                fut.await.context("udp handler error")
             };
 
             let tcp_handle = async {
-                let notify = notify.clone();
+                let mut notified = notified.clone();
+
                 let fut = tcp_handler(
                     tcp_listener,
                     udp_socket.clone(),
                     config,
                     group,
                     gh,
+                    notified.clone()
                 );
 
                 tokio::spawn(async move {
                     tokio::select! {
                         res = fut => res,
-                        _ = notify.notified() => Ok(())
+                        _ = notified.changed() => Err(anyhow!("abort task"))
                     }
                 })
                 .await?
                 .context("tcp handler error")
             };
 
-            let res = tokio::try_join!(udp_handle, tcp_handle).map(|_| ());
-            notify.notify_waiters();
-            res
+            tokio::try_join!(udp_handle, tcp_handle).map(|_| ())
         };
 
         futures.push(async {
