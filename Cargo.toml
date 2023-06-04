@@ -37,6 +37,9 @@ net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }
 hostsfile = { git = "https://github.com/tonarino/innernet.git" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = "3"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 tun = { version = "0.5", features = ["async"] }
 

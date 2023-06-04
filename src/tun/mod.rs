@@ -1,16 +1,15 @@
 use std::future::Future;
-use anyhow::Result;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-#[cfg(target_os = "linux")]
-mod linux;
+use anyhow::Result;
 
-#[cfg(target_os = "windows")]
-mod windows;
+pub use os::create;
 
-#[cfg(target_os = "macos")]
-mod macos;
+#[cfg_attr(target_os = "windows", path = "windows.rs")]
+#[cfg_attr(target_os = "linux", path = "linux.rs")]
+#[cfg_attr(target_os = "macos", path = "macos.rs")]
+mod os;
 
 pub trait TunDevice {
     type SendFut<'a>: Future<Output = Result<()>> + Send + Sync
@@ -61,24 +60,4 @@ impl<T: TunDevice> TunDevice for Arc<T> {
     fn get_index(&self) -> u32 {
         (**self).get_index()
     }
-}
-
-pub(crate) fn create_device() -> Result<impl TunDevice + Send + Sync> {
-    let tun;
-
-    #[cfg(target_os = "windows")]
-    {
-        tun = windows::Wintun::create()?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        tun = linux::Linuxtun::create()?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        tun = macos::Macostun::create()?;
-    }
-    Ok(tun)
 }

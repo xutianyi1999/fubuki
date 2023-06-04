@@ -38,6 +38,12 @@ mod node;
 mod common;
 mod server;
 mod tun;
+
+#[cfg_attr(target_os = "windows", path = "nat/windows.rs")]
+#[cfg_attr(target_os = "linux", path = "nat/linux.rs")]
+#[cfg_attr(target_os = "macos", path = "nat/macos.rs")]
+mod nat;
+
 #[cfg(feature = "web")]
 mod web;
 

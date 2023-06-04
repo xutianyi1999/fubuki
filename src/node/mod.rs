@@ -29,20 +29,18 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
+use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, tun};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::common::routing_table::RoutingTable;
 use crate::node::api::api_start;
-use crate::node::nat::{add_nat, del_nat};
+use crate::nat::{add_nat, del_nat};
 use crate::node::sys_route::SystemRouteHandle;
-use crate::tun::create_device;
 use crate::tun::TunDevice;
 
 mod api;
-mod nat;
 mod sys_route;
 
 type NodeMap = HashMap<VirtualAddr, ExtendedNode>;
@@ -866,7 +864,7 @@ where
             if is_add_nat.load(Ordering::Relaxed) {
                 info!("clear node {} nat list", group.node_name);
 
-                if let Err(e) = nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
+                if let Err(e) = del_nat(&group.allowed_ips, interface.cidr.load()) {
                     error!("{}", e);
                 }
             }
@@ -1146,7 +1144,7 @@ pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
 {
     let config = &*Box::leak(Box::new(config));
 
-    let tun = Arc::new(create_device()?);
+    let tun = Arc::new(tun::create()?);
     tun.set_mtu(config.mtu)?;
 
     let mut rt = RoutingTable::new();

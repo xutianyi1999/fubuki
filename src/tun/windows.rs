@@ -36,28 +36,26 @@ fn get_interface(luid: LUID) -> Result<Interface> {
     Err(anyhow!("cannot found interface"))
 }
 
-impl Wintun {
-    pub fn create() -> Result<Wintun> {
-        // drop old wintun adapter
-        {
-            let _ = WintunAdapter::open_adapter(ADAPTER_NAME);
-        }
-
-        // to fix stuck
-        std::thread::sleep(Duration::from_millis(100));
-        let adapter = WintunAdapter::create_adapter(ADAPTER_NAME, TUNNEL_TYPE, ADAPTER_GUID)?;
-        let interface = get_interface(adapter.get_adapter_luid())?;
-
-        // todo self reference
-        let session: WintunStream<'static> = unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
-
-        Ok(Wintun {
-            ips: Mutex::new(HashSet::new()),
-            inter: interface,
-            session,
-            _adapter: adapter,
-        })
+pub fn create() -> Result<Wintun> {
+    // drop old wintun adapter
+    {
+        let _ = WintunAdapter::open_adapter(ADAPTER_NAME);
     }
+
+    // to fix stuck
+    std::thread::sleep(Duration::from_millis(100));
+    let adapter = WintunAdapter::create_adapter(ADAPTER_NAME, TUNNEL_TYPE, ADAPTER_GUID)?;
+    let interface = get_interface(adapter.get_adapter_luid())?;
+
+    // todo self reference
+    let session: WintunStream<'static> = unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
+
+    Ok(Wintun {
+        ips: Mutex::new(HashSet::new()),
+        inter: interface,
+        session,
+        _adapter: adapter,
+    })
 }
 
 impl TunDevice for Wintun {

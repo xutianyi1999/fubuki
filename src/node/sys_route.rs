@@ -70,8 +70,19 @@ impl SystemRouteHandle {
     }
 
     pub async fn clear(&mut self) -> Result<()> {
-        for x in &self.routes {
-            self.handle.delete(x).await?;
+        let list = self.handle.list().await?;
+
+        for a in &self.routes {
+            for b in &list {
+                if a.destination == b.destination &&
+                    a.prefix == b.prefix &&
+                    a.gateway == b.gateway &&
+                    a.ifindex == b.ifindex
+                {
+                    self.handle.delete(a).await?;
+                    debug!("delete route: {:?}", a);
+                }
+            }
         }
 
         self.routes = Vec::new();
@@ -84,7 +95,7 @@ impl Drop for SystemRouteHandle {
         if !self.routes.is_empty() {
             info!("clear all routes");
 
-            let rt= self.rt.clone();
+            let rt = self.rt.clone();
 
             std::thread::scope(|scope| {
                 scope.spawn(|| {

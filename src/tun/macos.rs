@@ -22,26 +22,24 @@ pub struct Macostun {
 
 unsafe impl Sync for Macostun {}
 
-impl Macostun {
-    pub(crate) fn create() -> Result<Macostun> {
-        let mut config = tun::Configuration::default();
-        config.up();
+pub fn create() -> Result<Macostun> {
+    let mut config = tun::Configuration::default();
+    config.up();
 
-        let device = tun::create_as_async(&config)?;
-        let device_name = device.get_ref().name();
+    let device = tun::create_as_async(&config)?;
+    let device_name = device.get_ref().name();
 
-        for inter in netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))? {
-            if inter.name().map_err(|e| anyhow!(e.to_string()))? == device_name {
-                return Ok(Macostun {
-                    ips: Mutex::new(HashSet::new()),
-                    fd: UnsafeCell::new(device),
-                    inter,
-                });
-            }
+    for inter in netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))? {
+        if inter.name().map_err(|e| anyhow!(e.to_string()))? == device_name {
+            return Ok(Macostun {
+                ips: Mutex::new(HashSet::new()),
+                fd: UnsafeCell::new(device),
+                inter,
+            });
         }
-
-        Err(anyhow!("cannot found interface"))
     }
+
+    Err(anyhow!("cannot found interface"))
 }
 
 impl TunDevice for Macostun {

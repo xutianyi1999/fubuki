@@ -86,7 +86,7 @@ pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
     Ok(addr.ip())
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Eq, PartialEq)]
 pub enum UdpStatus {
     Available {
         dst_addr: SocketAddr
@@ -219,7 +219,7 @@ pub mod protocol {
     pub type Seq = u32;
     pub type NetProtocols = ArrayVec<NetProtocol, 2>;
 
-    #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+    #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
     pub enum NetProtocol {
         TCP,
         UDP,
@@ -273,7 +273,7 @@ pub mod protocol {
         pub nonce: u32,
     }
 
-    #[derive(PartialEq, Debug, Copy, Clone, Encode, Decode)]
+    #[derive(Eq, PartialEq, Debug, Copy, Clone, Encode, Decode)]
     pub enum AllocateError {
         IpNotBelongNetworkRange,
         IpSameAsNetworkAddress,
