@@ -76,7 +76,7 @@ pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
 
     let status = Command::new("pfctl")
         .args([
-            "-ef", file_path.to_str().ok_or_else(|| anyhow!("cannot get fubuki-pf-nat.conf path"))?
+            "-Ef", file_path.to_str().ok_or_else(|| anyhow!("cannot get fubuki-pf-nat.conf path"))?
         ])
         .stderr(Stdio::inherit())
         .output()?
@@ -107,7 +107,7 @@ pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
 
     let status = Command::new("pfctl")
         .args([
-            "-ef", file_path.to_str().ok_or_else(|| anyhow!("cannot get fubuki-pf-nat.conf path"))?
+            "-f", file_path.to_str().ok_or_else(|| anyhow!("cannot get fubuki-pf-nat.conf path"))?
         ])
         .stderr(Stdio::inherit())
         .output()?
