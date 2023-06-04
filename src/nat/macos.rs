@@ -93,7 +93,7 @@ pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
     let mut records = RECORDS.lock();
 
     *records = records.iter()
-        .filter(|record| (!ranges.contains(&record.dst_cidr)) && record.src_cidr != src)
+        .filter(|record| !(ranges.contains(&record.dst_cidr) && record.src_cidr == src))
         .cloned()
         .collect();
 
