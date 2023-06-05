@@ -4,6 +4,7 @@ import { ActivatedRoute } from '@angular/router';
 import { NodeInfoListItem } from '../fubuki/types/NodeInfoListItem';
 import { NodeStatus } from '../fubuki/types/NodeStatus';
 import { Clipboard } from '@angular/cdk/clipboard';
+import { HeartbeatCache } from '../fubuki/types/HeartbeatCache';
 
 @Component({
   selector: 'app-info-item',
@@ -31,17 +32,18 @@ export class InfoItemComponent {
       this.serverType = serverType;
       if(serverType === "node") {
         this.basicGroupColumns = ["group_name", "node_name", "addr", "server_addr", "server_is_connected"];
-        this.groupHcColumns = ["server_udp_hc", "server_tcp_hc"];
+        this.groupHcColumns = ["udp", "tcp"];
         this.viewGroupColumns = [
           "group_name", "node_name", "addr", "server_addr", "server_is_connected",
-          "mode", "server_udp_status", "server_udp_hc", "server_tcp_hc"
+          "mode", "server_udp_status",
+          "server_udp_latency", "server_udp_loss_rate", "server_tcp_latency", "server_tcp_loss_rate"
         ];
 
         this.basicNodeColumns = ["name", "virtual_addr", "lan_udp_addr", "wan_udp_addr"]
-        this.nodeHcColumns = ["hc"];
+        // this.nodeHcColumns = ["hc"];
         this.viewNodeColumns = [
           "name", "virtual_addr", "lan_udp_addr", "wan_udp_addr",
-          "mode", "allowed_ips", "udp_status", "hc"
+          "mode", "allowed_ips", "register_time", "udp_status", "latency", "loss_rate"
         ];
         // JSON.stringify(this.viewGroupColumns);
       } else if(serverType === "server") {
@@ -50,10 +52,11 @@ export class InfoItemComponent {
         this.viewGroupColumns = ["name", "listen_addr", "address_range"];
         
         this.basicNodeColumns = ["name", "virtual_addr", "lan_udp_addr", "wan_udp_addr"]
-        this.nodeHcColumns = ["udp_heartbeat_cache", "tcp_heartbeat_cache"];
+        this.nodeHcColumns = ["udp", "tcp"];
         this.viewNodeColumns = [
           "name", "virtual_addr", "lan_udp_addr", "wan_udp_addr", 
-          "mode", "allowed_ips", "udp_status", "udp_heartbeat_cache", "tcp_heartbeat_cache"
+          "mode", "allowed_ips", "register_time", "udp_status",
+          "udp_latency", "udp_loss_rate", "tcp_latency", "tcp_loss_rate"
         ];
       }
     })
@@ -103,6 +106,9 @@ export class InfoItemComponent {
   }
 
   toJsonString(obj: Object): string {
+    if (typeof obj === "string") {
+      return obj;
+    }
     return JSON.stringify(obj);
   }
 
@@ -122,6 +128,18 @@ export class InfoItemComponent {
 
   copy(text: string): void {
     this.clipboard.copy(text);
+  }
+
+  secondsToDate(sec: number): Date {
+    return new Date(sec * 1000);
+  }
+
+  toLatency(elapsed: {secs: number, nanos: number}): number {
+    return elapsed.secs * 1_000 + elapsed.nanos / 1_000_000;
+  }
+
+  toLossRate(hc: HeartbeatCache) {
+    return hc.packet_loss_count / hc.send_count;
   }
 
 }
