@@ -406,11 +406,17 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
             group_handle.clone(),
             nonce_pool.clone(),
             address_pool.clone(),
-            notified.clone()
         );
 
+        let mut notified = notified.clone();
+
         tokio::spawn(async move {
-            if let Err(e) = tunnel.exec().await {
+            let res = tokio::select! {
+                res = tunnel.exec() => res,
+                _ = notified.changed() => Err(anyhow!("abort task"))
+            };
+
+            if let Err(e) = res {
                 match &tunnel.register {
                     None => error!("group {} address {} tunnel error: {:?}", group.name, peer_addr, e),
                     Some(v) => error!("group {} node {}({}) tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
@@ -434,7 +440,6 @@ struct Tunnel<K: 'static> {
     address_pool: Arc<AddressPool>,
     register: Option<Register>,
     bridge: Option<Bridge>,
-    notified: watch::Receiver<()>
 }
 
 impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
@@ -446,7 +451,6 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
         group_handle: Arc<GroupHandle>,
         nonce_pool: Arc<NoncePool>,
         address_pool: Arc<AddressPool>,
-        notified: watch::Receiver<()>
     ) -> Self {
         Self {
             stream: Some(stream),
@@ -456,7 +460,6 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
             group_handle,
             nonce_pool,
             address_pool,
-            notified,
             register: None,
             bridge: None,
         }
@@ -564,10 +567,10 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
             .into_split();
 
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
-        let (_notify, inner_notified) = sync::watch::channel(());
+        let (_notify, notified) = sync::watch::channel(());
 
         let heartbeat_schedule = async {
-            let mut notified = inner_notified.clone();
+            let mut notified = notified.clone();
             let group_handle = self.group_handle.clone();
             let config = self.config;
             let local_channel_tx = local_channel_tx.clone();
@@ -610,7 +613,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
         };
 
         let recv_handler = async {
-            let mut notified = inner_notified.clone();
+            let mut notified = notified.clone();
             let group_handle = self.group_handle.clone();
             let udp_socket = self.udp_socket.clone();
             let group = self.group;
@@ -706,7 +709,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
         };
 
         let send_handler = async {
-            let mut notified = inner_notified.clone();
+            let mut notified = notified.clone();
             let key = self.group.key.clone();
 
             tokio::spawn(async move {
@@ -742,7 +745,6 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
             res = heartbeat_schedule => res,
             res = recv_handler => res,
             res = send_handler => res,
-            _ = self.notified.changed() => Err(anyhow!("abort task"))
         }
     }
 }
