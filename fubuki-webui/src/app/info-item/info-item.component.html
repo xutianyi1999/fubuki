@@ -34,13 +34,13 @@
       <td mat-cell *matCellDef="let groupInfo">
 
         <mat-chip-listbox aria-label="server_udp_status">
-          <mat-chip *ngFor="let status of getKeys(groupInfo.server_udp_status)"
-            matTooltip="{{toKeyValueString(groupInfo.server_udp_status[status])}} (click to copy)"
+          <mat-chip
+            matTooltip="{{toJsonString(groupInfo.server_udp_status)}} (click to copy)"
             [matTooltipPositionAtOrigin]="false"
             [matTooltipPosition]="'above'"
-            (click)="copy(toKeyValueString(groupInfo.server_udp_status[status]))"
+            (click)="copy(toJsonString(groupInfo.server_udp_status))"
           >
-            {{status}}
+            {{parseUdpStatus(groupInfo.server_udp_status)}}
           </mat-chip>
         </mat-chip-listbox>
 
@@ -60,7 +60,7 @@
       <ng-container matColumnDef="server_{{hcColumnName}}_loss_rate">
         <th mat-header-cell *matHeaderCellDef> server_{{hcColumnName}}_loss_rate </th>
         <td mat-cell *matCellDef="let groupInfo">
-          <mat-chip-listbox aria-label="udp_status">
+          <mat-chip-listbox aria-label="loss_rate">
             <mat-chip
               matTooltip="{{groupInfo['server_' + hcColumnName + '_hc'] | json}} (click to copy)"
               [matTooltipPositionAtOrigin]="false"
@@ -140,12 +140,13 @@
       <td mat-cell *matCellDef="let nodeInfo">
     
         <mat-chip-listbox aria-label="udp_status">
-          <mat-chip *ngFor="let status of getKeys(nodeInfo.udp_status)"
-            matTooltip="{{toKeyValueString(nodeInfo.udp_status[status])}} (click to copy)"
+          <mat-chip
+            matTooltip="{{toJsonString(nodeInfo.udp_status)}} (click to copy)"
             [matTooltipPositionAtOrigin]="false"
             [matTooltipPosition]="'above'"
-            (click)="copy(toKeyValueString(nodeInfo.udp_status[status]))">
-            {{status}}
+            (click)="copy(toJsonString(nodeInfo.udp_status))"
+          >
+            {{parseUdpStatus(nodeInfo.udp_status)}}
           </mat-chip>
         </mat-chip-listbox>
     
@@ -164,7 +165,7 @@
       <th mat-header-cell *matHeaderCellDef>loss_rate</th>
       <td mat-cell *matCellDef="let nodeInfo">
 
-        <mat-chip-listbox aria-label="udp_status">
+        <mat-chip-listbox aria-label="loss_rate">
           <mat-chip
             matTooltip="{{nodeInfo.hc | json}} (click to copy)"
             [matTooltipPositionAtOrigin]="false"
@@ -189,7 +190,7 @@
       <ng-container matColumnDef="{{hcColumnName}}_loss_rate">
         <th mat-header-cell *matHeaderCellDef> {{hcColumnName}}_loss_rate </th>
         <td mat-cell *matCellDef="let groupInfo">
-          <mat-chip-listbox aria-label="udp_status">
+          <mat-chip-listbox aria-label="loss_rate">
             <mat-chip
               matTooltip="{{groupInfo[hcColumnName + '_heartbeat_cache'] | json}} (click to copy)"
               [matTooltipPositionAtOrigin]="false"

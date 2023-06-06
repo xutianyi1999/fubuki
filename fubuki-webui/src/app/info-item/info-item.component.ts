@@ -5,6 +5,7 @@ import { NodeInfoListItem } from '../fubuki/types/NodeInfoListItem';
 import { NodeStatus } from '../fubuki/types/NodeStatus';
 import { Clipboard } from '@angular/cdk/clipboard';
 import { HeartbeatCache } from '../fubuki/types/HeartbeatCache';
+import { UdpStatus } from '../fubuki/types/UdpStatus';
 
 @Component({
   selector: 'app-info-item',
@@ -60,6 +61,12 @@ export class InfoItemComponent {
         ];
       }
     })
+
+    this.timer = setInterval(() => this.getNodeMap(), 10_000);
+  }
+
+  ngOnDestoy() {
+    clearInterval(this.timer);
   }
 
   viewGroupColumns!: string[];
@@ -68,6 +75,7 @@ export class InfoItemComponent {
   viewNodeColumns!: string[];
   basicNodeColumns!: string[];
   nodeHcColumns!: string[];
+  timer!: any;
 
   path: string = "";  
   serverType!: string;
@@ -135,11 +143,24 @@ export class InfoItemComponent {
   }
 
   toLatency(elapsed: {secs: number, nanos: number}): number {
+    if (elapsed == null) {
+      return -1;
+    }
+    elapsed.secs == null ? 0 : elapsed.secs;
+    elapsed.nanos == null ? 0 : elapsed.nanos;
     return elapsed.secs * 1_000 + elapsed.nanos / 1_000_000;
   }
 
   toLossRate(hc: HeartbeatCache) {
     return hc.packet_loss_count / hc.send_count;
+  }
+
+  parseUdpStatus(status: UdpStatus | string): string {
+    if (typeof status === "string") {
+      return status;
+    } else {
+      return this.getKeys(status)[0];
+    }
   }
 
 }
