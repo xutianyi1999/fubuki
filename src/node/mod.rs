@@ -451,12 +451,14 @@ where
     T: TunDevice + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
 {
-    let join = tokio::spawn(async move {
-        let socket = interface.udp_socket.as_ref().expect("must need udp socket");
-        let key = &interface.key;
-        let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
+    let heartbeat_schedule = async {
+        let interface = interface.clone();
+        let table = table.clone();
 
-        let heartbeat_schedule =  async {
+        let join = tokio::spawn(async move {
+            let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+            let key = &interface.key;
+            let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
             let mut packet = vec![0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
 
             loop {
@@ -518,7 +520,7 @@ where
                             match udp_status {
                                 UdpStatus::Available { dst_addr } if !is_over => {
                                     if let Err(e) = socket.send_to(&packet, dst_addr).await {
-                                        return Err(anyhow!(e))
+                                        return Result::<(), _>::Err(anyhow!(e))
                                     }
                                 }
                                 _ => {
@@ -560,9 +562,20 @@ where
 
                 time::sleep(config.udp_heartbeat_interval).await
             }
-        };
+        });
 
-        let recv_handler = async {
+        join.await?
+    };
+
+    let recv_handler = async {
+        let interface = interface.clone();
+        let table = table.clone();
+
+        let join = tokio::spawn(async move {
+            let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+            let key = &interface.key;
+            let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
+
             let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
             loop {
@@ -583,7 +596,7 @@ where
                                 continue;
                             }
                         }
-                        return Err(anyhow!(e))
+                        return Result::<(), _>::Err(anyhow!(e))
                     }
                 };
 
@@ -706,13 +719,12 @@ where
                     }
                 }
             }
-        };
+        });
 
-        let res: Result<((), ()), anyhow::Error> = tokio::try_join!(heartbeat_schedule, recv_handler);
-        res
-    });
+        join.await?
+    };
 
-    join.await?.with_context(|| format!("node {} udp handler error", group.node_name))?;
+    tokio::try_join!(heartbeat_schedule, recv_handler).with_context(|| format!("node {} udp handler error", group.node_name))?;
     Ok(())
 }
 
@@ -830,7 +842,7 @@ async fn tcp_handler<T, K>(
     routing_table: Arc<ArcSwap<RoutingTable>>,
     interface: Arc<Interface<K>>,
     tun: T,
-    mut channel_rx: Option<Receiver<Bytes>>,
+    channel_rx: Option<Receiver<Bytes>>,
     sys_routing: Arc<tokio::sync::Mutex<SystemRouteHandle>>,
     routes: Vec<Route>
 ) -> Result<()>
@@ -842,7 +854,10 @@ where
         let mut sys_route_is_sync = false;
         // use defer must use atomic
         let is_add_nat = AtomicBool::new(false);
-        let host_records = Mutex::new(HashSet::new());
+        let host_records = Arc::new(Mutex::new(HashSet::new()));
+
+        // todo requires Arc + Mutex to pass compile
+        let channel_rx = channel_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
 
         defer! {
             {
@@ -980,143 +995,189 @@ where
                 info!("node {}({}) has joined group {}", group.node_name, interface.addr.load(), group_info.name);
                 info!("group {} address range {}", group_info.name, group_info.cidr);
 
-                let (rx, mut tx) = stream.split();
+                let (rx, mut tx) = stream.into_split();
                 let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
                 let (inner_channel_tx, mut inner_channel_rx) = unbounded_channel::<Bytes>();
+                let (_notify, notified) = tokio::sync::watch::channel(());
 
                 let recv_handler = async {
-                    let mut buff = vec![0u8; TCP_BUFF_SIZE];
+                    let mut notified = notified.clone();
+                    let interface = interface.clone();
+                    let inner_channel_tx = inner_channel_tx.clone();
+                    let host_records = host_records.clone();
+                    let tun = tun.clone();
 
-                    loop {
-                        let msg = TcpMsg::read_msg(&mut rx, key, &mut buff).await?
-                            .ok_or_else(|| anyhow!("server connection closed"))?;
+                    let join = tokio::spawn(async move {
+                        let fut = async {
+                            let mut buff = vec![0u8; TCP_BUFF_SIZE];
 
-                        match msg {
-                            TcpMsg::NodeMap(map) => {
-                                let mut new_map = HashMap::new();
+                            loop {
+                                let msg = TcpMsg::read_msg(&mut rx, key, &mut buff).await?
+                                    .ok_or_else(|| anyhow!("server connection closed"))?;
 
-                                {
-                                    let old_map = interface.node_map.load();
+                                match msg {
+                                    TcpMsg::NodeMap(map) => {
+                                        let mut new_map = HashMap::new();
 
-                                    for (virtual_addr, node) in map {
-                                        match old_map.get(&virtual_addr) {
-                                            None => {
-                                                new_map.insert(virtual_addr, ExtendedNode::from(node));
-                                            },
-                                            Some(v) => {
-                                                let en = ExtendedNode {
-                                                    node,
-                                                    hc: v.hc.clone(),
-                                                    udp_status: v.udp_status.clone(),
-                                                    peer_addr: v.peer_addr.clone()
-                                                };
-                                                new_map.insert(virtual_addr, en);
+                                        {
+                                            let old_map = interface.node_map.load();
+
+                                            for (virtual_addr, node) in map {
+                                                match old_map.get(&virtual_addr) {
+                                                    None => {
+                                                        new_map.insert(virtual_addr, ExtendedNode::from(node));
+                                                    },
+                                                    Some(v) => {
+                                                        let en = ExtendedNode {
+                                                            node,
+                                                            hc: v.hc.clone(),
+                                                            udp_status: v.udp_status.clone(),
+                                                            peer_addr: v.peer_addr.clone()
+                                                        };
+                                                        new_map.insert(virtual_addr, en);
+                                                    }
+                                                }
                                             }
                                         }
+
+                                        let host_key = format!("FUBUKI-{}", group_info.name);
+                                        let mut hb = hostsfile::HostsBuilder::new(&host_key);
+                                        host_records.lock().insert(host_key);
+
+                                        for node in new_map.values() {
+                                            let node = &node.node;
+                                            hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
+                                        }
+
+                                        tokio::task::spawn_blocking(move || {
+                                            let node_name = &group.node_name;
+
+                                            match hb.write() {
+                                                Ok(_) => info!("node {} update hosts", node_name),
+                                                Err(e) => error!("node {} update hosts error: {}", node_name, e)
+                                            }
+                                        });
+
+                                        interface.node_map.store(Arc::new(new_map));
                                     }
-                                }
+                                    TcpMsg::Relay(_, buff) => {
+                                        if log::max_level() >= log::Level::Debug {
+                                            let f = || {
+                                                let src = get_ip_src_addr(buff)?;
+                                                let dst = get_ip_dst_addr(buff)?;
+                                                Result::<_, anyhow::Error>::Ok((src, dst))
+                                            };
 
-                                let host_key = format!("FUBUKI-{}", group_info.name);
-                                let mut hb = hostsfile::HostsBuilder::new(&host_key);
-                                host_records.lock().insert(host_key);
+                                            if let Ok((src, dst)) = f() {
+                                                debug!("node {} tcp handler: tcp message relay to tun; packet {}->{}", group.node_name, src, dst);
+                                            }
+                                        }
 
-                                for node in new_map.values() {
-                                    let node = &node.node;
-                                    hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
-                                }
-
-                                tokio::task::spawn_blocking(move || {
-                                    let node_name = &group.node_name;
-
-                                    match hb.write() {
-                                        Ok(_) => info!("node {} update hosts", node_name),
-                                        Err(e) => error!("node {} update hosts error: {}", node_name, e)
+                                        tun.send_packet(buff).await?;
                                     }
-                                });
+                                    TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
+                                        let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
+                                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
+                                        key.encrypt(&mut buff, 0);
 
-                                interface.node_map.store(Arc::new(new_map));
-                            }
-                            TcpMsg::Relay(_, buff) => {
-                                if log::max_level() >= log::Level::Debug {
-                                    let f = || {
-                                        let src = get_ip_src_addr(buff)?;
-                                        let dst = get_ip_dst_addr(buff)?;
-                                        Result::<_, anyhow::Error>::Ok((src, dst))
-                                    };
+                                        let res = inner_channel_tx
+                                            .send(buff)
+                                            .map_err(|e| anyhow!(e.to_string()));
 
-                                    if let Ok((src, dst)) = f() {
-                                        debug!("node {} tcp handler: tcp message relay to tun; packet {}->{}", group.node_name, src, dst);
+                                        if res.is_err() {
+                                            return res;
+                                        }
                                     }
-                                }
-
-                                tun.send_packet(buff).await?;
-                            }
-                            TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
-                                let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                                TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
-                                key.encrypt(&mut buff, 0);
-
-                                let res = inner_channel_tx
-                                    .send(buff)
-                                    .map_err(|e| anyhow!(e.to_string()));
-
-                                if res.is_err() {
-                                    return res;
+                                    TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
+                                        interface.server_tcp_hc.write().response(recv_seq);
+                                    }
+                                    _ => continue,
                                 }
                             }
-                            TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                                interface.server_tcp_hc.write().response(recv_seq);
-                            }
-                            _ => continue,
+                        };
+
+                        tokio::select! {
+                            res = fut => res,
+                            _ = notified.changed() => Err(anyhow!("abort task"))
                         }
-                    }
+                    });
+
+                    join.await?
                 };
 
                 let send_handler = async {
-                    loop {
-                        tokio::select! {
-                            opt = inner_channel_rx.recv() => {
-                                match opt {
-                                    Some(buff) => tx.write_all(&buff).await?,
-                                    None => return Ok(())
-                                };
-                            }
-                            opt = match channel_rx {
-                                Some(ref mut v) => v.recv().right_future(),
-                                None => std::future::pending().left_future()
-                            } => {
-                                match opt {
-                                    Some(buff) => tx.write_all(&buff).await?,
-                                    None => return Ok(())
-                                };
+                    let mut notified = notified.clone();
+                    let channel_rx = channel_rx.clone();
+
+                    let join = tokio::spawn(async move {
+                        let mut channel_rx = match &channel_rx {
+                            None => None,
+                            Some(lock) => Some(lock.lock().await)
+                        };
+
+                        loop {
+                            tokio::select! {
+                                opt = inner_channel_rx.recv() => {
+                                    match opt {
+                                        Some(buff) => tx.write_all(&buff).await?,
+                                        None => return Ok(())
+                                    };
+                                }
+                                opt = match channel_rx {
+                                    Some(ref mut v) => v.recv().right_future(),
+                                    None => std::future::pending().left_future()
+                                } => {
+                                    match opt {
+                                        Some(buff) => tx.write_all(&buff).await?,
+                                        None => return Ok(())
+                                    };
+                                }
+                                _ = notified.changed() => return Err(anyhow!("abort task"))
                             }
                         }
-                    }
+                    });
+
+                    join.await?
                 };
 
                 let heartbeat_schedule = async {
-                    loop {
-                        let seq = {
-                            let mut guard = interface.server_tcp_hc.write();
-                            guard.check();
+                    let mut notified = notified.clone();
+                    let interface = interface.clone();
+                    let inner_channel_tx = inner_channel_tx.clone();
 
-                            if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
-                                guard.packet_continuous_loss_count = 0;
-                                return Result::<(), _>::Err(anyhow!("receive tcp heartbeat timeout"));
+                    let join = tokio::spawn(async move {
+                        let fut = async {
+                            loop {
+                                let seq = {
+                                    let mut guard = interface.server_tcp_hc.write();
+                                    guard.check();
+
+                                    if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
+                                        guard.packet_continuous_loss_count = 0;
+                                        return Result::<(), _>::Err(anyhow!("receive tcp heartbeat timeout"));
+                                    }
+
+                                    guard.request();
+                                    guard.seq
+                                };
+
+                                let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
+                                TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
+                                key.encrypt(&mut buff, 0);
+                                inner_channel_tx.send(buff).map_err(|e| anyhow!(e.to_string()))?;
+
+                                tokio::time::sleep(config.tcp_heartbeat_interval).await;
                             }
-
-                            guard.request();
-                            guard.seq
                         };
 
-                        let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
-                        key.encrypt(&mut buff, 0);
-                        inner_channel_tx.send(buff).map_err(|e| anyhow!(e.to_string()))?;
+                        tokio::select! {
+                            res = fut => res,
+                            _ = notified.changed() => Err(anyhow!("abort task"))
+                        }
+                    });
 
-                        tokio::time::sleep(config.tcp_heartbeat_interval).await;
-                    }
+                    join.await?
                 };
 
                 tokio::try_join!(recv_handler, send_handler, heartbeat_schedule)?;
