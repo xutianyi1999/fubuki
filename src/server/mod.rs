@@ -13,12 +13,12 @@ use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
 use serde::{Deserialize, Serialize};
+use tokio::{sync, time};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::{sync, time};
 
-use crate::{GroupFinalize, ServerInfoType};
+use crate::{GroupFinalize, ServerInfoType, ternary};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
@@ -1002,9 +1002,14 @@ pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()
                         table.add_row(row!["REGISTER_TIME", register_time]);
                         table.add_row(row!["UDP_STATUS", node.udp_status]);
                         table.add_row(row!["UDP_LATENCY", format!("{:?}", node.udp_heartbeat_cache.elapsed)]);
-                        table.add_row(row!["UDP_LOSS_RATE", format!("{}%", node.udp_heartbeat_cache.packet_loss_count as f32 / node.udp_heartbeat_cache.send_count as f32 * 100f32)]);
+
+                        let udp_loss_rate = node.udp_heartbeat_cache.packet_loss_count as f32 / node.udp_heartbeat_cache.send_count as f32 * 100f32;
+                        table.add_row(row!["UDP_LOSS_RATE", ternary!(udp_loss_rate.is_normal(), format!("{}%", udp_loss_rate), String::new())]);
+
                         table.add_row(row!["TCP_LATENCY", format!("{:?}", node.tcp_heartbeat_cache.elapsed)]);
-                        table.add_row(row!["TCP_LOSS_RATE", format!("{}%", node.tcp_heartbeat_cache.packet_loss_count as f32 / node.tcp_heartbeat_cache.send_count as f32 * 100f32)]);
+
+                        let tcp_loss_rate = node.tcp_heartbeat_cache.packet_loss_count as f32 / node.tcp_heartbeat_cache.send_count as f32 * 100f32;
+                        table.add_row(row!["TCP_LOSS_RATE", ternary!(tcp_loss_rate.is_normal(), format!("{}%", tcp_loss_rate), String::new())]);
                     }
                     break;
                 }

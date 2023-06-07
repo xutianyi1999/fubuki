@@ -29,7 +29,7 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, tun};
+use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, ternary, tun};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
@@ -1398,9 +1398,14 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                     table.add_row(row!["IS_CONNECTED", info.server_is_connected]);
                     table.add_row(row!["UDP_STATUS", info.server_udp_status]);
                     table.add_row(row!["UDP_LATENCY", format!("{:?}", info.server_udp_hc.elapsed)]);
-                    table.add_row(row!["UDP_LOSS_RATE", format!("{}%", info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32)]);
+
+                    let udp_loss_rate = info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32;
+                    table.add_row(row!["UDP_LOSS_RATE", ternary!(udp_loss_rate.is_normal(), format!("{}%", udp_loss_rate), String::new())]);
+
                     table.add_row(row!["TCP_LATENCY", format!("{:?}", info.server_tcp_hc.elapsed)]);
-                    table.add_row(row!["TCP_LOSS_RATE", format!("{}%", info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32)]);
+
+                    let tcp_loss_rate =  info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32;
+                    table.add_row(row!["TCP_LOSS_RATE", ternary!(tcp_loss_rate.is_normal(), format!("{}%", tcp_loss_rate), String::new())]);
 
                     break;
                 }
@@ -1439,7 +1444,9 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                         table.add_row(row!["REGISTER_TIME", register_time]);
                         table.add_row(row!["UDP_STATUS", node.udp_status]);
                         table.add_row(row!["LATENCY", format!("{:?}", node.hc.elapsed)]);
-                        table.add_row(row!["LOSS_RATE", format!("{}%", node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32)]);
+
+                        let loss_rate = node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32;
+                        table.add_row(row!["LOSS_RATE", ternary!(loss_rate.is_normal(), format!("{}%", loss_rate), String::new())]);
                     }
 
                     break;
