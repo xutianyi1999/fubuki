@@ -127,6 +127,9 @@ export class InfoItemComponent {
   }
 
   reduceStringArray(stringArray: string[]): string {
+    if(stringArray == null || stringArray.length == 0) {
+      return "";
+    }
     return stringArray.reduce((a, e) => a + ", " + e);
   }
 
