@@ -11,7 +11,7 @@ export interface NodeInfoListItem {
     cidr: string;
     mode: Mode;
     server_addr: string;
-    server_udp_status: UdpStatus;
+    server_udp_status: UdpStatus | string;
     server_udp_hc: HeartbeatCache;
     server_tcp_hc: HeartbeatCache;
     server_is_connected: true;
