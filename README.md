@@ -8,6 +8,7 @@ fubuki是网状VPN实现，用于不同内网机器之间相互通信
 
 - Windows
 - Linux
+- macOS
 
 受支持的协议类型：
 
@@ -47,7 +48,13 @@ Options:
 
 - 必须以root权限运行
 - 内核需支持tun模块
-- 启用`allowed_ips`配置项时系统须支持iptables
+- 启用`allowed_ips`配置项时系统须支持`iptables`
+
+##### macOS
+
+- 必须以root权限运行
+- 内核需支持tun模块
+- 启用`allowed_ips`配置项时系统须支持`pfctl`
 
 ### Fubuki server
 
