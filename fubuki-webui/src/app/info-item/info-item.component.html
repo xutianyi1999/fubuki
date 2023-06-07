@@ -19,7 +19,7 @@
       <th mat-header-cell *matHeaderCellDef>mode</th>
       <td mat-cell *matCellDef="let groupInfo">
         <mat-chip-listbox aria-label="modes">
-          <mat-chip *ngFor="let modeName of getKeys(groupInfo.mode)"
+          <mat-chip *ngFor="let modeName of getActiveModes(groupInfo.mode)"
             matTooltip={{reduceStringArray(groupInfo.mode[modeName])}}
             [matTooltipPositionAtOrigin]="true"
             [matTooltipPosition]="'above'">
@@ -101,7 +101,7 @@
 
         <mat-chip-listbox aria-label="modes">
           <mat-chip
-            *ngFor="let modeName of getKeys(nodeInfo.node.mode)"
+            *ngFor="let modeName of getActiveModes(nodeInfo.node.mode)"
             matTooltip={{reduceStringArray(nodeInfo.node.mode[modeName])}}
             [matTooltipPositionAtOrigin]="true"
             [matTooltipPosition]="'above'"

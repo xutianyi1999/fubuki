@@ -166,4 +166,15 @@ export class InfoItemComponent {
     }
   }
 
+  getActiveModes(obj: any): string[] {
+    const modeNames: string[] = Object.keys(obj);
+    return modeNames.filter(modeName => {
+      if (obj[modeName] == null) {
+        return false;
+      }
+      const connectionTypes: string[] = obj[modeName] as string[];
+      return connectionTypes.length != 0;
+    })
+  }
+
 }
