@@ -15,7 +15,7 @@ fubuki是网状结构VPN实现，类似与TincVPN的简单组网工具
 
 ## 使用
 
-[配置文件说明](https://github.com/xutianyi1999/fubuki/tree/master/cfg-example)
+[配置文件说明](https://github.com/xutianyi1999/fubuki/tree/v0.4/cfg-example)
 ### 前置依赖
 
 #### Windows
