@@ -1400,12 +1400,12 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                     table.add_row(row!["UDP_LATENCY", format!("{:?}", info.server_udp_hc.elapsed)]);
 
                     let udp_loss_rate = info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32;
-                    table.add_row(row!["UDP_LOSS_RATE", ternary!(udp_loss_rate.is_normal(), format!("{}%", udp_loss_rate), String::new())]);
+                    table.add_row(row!["UDP_LOSS_RATE", ternary!(!udp_loss_rate.is_nan(), format!("{}%", udp_loss_rate), String::new())]);
 
                     table.add_row(row!["TCP_LATENCY", format!("{:?}", info.server_tcp_hc.elapsed)]);
 
                     let tcp_loss_rate =  info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32;
-                    table.add_row(row!["TCP_LOSS_RATE", ternary!(tcp_loss_rate.is_normal(), format!("{}%", tcp_loss_rate), String::new())]);
+                    table.add_row(row!["TCP_LOSS_RATE", ternary!(!tcp_loss_rate.is_nan(), format!("{}%", tcp_loss_rate), String::new())]);
 
                     break;
                 }
@@ -1446,7 +1446,7 @@ pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> 
                         table.add_row(row!["LATENCY", format!("{:?}", node.hc.elapsed)]);
 
                         let loss_rate = node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32;
-                        table.add_row(row!["LOSS_RATE", ternary!(loss_rate.is_normal(), format!("{}%", loss_rate), String::new())]);
+                        table.add_row(row!["LOSS_RATE", ternary!(!loss_rate.is_nan(), format!("{}%", loss_rate), String::new())]);
                     }
 
                     break;

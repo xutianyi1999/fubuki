@@ -1004,12 +1004,12 @@ pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()
                         table.add_row(row!["UDP_LATENCY", format!("{:?}", node.udp_heartbeat_cache.elapsed)]);
 
                         let udp_loss_rate = node.udp_heartbeat_cache.packet_loss_count as f32 / node.udp_heartbeat_cache.send_count as f32 * 100f32;
-                        table.add_row(row!["UDP_LOSS_RATE", ternary!(udp_loss_rate.is_normal(), format!("{}%", udp_loss_rate), String::new())]);
+                        table.add_row(row!["UDP_LOSS_RATE", ternary!(!udp_loss_rate.is_nan(), format!("{}%", udp_loss_rate), String::new())]);
 
                         table.add_row(row!["TCP_LATENCY", format!("{:?}", node.tcp_heartbeat_cache.elapsed)]);
 
                         let tcp_loss_rate = node.tcp_heartbeat_cache.packet_loss_count as f32 / node.tcp_heartbeat_cache.send_count as f32 * 100f32;
-                        table.add_row(row!["TCP_LOSS_RATE", ternary!(tcp_loss_rate.is_normal(), format!("{}%", tcp_loss_rate), String::new())]);
+                        table.add_row(row!["TCP_LOSS_RATE", ternary!(!tcp_loss_rate.is_nan(), format!("{}%", tcp_loss_rate), String::new())]);
                     }
                     break;
                 }
