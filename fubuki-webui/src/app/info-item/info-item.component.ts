@@ -6,6 +6,7 @@ import { NodeStatus } from '../fubuki/types/NodeStatus';
 import { Clipboard } from '@angular/cdk/clipboard';
 import { HeartbeatCache } from '../fubuki/types/HeartbeatCache';
 import { UdpStatus } from '../fubuki/types/UdpStatus';
+import { filter } from 'rxjs';
 
 @Component({
   selector: 'app-info-item',
@@ -76,6 +77,27 @@ export class InfoItemComponent {
   basicNodeColumns!: string[];
   nodeHcColumns!: string[];
   timer!: any;
+
+  viewNameMap: Map<string, string> = new Map(
+    [
+      ["listen_addr", "listen_address"],
+      ["virtual_addr", "ip"],
+      ["lan_udp_addr", "lan_address"],
+      ["wan_udp_addr", "wan_address"],
+      ["mode", "protocol_mode"],
+      
+      ["addr", "ip"],
+      ["server_addr", "server_address"]
+    ]
+  )
+
+  toViewName(fieldName: string): string {
+    if(this.viewNameMap.has(fieldName)) {
+      return this.viewNameMap.get(fieldName)!;
+    } else {
+      return fieldName;
+    }
+  }
 
   path: string = "";  
   serverType!: string;
