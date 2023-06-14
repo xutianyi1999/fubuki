@@ -14,6 +14,7 @@ use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
 use serde::{Deserialize, Serialize};
 use tokio::{sync, time};
+use tokio::io::BufReader;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -561,11 +562,12 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
             _ => unreachable!(),
         };
 
-        let (mut rx, mut tx) = self.stream
+        let (rx, mut tx) = self.stream
             .take()
             .unwrap()
             .into_split();
 
+        let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
         let (_notify, notified) = sync::watch::channel(());
 
