@@ -459,7 +459,7 @@ where
             let socket = interface.udp_socket.as_ref().expect("must need udp socket");
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
-            let mut packet = vec![0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
+            let mut packet = [0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
 
             loop {
                 let interface_addr = interface.addr.load();
