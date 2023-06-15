@@ -16,7 +16,7 @@ serde_json = "1"
 chrono = "0.4"
 rand = "0.8"
 socket2 = "0.4"
-parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
+parking_lot = "0.12"
 anyhow = "1"
 mimalloc = { version = "*", default-features = false }
 ahash = "0.8"
