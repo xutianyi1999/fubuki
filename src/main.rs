@@ -279,8 +279,8 @@ where
         }
 
         let config_finalize = NodeConfigFinalize {
-            // 1500 - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
-            mtu: config.mtu.unwrap_or(1458),
+            // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
+            mtu: config.mtu.unwrap_or(1446),
             channel_limit: config.channel_limit.unwrap_or(100),
             api_addr: config
                 .api_addr
