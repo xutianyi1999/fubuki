@@ -1205,7 +1205,7 @@ pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
 {
     let config = &*Box::leak(Box::new(config));
 
-    let tun = Arc::new(tun::create()?);
+    let tun = Arc::new(tun::create().context("failed to create tun")?);
     tun.set_mtu(config.mtu)?;
 
     let mut rt = RoutingTable::new();

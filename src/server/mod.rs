@@ -758,7 +758,7 @@ impl<T> Drop for Tunnel<T> {
                 let mut guard = self.group_handle.mapping.write();
 
                 if guard.remove(&reg.virtual_addr).is_some() {
-                    self.group_handle.sync(&guard).expect("sync node mapping failure");
+                    self.group_handle.sync(&guard).expect("failed to sync nodemap");
                 }
             }
 
