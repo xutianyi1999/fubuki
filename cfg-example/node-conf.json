@@ -1,5 +1,5 @@
 {
-  "mtu": 1458,
+  "mtu": 1446,
   "channel_limit": 100,
   "api_addr": "127.0.0.1:3030",
   "tcp_heartbeat_interval_secs": 5,
