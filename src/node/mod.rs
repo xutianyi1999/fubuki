@@ -510,6 +510,12 @@ where
                                     ext_node.udp_status.store(Arc::new(UdpStatus::Unavailable));
                                 }
 
+                                if ext_node.node.lan_udp_addr.is_none() ||
+                                    ext_node.node.wan_udp_addr.is_none()
+                                {
+                                    continue;
+                                }
+
                                 hc.request();
                                 hc.seq
                             };
