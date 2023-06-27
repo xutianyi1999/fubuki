@@ -215,6 +215,8 @@ where
 
     fn try_from(config: NodeConfig) -> Result<Self> {
         let mut list = Vec::with_capacity(config.groups.len());
+        let mut use_ipv6 = false;
+        let mut use_udp = false;
 
         for group in config.groups {
             let mode = group.mode.unwrap_or_default();
@@ -245,6 +247,12 @@ where
                         addr
                     }
                 };
+
+                if lan_ip_addr.is_ipv6() {
+                    use_ipv6 = true;
+                }
+
+                use_udp = true;
                 Some(lan_ip_addr)
             } else {
                 None
@@ -279,8 +287,19 @@ where
         }
 
         let config_finalize = NodeConfigFinalize {
-            // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
-            mtu: config.mtu.unwrap_or(1446),
+            mtu: config.mtu.unwrap_or_else(|| {
+                if use_udp {
+                    if use_ipv6 {
+                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 40byte IPV6 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
+                        1426
+                    } else {
+                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
+                        1446
+                    }
+                } else {
+                    1500
+                }
+            }),
             channel_limit: config.channel_limit.unwrap_or(100),
             api_addr: config
                 .api_addr
