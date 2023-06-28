@@ -22,7 +22,7 @@ fn main() {
                 <requestedPrivileges>
                     <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
                 </requestedPrivileges>
-            </securty>
+            </security>
         </trustInfo>
         </assembly>
         "#);
