@@ -140,12 +140,18 @@ ping node2.mygroup
 cargo +nightly build --release
 ```
 
-包含Web UI
+包含 Web UI
 
 - Node.js >= 16.*
 - Angular CLI
 
 ```shell
 cargo +nightly build --release --features "web"
+```
+
+包含 GUI
+
+```shell
+cargo +nightly build --release --features "gui"
 ```
 
