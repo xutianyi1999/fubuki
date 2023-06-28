@@ -12,6 +12,7 @@ extern crate log;
 
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::Duration;
@@ -348,7 +349,7 @@ enum NodeCmd {
     /// start the node process
     Daemon {
         /// configuration file path
-        config_path: String
+        config_path: PathBuf
     },
     /// query the current state of the node
     Info {
@@ -382,7 +383,7 @@ enum ServerCmd {
     /// start the server process
     Daemon {
         /// configuration file path
-        config_path: String
+        config_path: PathBuf
     },
     /// query the current state of the server
     Info {
@@ -411,9 +412,9 @@ enum Args {
     },
 }
 
-fn load_config<T: de::DeserializeOwned>(path: &str) -> Result<T> {
+fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
     let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to read config from: {}", path))?;
+        .with_context(|| format!("failed to read config from: {}", path.to_string_lossy()))?;
 
     serde_json::from_reader(file).context("failed to parse config")
 }
@@ -485,6 +486,7 @@ fn launch(args: Args) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "gui"))]
 fn main() -> ExitCode {
     setup_panic!();
 
@@ -495,4 +497,30 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(feature = "gui")]
+fn main() -> ExitCode {
+    setup_panic!();
+
+    let mut settings = klask::Settings::default();
+
+    if let Ok(path) = std::env::var("FUBUKI_GUI_FONT_PATH") {
+        let font = match std::fs::read(path) {
+            Ok(font) => font,
+            Err(e) => {
+                eprintln!("read font data error: {:?}", e);
+                return ExitCode::FAILURE;
+            }
+        };
+        settings.custom_font = Some(std::borrow::Cow::Owned(font));
+    }
+
+    klask::run_derived::<Args, _>(settings, |args| {
+        if let Err(e) = launch(args) {
+            eprintln!("{:?}", e);
+        }
+    });
+
+    ExitCode::SUCCESS
 }
