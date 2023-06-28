@@ -47,6 +47,9 @@ tun = { version = "0.5", features = ["async"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
 
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winres = "0.1"
+
 [build-dependencies]
 static-files = { version = "0.2", optional = true }
 
