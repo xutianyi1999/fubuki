@@ -11,10 +11,11 @@ fn main() {
             .build().unwrap();
     }
 
-    #[cfg(all(target_os = "windows", feature = "gui"))]
+    #[cfg(target_os = "windows")]
     {
         let mut res = winres::WindowsResource::new();
 
+        #[cfg(feature = "gui")]
         res.set_manifest(r#"
         <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
         <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
