@@ -7,7 +7,7 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(lazy_cell)]
 
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#![cfg_attr(all(target_os = "windows", feature = "gui"), windows_subsystem = "windows")]
 
 #[macro_use]
 extern crate log;
