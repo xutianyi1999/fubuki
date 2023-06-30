@@ -692,6 +692,7 @@ where
                                 }
                             };
                         }
+                        // todo verify peer_addr exists in node_map
                         UdpMsg::Data(packet) => {
                             if log::max_level() >= log::Level::Debug {
                                 let f = || {
