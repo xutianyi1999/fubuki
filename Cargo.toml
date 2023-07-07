@@ -59,6 +59,7 @@ advmac = { git = "https://github.com/xutianyi1999/advmac.git" }
 [features]
 web = ["static-files"]
 gui = ["klask"]
+hash-routing-table = []
 
 [profile.release]
 lto = true

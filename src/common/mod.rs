@@ -3,7 +3,6 @@ use chrono::{DateTime, Local, NaiveDateTime, Utc};
 
 pub mod cipher;
 pub mod net;
-pub mod routing_table;
 pub mod allocator;
 
 #[macro_export]

@@ -34,7 +34,7 @@ use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
-use crate::common::routing_table::RoutingTable;
+use crate::routing_table::{RoutingTable, Item};
 use crate::node::api::api_start;
 use crate::nat::{add_nat, del_nat};
 use crate::node::sys_route::SystemRouteHandle;
@@ -330,14 +330,15 @@ enum TransferType {
     Broadcast,
 }
 
-async fn tun_handler<T, K>(
+async fn tun_handler<T, K, RT>(
     tun: T,
-    routing_table: Arc<ArcSwap<RoutingTable>>,
+    routing_table: Arc<ArcSwap<RT>>,
     interfaces: Vec<Arc<Interface<K>>>,
 ) -> Result<()>
 where
     T: TunDevice + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
+    RT: RoutingTable + Send + Sync + 'static
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut rh_cache = Cache::new(&*routing_table);
@@ -431,7 +432,7 @@ where
     join.await?.context("tun handler error")
 }
 
-fn in_routing_table(routing_table: &RoutingTable, dst: SocketAddr) -> bool {
+fn in_routing_table<RT: RoutingTable>(routing_table: &RT, dst: SocketAddr) -> bool {
     match dst {
         SocketAddr::V4(addr) => {
            routing_table.find(*addr.ip()).is_some()
@@ -440,16 +441,17 @@ fn in_routing_table(routing_table: &RoutingTable, dst: SocketAddr) -> bool {
     }
 }
 
-async fn udp_handler<T, K>(
+async fn udp_handler<T, K, RT>(
     config: &'static NodeConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
-    table: Arc<ArcSwap<RoutingTable>>,
+    table: Arc<ArcSwap<RT>>,
     interface: Arc<Interface<K>>,
     tun: T,
 ) -> Result<()>
 where
     T: TunDevice + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
+    RT: RoutingTable + Send + Sync + 'static,
 {
     let heartbeat_schedule = async {
         let interface = interface.clone();
@@ -541,7 +543,7 @@ where
 
                                         macro_rules! send {
                                             ($peer_addr: expr) => {
-                                                if !in_routing_table(&rt, $peer_addr) {
+                                                if !in_routing_table(rt, $peer_addr) {
                                                     socket.send_to(&packet, $peer_addr).await?;
                                                 }
                                             };
@@ -679,7 +681,7 @@ where
                                     if hc_guard.response(seq).is_some() {
                                         if **node.udp_status.load() == UdpStatus::Unavailable &&
                                             hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                            !in_routing_table(&table.load(), peer_addr)
+                                            !in_routing_table(&**table.load(), peer_addr)
                                         {
                                             drop(hc_guard);
 
@@ -819,19 +821,25 @@ where
     Ok(group_info)
 }
 
-fn update_tun_addr<T: TunDevice, K>(
+fn update_tun_addr<T: TunDevice, K, RT: RoutingTable + Clone>(
     tun: &T,
-    rt: &ArcSwap<RoutingTable>,
+    rt: &ArcSwap<RT>,
     interface: &Interface<K>,
     old_addr: VirtualAddr,
     addr: VirtualAddr,
     old_cidr: Ipv4Net,
     cidr: Ipv4Net,
 ) -> Result<()> {
+    let item = Item {
+        cidr,
+        gateway: addr,
+        interface_index: interface.index
+    };
+
     rt.rcu(|v| {
         let mut t = (**v).clone();
         t.remove(&old_cidr);
-        t.add(cidr, addr, interface.index);
+        t.add(item.clone());
         t
     });
 
@@ -843,10 +851,10 @@ fn update_tun_addr<T: TunDevice, K>(
     Ok(())
 }
 
-async fn tcp_handler<T, K>(
+async fn tcp_handler<T, K, RT>(
     config: &'static NodeConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
-    routing_table: Arc<ArcSwap<RoutingTable>>,
+    routing_table: Arc<ArcSwap<RT>>,
     interface: Arc<Interface<K>>,
     tun: T,
     channel_rx: Option<Receiver<Bytes>>,
@@ -856,6 +864,7 @@ async fn tcp_handler<T, K>(
 where
     T: TunDevice + Clone + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
+    RT: RoutingTable + Clone + Send + Sync + 'static
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut sys_route_is_sync = false;
@@ -1215,12 +1224,18 @@ pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
     let tun = Arc::new(tun::create().context("failed to create tun")?);
     tun.set_mtu(config.mtu)?;
 
-    let mut rt = RoutingTable::new();
+    let mut rt = crate::routing_table::create();
 
     for (index, group) in config.groups.iter().enumerate() {
         for (dst, cidrs) in &group.ips {
             for cidr in cidrs {
-                rt.add(*cidr, *dst, index);
+                let item = Item {
+                    cidr: *cidr,
+                    gateway: *dst,
+                    interface_index: index
+                };
+
+                rt.add(item);
             }
         }
     }

@@ -49,6 +49,7 @@ mod nat;
 
 #[cfg(feature = "web")]
 mod web;
+mod routing_table;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
