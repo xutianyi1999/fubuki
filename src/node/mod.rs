@@ -21,7 +21,7 @@ use prettytable::{row, Table};
 use rand::random;
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::signal;
@@ -34,10 +34,10 @@ use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
-use crate::routing_table::{RoutingTable, Item};
-use crate::node::api::api_start;
 use crate::nat::{add_nat, del_nat};
+use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
+use crate::routing_table::{Item, RoutingTable};
 use crate::tun::TunDevice;
 
 mod api;
@@ -744,18 +744,20 @@ enum RegisterVirtualAddr {
     Auto(Option<(VirtualAddr, Ipv4Net)>),
 }
 
-async fn register<T, K>(
+async fn register<K>(
     group: &'static TargetGroupFinalize<K>,
-    stream: &mut T,
     key: &K,
     register_addr: &mut RegisterVirtualAddr,
     lan_udp_socket_addr: Option<SocketAddr>,
     refresh_route: &mut bool,
-) -> Result<GroupContent>
+) -> Result<(TcpStream, GroupContent)>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
     K: Cipher + Clone
 {
+    let mut stream = TcpStream::connect(&group.server_addr)
+        .await
+        .with_context(|| format!("connect to {} error", &group.server_addr))?;
+
     let mut buff = allocator::alloc(1024);
 
     let (virtual_addr, cidr) = match register_addr {
@@ -763,9 +765,9 @@ where
         RegisterVirtualAddr::Auto(Some(addr)) => *addr,
         RegisterVirtualAddr::Auto(None) => {
             let len = TcpMsg::get_idle_virtual_addr_encode(&mut buff);
-            TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+            TcpMsg::write_msg(&mut stream, key, &mut buff[..len]).await?;
 
-            let msg = TcpMsg::read_msg(stream, key, &mut buff).await?
+            let msg = TcpMsg::read_msg(&mut stream, key, &mut buff).await?
                 .ok_or_else(|| anyhow!("server connection closed"))?;
 
             match msg {
@@ -789,9 +791,9 @@ where
     };
 
     let len = TcpMsg::register_encode(&reg, &mut buff)?;
-    TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+    TcpMsg::write_msg(&mut stream, key, &mut buff[..len]).await?;
 
-    let ret = TcpMsg::read_msg(stream, key, &mut buff).await?
+    let ret = TcpMsg::read_msg(&mut stream, key, &mut buff).await?
         .ok_or_else(|| anyhow!("server connection closed"))?;
 
     let group_info = match ret {
@@ -819,7 +821,7 @@ where
         *register_addr = RegisterVirtualAddr::Auto(Some((virtual_addr, cidr)));
         *refresh_route = true;
     }
-    Ok(group_info)
+    Ok((stream, group_info))
 }
 
 fn update_tun_addr<T: TunDevice, K, RT: RoutingTable + Clone>(
@@ -937,17 +939,12 @@ where
             let mut non_retryable = false;
 
             let process = async {
-                let mut stream = TcpStream::connect(&group.server_addr)
-                    .await
-                    .with_context(|| format!("connect to {} error", &group.server_addr))?;
-
                 let mut refresh_route= false;
 
-                let group_info = tokio::time::timeout(
-                    Duration::from_secs(30),
+                let (stream, group_info) = tokio::time::timeout(
+                    Duration::from_secs(10),
                     register(
                         group,
-                        &mut stream,
                         key,
                         &mut tun_addr,
                         lan_udp_socket_addr,
