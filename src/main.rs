@@ -473,13 +473,7 @@ fn launch(args: Args) -> Result<()> {
                 NodeCmd::Daemon { config_path } => {
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
-
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        // 4MB
-                        .thread_stack_size(4096 * 1024)
-                        .enable_all()
-                        .build()?;
-
+                    let rt = Runtime::new()?;
                     rt.block_on(node::start(c))?;
                 }
                 NodeCmd::Info { api, info_type } => {
