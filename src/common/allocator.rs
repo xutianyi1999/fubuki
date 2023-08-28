@@ -1,11 +1,14 @@
-use std::cell::RefCell;
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use anyhow::{ensure, Result};
+use parking_lot::RwLock;
 
 pub struct Bytes {
     inner: Arc<[MaybeUninit<u8>]>,
-    start: usize,
+    start: AtomicUsize,
     end: usize,
 }
 
@@ -18,7 +21,7 @@ impl Deref for Bytes {
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            MaybeUninit::slice_assume_init_ref(&self.inner[self.start..self.end])
+            MaybeUninit::slice_assume_init_ref(&self.inner[self.start.load(Ordering::Relaxed)..self.end])
         }
     }
 }
@@ -27,7 +30,7 @@ impl DerefMut for Bytes {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             let slice = Arc::get_mut_unchecked(&mut self.inner);
-            MaybeUninit::slice_assume_init_mut(&mut slice[self.start..self.end])
+            MaybeUninit::slice_assume_init_mut(&mut slice[*self.start.get_mut()..self.end])
         }
     }
 }
@@ -36,42 +39,114 @@ impl Bytes {
     pub fn new(len: usize) -> Bytes {
         Bytes {
             inner: Arc::<[u8]>::new_zeroed_slice(len),
-            start: 0,
+            start: AtomicUsize::new(0),
             end: len,
         }
     }
 
-    pub fn split(&mut self, size: usize) -> Bytes {
-        assert!(self.start + size <= self.end);
+    pub fn split(&self, size: usize) -> Result<Bytes> {
+        let mut start = self.start.load(Ordering::Relaxed);
+
+        loop {
+            let new_start = start + size;
+            let end = self.end;
+
+            ensure!(new_start <= end);
+
+            if let Err(v) = self.start.compare_exchange_weak(start, new_start, Ordering::Relaxed, Ordering::Relaxed) {
+                start = v;
+                continue;
+            }
+
+            let new_bytes = Bytes {
+                inner: self.inner.clone(),
+                start: AtomicUsize::new(start),
+                end: new_start,
+            };
+
+            return Ok(new_bytes);
+        }
+    }
+
+    pub fn split_mut(&mut self, size: usize) -> Result<Bytes> {
+        let start = self.start.get_mut();
+        let new_start = *start + size;
+        let end = self.end;
+
+        ensure!(new_start <= end);
 
         let new_bytes = Bytes {
             inner: self.inner.clone(),
-            start: self.start,
-            end: self.start + size,
+            start: AtomicUsize::new(*start),
+            end: new_start,
         };
 
-        self.start += size;
-        new_bytes
+        *start = new_start;
+        return Ok(new_bytes);
     }
 
+    #[allow(unused)]
     pub fn len(&self) -> usize {
-        self.end - self.start
+        self.end - self.start.load(Ordering::Relaxed)
     }
 }
 
 // 256KB
 const BUFFER_SIZE: usize = 262144;
-thread_local!(static BUFFER: RefCell<Bytes> = RefCell::new(Bytes::new(BUFFER_SIZE)));
+static BUFFER: RwLock<Option<Bytes>> = RwLock::new(None);
 
 pub fn alloc(size: usize) -> Bytes {
     assert!(size <= BUFFER_SIZE);
 
-    BUFFER.with(|f| {
-        let mut guard = f.borrow_mut();
+    {
+        let guard = BUFFER.read();
 
-        if guard.len() < size {
-            *guard = Bytes::new(BUFFER_SIZE);
+        if let Some(v) = &*guard {
+            if let Ok(b) = v.split(size) {
+                return b;
+            }
+        };
+    }
+
+    let mut guard = BUFFER.write();
+    let buff = &mut *guard;
+
+    match &mut *buff {
+        None => {
+            let mut bytes = Bytes::new(BUFFER_SIZE);
+            let new_bytes = bytes.split_mut(size).unwrap();
+            *buff = Some(bytes);
+            return new_bytes;
         }
-        guard.split(size)
-    })
+        Some(v) => {
+            match v.split_mut(size) {
+                Ok(v) => return v,
+                Err(_) => {
+                    let mut bytes = Bytes::new(BUFFER_SIZE);
+                    let new_bytes = bytes.split_mut(size).unwrap();
+                    *buff = Some(bytes);
+                    return new_bytes;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test() {
+    let buf = alloc(10);
+    assert_eq!(buf.len(), 10);
+
+    let buf2 = buf.split(7).unwrap();
+    assert_eq!(buf2.len(), 7);
+    assert_eq!(buf.len(), 3);
+
+    let mut buf3 = buf.split(3).unwrap();
+    assert_eq!(buf3.len(), 3);
+    assert_eq!(buf.len(), 0);
+    println!("{:?}", buf.deref());
+
+    let buf4 = buf3.split_mut(2).unwrap();
+    assert_eq!(buf4.len(), 2);
+    assert_eq!(buf3.len(), 1);
 }
