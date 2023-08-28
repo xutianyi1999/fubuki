@@ -111,25 +111,16 @@ pub fn alloc(size: usize) -> Bytes {
     let mut guard = BUFFER.write();
     let buff = &mut *guard;
 
-    match &mut *buff {
-        None => {
-            let mut bytes = Bytes::new(BUFFER_SIZE);
-            let new_bytes = bytes.split_mut(size).unwrap();
-            *buff = Some(bytes);
-            return new_bytes;
-        }
-        Some(v) => {
-            match v.split_mut(size) {
-                Ok(v) => return v,
-                Err(_) => {
-                    let mut bytes = Bytes::new(BUFFER_SIZE);
-                    let new_bytes = bytes.split_mut(size).unwrap();
-                    *buff = Some(bytes);
-                    return new_bytes;
-                }
-            }
+    if let Some(v) = &mut *buff {
+        if let Ok(v) = v.split_mut(size)  {
+            return v;
         }
     }
+
+    let mut bytes = Bytes::new(BUFFER_SIZE);
+    let new_bytes = bytes.split_mut(size).unwrap();
+    *buff = Some(bytes);
+    new_bytes
 }
 
 #[test]
