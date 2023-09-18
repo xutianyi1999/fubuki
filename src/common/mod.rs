@@ -13,7 +13,7 @@ macro_rules! ternary {
 }
 
 pub fn utc_to_str(t: i64) -> Result<String> {
-    let utc: DateTime<Utc> = DateTime::from_utc(
+    let utc: DateTime<Utc> = DateTime::from_naive_utc_and_offset(
         NaiveDateTime::from_timestamp_opt(t, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?,
         Utc,
     );
