@@ -52,10 +52,10 @@ struct AtomicAddr {
 
 impl AtomicAddr {
     fn load(&self) -> Ipv4Addr {
-        VirtualAddr::from(self.inner.load(Ordering::Relaxed))
+        Ipv4Addr::from(self.inner.load(Ordering::Relaxed))
     }
 
-    fn store(&self, addr: VirtualAddr) {
+    fn store(&self, addr: Ipv4Addr) {
         self.inner.store(u32::from_be_bytes(addr.octets()), Ordering::Relaxed)
     }
 }
@@ -331,6 +331,17 @@ enum TransferType {
     Broadcast,
 }
 
+fn find_route<RT: RoutingTable>(rt: &RT, mut dst_addr: Ipv4Addr) -> Option<(Ipv4Addr, &Item)> {
+    let mut item = rt.find(dst_addr)?;
+
+    // is route on link
+    while item.gateway != Ipv4Addr::UNSPECIFIED {
+        dst_addr = item.gateway;
+        item = rt.find(dst_addr)?;
+    }
+    Some((dst_addr, item))
+}
+
 async fn tun_handler<T, K, RT>(
     tun: T,
     routing_table: Arc<ArcSwap<RT>>,
@@ -367,9 +378,10 @@ where
             let dst_addr = get_ip_dst_addr(data)?;
 
             let rt = &**rh_cache.load();
-            let item = match rt.find(dst_addr) {
+
+            let (dst_addr, item) = match find_route(rt, dst_addr) {
                 None => continue,
-                Some(item) => item,
+                Some(v) => v,
             };
 
             let interface_cache = &mut interfaces_cache[item.interface_index];
@@ -380,16 +392,12 @@ where
                 continue;
             }
 
-            let transfer_type = if interface_addr == item.gateway {
-                if dst_addr.is_broadcast() && interface_addr == src_addr {
-                    TransferType::Broadcast
-                } else if interface_cidr.broadcast() == dst_addr {
-                    TransferType::Broadcast
-                } else {
-                    TransferType::Unicast(dst_addr)
-                }
+            let transfer_type = if dst_addr.is_broadcast() && interface_addr == src_addr {
+                TransferType::Broadcast
+            } else if interface_cidr.broadcast() == dst_addr {
+                TransferType::Broadcast
             } else {
-                TransferType::Unicast(item.gateway)
+                TransferType::Unicast(dst_addr)
             };
 
             let server_us = &**interface_cache.server_udp_status.load();
@@ -835,7 +843,7 @@ fn update_tun_addr<T: TunDevice, K, RT: RoutingTable + Clone>(
 ) -> Result<()> {
     let item = Item {
         cidr,
-        gateway: addr,
+        gateway: Ipv4Addr::UNSPECIFIED,
         interface_index: interface.index
     };
 
