@@ -33,6 +33,7 @@ arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
 gethostname = "0.4"
 
+linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 klask = { git = "https://github.com/xosxos/klask.git", optional = true }
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use ahash::{HashMap, HashSet, HashSetExt};
 use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
@@ -15,6 +15,7 @@ use futures_util::FutureExt;
 use hyper::{Body, Method, Request};
 use hyper::body::Buf;
 use ipnet::Ipv4Net;
+use linear_map::LinearMap;
 use net_route::Route;
 use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
@@ -43,8 +44,7 @@ use crate::tun::TunDevice;
 mod api;
 mod sys_route;
 
-// todo add linear map implementation
-type NodeMap = HashMap<VirtualAddr, ExtendedNode>;
+type NodeMap = LinearMap<VirtualAddr, ExtendedNode>;
 
 struct AtomicAddr {
     inner: AtomicU32
@@ -1040,7 +1040,7 @@ where
 
                                 match msg {
                                     TcpMsg::NodeMap(map) => {
-                                        let mut new_map = HashMap::new();
+                                        let mut new_map = NodeMap::with_capacity(map.len());
 
                                         {
                                             let old_map = interface.node_map.load();
@@ -1291,7 +1291,7 @@ pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
             addr: AtomicAddr::from(VirtualAddr::UNSPECIFIED),
             cidr: AtomicCidr::from(Ipv4Net::default()),
             mode: group.mode.clone(),
-            node_map: ArcSwap::from_pointee(HashMap::new()),
+            node_map: ArcSwap::from_pointee(NodeMap::new()),
             server_addr: group.server_addr.clone(),
             server_udp_hc: RwLock::new(HeartbeatCache::new()),
             server_udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
