@@ -43,7 +43,7 @@ hostsfile = { git = "https://github.com/tonarino/innernet.git" }
 tempfile = "3"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-tun = { version = "0.6.1", features = ["async"] }
+tun = { version = "0.6", features = ["async"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }

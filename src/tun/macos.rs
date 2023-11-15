@@ -27,7 +27,7 @@ pub fn create() -> Result<Macostun> {
     config.up();
 
     let device = tun::create_as_async(&config)?;
-    let device_name = device.get_ref().name();
+    let device_name = device.get_ref().name()?;
 
     for inter in netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))? {
         if inter.name().map_err(|e| anyhow!(e.to_string()))? == device_name {
