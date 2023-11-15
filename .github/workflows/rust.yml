@@ -21,21 +21,28 @@ jobs:
         include:
           - target: x86_64-apple-darwin
             os: macos-latest
+            build_tool: cargo
 
           - target: aarch64-apple-darwin
             os: macos-latest
+            build_tool: cargo
 
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            build_tool: cargo
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            build_tool: cargo
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            build_tool: cargo-zigbuild
 
           - target: armv7-unknown-linux-musleabi
             os: ubuntu-latest
+            build_tool: cargo-zigbuild
+
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
@@ -52,6 +59,7 @@ jobs:
           # [default value: windows]
           # [possible values: all, unix, windows, none]
           zip: windows
+          build_tool: ${{ matrix.build_tool }}
           features: web
         env:
           # (required)

@@ -29,7 +29,6 @@ use log4rs::append::console::ConsoleAppender;
 use log4rs::config::{Appender, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
-use mimalloc::MiMalloc;
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
 
@@ -51,8 +50,9 @@ mod nat;
 mod web;
 mod routing_table;
 
+#[cfg(not(target_env = "musl"))]
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type Key = XorCipher;
 

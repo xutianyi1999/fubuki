@@ -18,7 +18,6 @@ rand = "0.8"
 socket2 = "0.4"
 parking_lot = "0.12"
 anyhow = "1"
-mimalloc = { version = "*", default-features = false }
 ahash = "0.8"
 futures-util = "0.3"
 md5 = "0.7"
@@ -38,6 +37,9 @@ klask = { git = "https://github.com/xosxos/klask.git", optional = true }
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }
 hostsfile = { git = "https://github.com/tonarino/innernet.git" }
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+mimalloc = { version = "*", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "3"
