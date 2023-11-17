@@ -42,8 +42,8 @@
 - tcp_heartbeat_interval_secs(可选): TCP 心跳包发送间隔，默认5秒
 - udp_heartbeat_interval_secs(可选): UDP 心跳包发送间隔，默认5秒
 - tcp_heartbeat_continuous_loss(可选): TCP 心跳包连续丢失次数，等于或超过次数则中断连接，默认5
-- udp_heartbeat_continuous_loss(可选): UDP 心跳包连续丢失次数，等于或超过次数则代表目标不可用，默认5
-- udp_heartbeat_continuous_recv(可选): UDP 心跳包连续接收，当到达则变更状态从不可用为可用，默认3
+- udp_heartbeat_continuous_loss(可选): UDP 心跳包连续丢失次数，等于或超过次数则变更目标为不可用，默认5
+- udp_heartbeat_continuous_recv(可选): UDP 心跳包连续接收次数，等于或超过次数则恢复目标为可用，默认3
 - reconnect_interval_secs(可选): TCP 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
@@ -85,11 +85,11 @@
 
 - channel_limit(可选): 转发队列大小，超过limit丢包，默认100
 - api_addr(可选): API监听地址，默认`127.0.0.1:3031`
-- tcp_heartbeat_interval_secs(可选): TCP 心跳包发送间隔，最长10秒，5秒
+- tcp_heartbeat_interval_secs(可选): TCP 心跳包发送间隔，默认5秒
 - tcp_heartbeat_continuous_loss(可选): TCP 心跳包连续丢失次数，等于或超过次数则中断连接，默认5
 - udp_heartbeat_interval_secs(可选): UDP 心跳包发送间隔，默认5秒
-- udp_heartbeat_continuous_loss(可选): UDP 心跳包连续丢失次数，等于或超过次数则代表目标不可用，默认5
-- udp_heartbeat_continuous_recv(可选): UDP 心跳包连续接收，当到达则变更状态从不可用为可用，默认3
+- udp_heartbeat_continuous_loss(可选): UDP 心跳包连续丢失次数，等于或超过次数则变更目标为不可用，默认5
+- udp_heartbeat_continuous_recv(可选): UDP 心跳包连续接收次数，等于或超过次数则恢复目标为可用，默认3
 - groups 配置多组网段
     - name: 组名称
     - listen_addr: 监听地址

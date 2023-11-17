@@ -34,7 +34,7 @@ use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupF
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::nat::{add_nat, del_nat};
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
@@ -267,7 +267,7 @@ async fn send<K: Cipher>(
                 Some(socket) => socket,
             };
 
-            let packet = &mut buff[packet_range.start - UDP_MSP_HEADER_LEN..packet_range.end];
+            let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
             UdpMsg::data_encode(packet_range.len(), packet);
             inter.key.encrypt(packet, 0);
             socket.send_to(packet, dst_addr).await?;
@@ -312,7 +312,7 @@ async fn send<K: Cipher>(
 
                     debug!("tun handler: udp message relay to node {}", dst_node.node.name);
 
-                    let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSP_HEADER_LEN..packet_range.end];
+                    let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSG_HEADER_LEN..packet_range.end];
 
                     UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
                     inter.key.encrypt(packet, 0);
@@ -363,7 +363,7 @@ where
         let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
         loop {
-            const START: usize = UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>();
+            const START: usize = UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
 
             let data = match tun
                 .recv_packet(&mut buff[START..])
@@ -471,7 +471,7 @@ where
             let socket = interface.udp_socket.as_ref().expect("must need udp socket");
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
-            let mut packet = [0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
+            let mut packet = [0u8; UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
 
             loop {
                 let interface_addr = interface.addr.load();

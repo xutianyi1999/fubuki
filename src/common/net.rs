@@ -532,7 +532,7 @@ pub mod protocol {
         Relay(VirtualAddr, &'a [u8]),
     }
 
-    pub const UDP_MSP_HEADER_LEN: usize = 2;
+    pub const UDP_MSG_HEADER_LEN: usize = 2;
 
     impl UdpMsg<'_> {
         pub fn heartbeat_encode(
@@ -547,20 +547,20 @@ pub mod protocol {
             out[6..10].copy_from_slice(&seq.to_be_bytes());
 
             out[10] = heartbeat_type as u8;
-            UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()
+            UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()
         }
 
         pub fn data_encode(packet_len: usize, out: &mut [u8]) -> usize {
             out[0] = MAGIC_NUM;
             out[1] = DATA;
-            UDP_MSP_HEADER_LEN + packet_len
+            UDP_MSG_HEADER_LEN + packet_len
         }
 
         pub fn relay_encode(to: VirtualAddr, packet_len: usize, out: &mut [u8]) -> usize {
             out[0] = MAGIC_NUM;
             out[1] = RELAY;
             out[2..6].copy_from_slice(&to.octets());
-            UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + packet_len
+            UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet_len
         }
 
         pub fn decode(packet: &[u8]) -> Result<UdpMsg> {

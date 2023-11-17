@@ -24,7 +24,7 @@ use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSP_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::server::api::api_start;
 use crate::ServerConfigFinalize;
 
@@ -169,7 +169,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
         tokio::spawn(async move {
             let fut = async {
-                let mut buff = [0u8; UDP_MSP_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
+                let mut buff = [0u8; UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
 
                 loop {
                     let mut list = Vec::new();
@@ -629,7 +629,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     let mut buff = vec![0u8; TCP_BUFF_SIZE];
 
                     loop {
-                        let sub_buff = &mut buff[UDP_MSP_HEADER_LEN..];
+                        let sub_buff = &mut buff[UDP_MSG_HEADER_LEN..];
                         let msg = TcpMsg::read_msg(&mut rx, &key, sub_buff).await?;
 
                         let msg = match msg {
