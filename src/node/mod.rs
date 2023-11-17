@@ -44,6 +44,7 @@ use crate::tun::TunDevice;
 mod api;
 mod sys_route;
 
+// todo use vec
 type NodeMap = LinearMap<VirtualAddr, ExtendedNode>;
 
 struct AtomicAddr {

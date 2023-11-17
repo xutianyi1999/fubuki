@@ -339,6 +339,8 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                     UdpStatus::Unavailable => continue
                                                 };
 
+                                                drop(guard);
+
                                                 if log::max_level() >= log::Level::Debug {
                                                     let f = || {
                                                         let src = get_ip_src_addr(packet)?;
@@ -668,7 +670,9 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                                     };
 
                                                     debug!("tcp handler: udp message relay to node {}", node.name);
+
                                                     drop(node);
+                                                    drop(guard);
 
                                                     let packet_len = packet.len();
                                                     let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
