@@ -489,7 +489,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     let now = Utc::now().timestamp();
                     let remain = now - msg.register_time;
 
-                    if !(-10..=10).contains(&remain) {
+                    if !(-300..=300).contains(&remain) {
                         let len = TcpMsg::register_res_encode(&Err(RegisterError::Timeout), buff)?;
                         TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
                         return Err(anyhow!("register message timeout"));
