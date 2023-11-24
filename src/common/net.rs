@@ -340,6 +340,7 @@ pub mod protocol {
         GetIdleVirtualAddr,
         // ip address, cidr
         GetIdleVirtualAddrRes(Option<(VirtualAddr, Ipv4Net)>),
+        // todo add signature
         Register(Register),
         RegisterRes(Result<GroupContent, RegisterError>),
         NodeMap(HashMap<VirtualAddr, Node>),

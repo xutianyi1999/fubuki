@@ -515,7 +515,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     let nonce_pool = nonce_pool.clone();
 
                     tokio::spawn(async move {
-                        time::sleep(Duration::from_secs(60)).await;
+                        time::sleep(Duration::from_secs(300 * 2)).await;
                         nonce_pool.set.lock().remove(&msg.nonce);
                     });
 
