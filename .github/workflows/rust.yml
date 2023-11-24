@@ -23,44 +23,57 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             build_tool: cargo
+            features: web, mimalloc
 
           - target: aarch64-apple-darwin
             os: macos-latest
             build_tool: cargo
+            features: web, mimalloc
 
-          #windows
+          # windows
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            
+            features: web, mimalloc
+
           - target: i686-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            
+            features: web, mimalloc
+
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
+            features: web, mimalloc
 
-          #linux
+          # linux
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo
+            features: web, mimalloc
 
           - target: i686-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo
-            
+            features: web
+
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo-zigbuild
+            features: web, mimalloc
 
           - target: armv7-unknown-linux-musleabihf
             os: ubuntu-latest
             build_tool: cargo-zigbuild
+            features: web, mimalloc
 
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - run: |
+          sudo apt update -y
+          sudo apt install -y musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           target: ${{ matrix.target }}
@@ -75,7 +88,8 @@ jobs:
           # [possible values: all, unix, windows, none]
           zip: windows
           build_tool: ${{ matrix.build_tool }}
-          features: web
+          no-default-features: true
+          features: ${{ matrix.features }}
         env:
           # (required)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
