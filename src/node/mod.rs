@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
 use chrono::Utc;
-use futures_util::future::LocalBoxFuture;
+use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use hyper::{Body, Method, Request};
 use hyper::body::Buf;
@@ -30,7 +30,7 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, ternary, tun};
+use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, ternary};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
@@ -1222,13 +1222,13 @@ where
     join.await?.with_context(|| format!("node {} tcp handler error", group.node_name))
 }
 
-pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
+pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
     where
-        K: Cipher + Send + Sync + Clone + 'static
+        K: Cipher + Send + Sync + Clone + 'static,
+        T: TunDevice + Send + Sync + 'static,
 {
     let config = &*Box::leak(Box::new(config));
-
-    let tun = Arc::new(tun::create().context("failed to create tun")?);
+    let tun = Arc::new(tun);
     tun.set_mtu(config.mtu)?;
 
     let mut rt = crate::routing_table::create();
@@ -1249,7 +1249,7 @@ pub async fn start<K>(config: NodeConfigFinalize<K>) -> Result<()>
 
     let rt = Arc::new(ArcSwap::from_pointee(rt));
 
-    let mut future_list: Vec<LocalBoxFuture<Result<()>>> = Vec::new();
+    let mut future_list: Vec<BoxFuture<Result<()>>> = Vec::new();
     let mut interfaces = Vec::with_capacity(config.groups.len());
     let sys_routing = Arc::new(tokio::sync::Mutex::new(SystemRouteHandle::new()?));
     let tun_index = tun.get_index();

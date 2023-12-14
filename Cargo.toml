@@ -4,7 +4,14 @@ version = "0.5.5"
 authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "fubuki"
+crate-type = ["lib", "staticlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "fubuki"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -31,6 +38,7 @@ scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
 gethostname = "0.4"
+flume = { version = "0.11", default-features = false, features = ["async"] }
 
 linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 klask = { git = "https://github.com/xosxos/klask.git", optional = true }
