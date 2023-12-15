@@ -1,12 +1,13 @@
 use std::process::ExitCode;
 
-use clap::Parser;
 use human_panic::setup_panic;
 
 use fubuki::{Args, launch};
 
 #[cfg(not(feature = "gui"))]
 fn main() -> ExitCode {
+    use clap::Parser;
+
     setup_panic!();
 
     match launch(Args::parse()) {
