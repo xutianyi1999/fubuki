@@ -888,7 +888,7 @@ where
         let channel_rx = channel_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
 
         defer! {
-            {
+            if !config.features.disable_hosts_operation {
                 let guard = host_records.lock();
 
                 if !guard.is_empty() {
@@ -1064,23 +1064,25 @@ where
                                             }
                                         }
 
-                                        let host_key = format!("FUBUKI-{}", group_info.name);
-                                        let mut hb = hostsfile::HostsBuilder::new(&host_key);
-                                        host_records.lock().insert(host_key);
+                                        if !config.features.disable_hosts_operation {
+                                            let host_key = format!("FUBUKI-{}", group_info.name);
+                                            let mut hb = hostsfile::HostsBuilder::new(&host_key);
+                                            host_records.lock().insert(host_key);
 
-                                        for node in new_map.values() {
-                                            let node = &node.node;
-                                            hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
-                                        }
-
-                                        tokio::task::spawn_blocking(move || {
-                                            let node_name = &group.node_name;
-
-                                            match hb.write() {
-                                                Ok(_) => info!("node {} update hosts", node_name),
-                                                Err(e) => error!("node {} update hosts error: {}", node_name, e)
+                                            for node in new_map.values() {
+                                                let node = &node.node;
+                                                hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
                                             }
-                                        });
+
+                                            tokio::task::spawn_blocking(move || {
+                                                let node_name = &group.node_name;
+
+                                                match hb.write() {
+                                                    Ok(_) => info!("node {} update hosts", node_name),
+                                                    Err(e) => error!("node {} update hosts error: {}", node_name, e)
+                                                }
+                                            });
+                                        }
 
                                         interface.node_map.store(Arc::new(new_map));
                                     }
@@ -1348,32 +1350,42 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
 
     let serve = futures_util::future::try_join_all(future_list);
 
-    #[cfg(windows)]
-    {
-        let mut ctrl_c = signal::windows::ctrl_c()?;
-        let mut ctrl_close = signal::windows::ctrl_close()?;
-
+    if config.features.disable_signal_handling {
         tokio::select! {
-            _ = ctrl_c.recv() => (),
-            _ = ctrl_close.recv() => (),
             res = serve => {
                 res?;
             },
-        };
-    }
+        }
+    } else {
 
-    #[cfg(unix)]
-    {
-        let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
-        let mut interrupt = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+        #[cfg(windows)]
+        {
+            let mut ctrl_c = signal::windows::ctrl_c()?;
+            let mut ctrl_close = signal::windows::ctrl_close()?;
 
-        tokio::select! {
-            _ = terminate.recv() => (),
-            _ = interrupt.recv() => (),
-            res = serve => {
-                res?;
-            },
-        };
+            tokio::select! {
+                _ = ctrl_c.recv() => (),
+                _ = ctrl_close.recv() => (),
+                res = serve => {
+                    res?;
+                },
+            };
+        }
+
+        #[cfg(unix)]
+        {
+            let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+            let mut interrupt = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+
+            tokio::select! {
+                _ = terminate.recv() => (),
+                _ = interrupt.recv() => (),
+                res = serve => {
+                    res?;
+                },
+            };
+        }
+
     }
 
     Ok(())

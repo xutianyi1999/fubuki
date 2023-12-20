@@ -181,6 +181,13 @@ struct NodeConfig {
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
     groups: Vec<TargetGroup>,
+    features: Option<NodeConfigFeature>,
+}
+
+#[derive(Deserialize, Clone)]
+struct NodeConfigFeature {
+    disable_hosts_operation: Option<bool>,
+    disable_signal_handling: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -209,6 +216,13 @@ pub struct NodeConfigFinalize<K> {
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
     groups: Vec<TargetGroupFinalize<K>>,
+    features: NodeConfigFeatureFinalize,
+}
+
+#[derive(Clone)]
+pub struct NodeConfigFeatureFinalize {
+    disable_hosts_operation: bool,
+    disable_signal_handling: bool,
 }
 
 impl<K: Clone> TryFrom<NodeConfig> for NodeConfigFinalize<K>
@@ -323,6 +337,10 @@ where
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
             groups: list,
+            features: NodeConfigFeatureFinalize {
+                disable_hosts_operation: config.features.clone().and_then(|f| f.disable_hosts_operation).unwrap_or(false),
+                disable_signal_handling: config.features.clone().and_then(|f| f.disable_signal_handling).unwrap_or(false),
+            },
         };
         Ok(config_finalize)
     }

@@ -38,7 +38,11 @@ int main() {
                 "\"server_addr\": \"1.2.3.4:56789\","
                 "\"key\": \"123\""
             "}"
-        "]"
+        "],"
+        "\"features\": {"
+            "\"disable_hosts_operation\": true,"
+            "\"disable_signal_handling\": true"
+        "}"
     "}";
 
     char error[1024];
