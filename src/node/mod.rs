@@ -870,7 +870,7 @@ async fn tcp_handler<T, K, RT>(
     interface: Arc<Interface<K>>,
     tun: T,
     channel_rx: Option<Receiver<Bytes>>,
-    sys_routing: Arc<tokio::sync::Mutex<SystemRouteHandle>>,
+    sys_routing: Option<Arc<tokio::sync::Mutex<SystemRouteHandle>>>,
     routes: Vec<Route>
 ) -> Result<()>
 where
@@ -888,6 +888,8 @@ where
         let channel_rx = channel_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
 
         defer! {
+            warn!("exiting tcp handler function ...");
+
             if !config.features.disable_hosts_operation {
                 let guard = host_records.lock();
 
@@ -898,7 +900,7 @@ where
                         let hb = hostsfile::HostsBuilder::new(host);
 
                         if let Err(e) = hb.write() {
-                            error!("{}", e);
+                            error!("failed to write hosts file: {}", e);
                         }
                     }
                 }
@@ -908,9 +910,11 @@ where
                 info!("clear node {} nat list", group.node_name);
 
                 if let Err(e) = del_nat(&group.allowed_ips, interface.cidr.load()) {
-                    error!("{}", e);
+                    error!("failed to delete nat: {}", e);
                 }
             }
+
+            warn!("tcp handler function exited");
         }
 
         let lan_udp_socket_addr = match (&interface.udp_socket, &group.lan_ip_addr) {
@@ -995,6 +999,7 @@ where
 
                         if let Err(e) = f() {
                             non_retryable = true;
+                            error!("refresh route failed: {}", e);
                             return Err(e);
                         }
                     }
@@ -1004,10 +1009,13 @@ where
 
                 // tun must first set the ip address
                 if !sys_route_is_sync {
-                    let res = sys_routing.lock().await.add(&routes).await;
+                    let res = if sys_routing.is_some() {
+                        sys_routing.clone().unwrap().lock().await.add(&routes).await
+                    } else { Ok(()) };
 
                     if let Err(e) = res {
                         non_retryable = true;
+                        error!("failed to add route: {}", e);
                         return Err(e);
                     }
 
@@ -1211,6 +1219,7 @@ where
 
             if let Err(e) = process.await {
                 if non_retryable {
+                    error!("node {} got non-retryable error: {}", group.node_name, e);
                     return Err(e)
                 }
                 error!("node {} tcp handler error: {:?}", &group.node_name, e)
@@ -1253,7 +1262,10 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
 
     let mut future_list: Vec<BoxFuture<Result<()>>> = Vec::new();
     let mut interfaces = Vec::with_capacity(config.groups.len());
-    let sys_routing = Arc::new(tokio::sync::Mutex::new(SystemRouteHandle::new()?));
+    let sys_routing = if config.features.disable_route_operation { None } else {
+        let arc = Arc::new(tokio::sync::Mutex::new(SystemRouteHandle::new()?));
+        Some(arc)
+    };
     let tun_index = tun.get_index();
 
     for (index, group) in config.groups.iter().enumerate() {

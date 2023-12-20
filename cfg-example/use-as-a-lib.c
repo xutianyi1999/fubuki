@@ -41,7 +41,8 @@ int main() {
         "],"
         "\"features\": {"
             "\"disable_hosts_operation\": true,"
-            "\"disable_signal_handling\": true"
+            "\"disable_signal_handling\": true,"
+            "\"disable_route_operation\": true"
         "}"
     "}";
 
@@ -60,9 +61,13 @@ int main() {
         printf("%s\n", error);
         return 1;
     }
-    printf("fubuki started\n");
 
+    printf("fubuki started, the sample program will run for 60 seconds\n");
     sleep(60);
+    printf("calling fubuki_stop(...) now\n");
+
     fubuki_stop(handle);
+
+    printf("terminating ...\n");
     return 0;
 }
