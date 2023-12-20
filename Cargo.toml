@@ -6,7 +6,7 @@ edition = "2021"
 
 [lib]
 name = "fubuki"
-crate-type = ["lib", "staticlib"]
+crate-type = ["lib", "staticlib", "cdylib"]
 path = "src/lib.rs"
 
 [[bin]]
