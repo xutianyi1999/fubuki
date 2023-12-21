@@ -40,6 +40,7 @@ int main() {
             "}"
         "],"
         "\"features\": {"
+            "\"disable_api_server\": true,"
             "\"disable_hosts_operation\": true,"
             "\"disable_signal_handling\": true,"
             "\"disable_route_operation\": true"

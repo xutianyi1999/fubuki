@@ -189,6 +189,7 @@ struct NodeConfigFeature {
     disable_hosts_operation: Option<bool>,
     disable_signal_handling: Option<bool>,
     disable_route_operation: Option<bool>,
+    disable_api_server: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -225,6 +226,7 @@ pub struct NodeConfigFeatureFinalize {
     disable_hosts_operation: bool,
     disable_signal_handling: bool,
     disable_route_operation: bool,
+    disable_api_server: bool,
 }
 
 impl<K: Clone> TryFrom<NodeConfig> for NodeConfigFinalize<K>
@@ -343,6 +345,7 @@ where
                 disable_hosts_operation: config.features.clone().and_then(|f| f.disable_hosts_operation).unwrap_or(false),
                 disable_signal_handling: config.features.clone().and_then(|f| f.disable_signal_handling).unwrap_or(false),
                 disable_route_operation: config.features.clone().and_then(|f| f.disable_route_operation).unwrap_or(false),
+                disable_api_server: config.features.clone().and_then(|f| f.disable_api_server).unwrap_or(false),
             },
         };
         Ok(config_finalize)

@@ -1358,7 +1358,9 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
 
     let tun_handler_fut = tun_handler(tun, rt, interfaces.clone());
     future_list.push(Box::pin(tun_handler_fut));
-    future_list.push(Box::pin(api_start(config.api_addr, interfaces)));
+    if !config.features.disable_api_server {
+        future_list.push(Box::pin(api_start(config.api_addr, interfaces)));
+    }
 
     let serve = futures_util::future::try_join_all(future_list);
 
