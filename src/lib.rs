@@ -196,7 +196,7 @@ struct TargetGroupFinalize<K> {
 }
 
 #[derive(Clone)]
-pub struct NodeConfigFinalize<K> {
+struct NodeConfigFinalize<K> {
     mtu: usize,
     channel_limit: usize,
     api_addr: SocketAddr,
