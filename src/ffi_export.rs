@@ -14,8 +14,8 @@ use crate::tun::TunDevice;
 struct Bridge {
     ctx: *mut c_void,
     fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
-    add_addr_fn: extern "C" fn(addr: [u8; 4], netmask: [u8; 4], ctx: *mut c_void),
-    delete_addr_fn: extern "C" fn(addr: [u8; 4], netmask: [u8; 4], ctx: *mut c_void),
+    add_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+    delete_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
     if_to_fubuki_rx: flume::Receiver<Bytes>,
     device_index: u32,
 }
@@ -47,12 +47,12 @@ impl TunDevice for Bridge {
     }
 
     fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
-        (self.add_addr_fn)(addr.octets(), netmask.octets(), self.ctx);
+        (self.add_addr_fn)(u32::from(addr), u32::from(netmask), self.ctx);
         Ok(())
     }
 
     fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
-        (self.delete_addr_fn)(addr.octets(), netmask.octets(), self.ctx);
+        (self.delete_addr_fn)(u32::from(addr), u32::from(netmask), self.ctx);
         Ok(())
     }
 
@@ -68,7 +68,7 @@ pub extern "C" fn if_to_fubuki(handle: *const Handle, packet: *const u8, len: us
     let mut buff = alloc(packet.len());
     buff.copy_from_slice(packet);
 
-    let _ = handle.if_to_fubuki_tx.send(buff);
+    let _ = handle.if_to_fubuki_tx.try_send(buff);
 }
 
 pub struct Handle {
@@ -80,8 +80,8 @@ fn fubuki_init_inner(
     node_config_json: *const c_char,
     ctx: *mut c_void,
     fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
-    add_addr_fn: extern "C" fn(addr: [u8; 4], netmask: [u8; 4], ctx: *mut c_void),
-    delete_addr_fn: extern "C" fn(addr: [u8; 4], netmask: [u8; 4], ctx: *mut c_void),
+    add_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+    delete_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
     device_index: u32,
 ) -> Result<Box<Handle>> {
     let s = unsafe { CStr::from_ptr(node_config_json) }.to_bytes();
@@ -90,7 +90,7 @@ fn fubuki_init_inner(
     let rt = Runtime::new()?;
     logger_init()?;
 
-    let (tx, rx) = flume::bounded(100);
+    let (tx, rx) = flume::bounded(1024);
 
     let bridge = Bridge {
         ctx,
@@ -116,23 +116,36 @@ fn fubuki_init_inner(
     Ok(Box::new(h))
 }
 
+#[repr(C)]
+pub struct FubukiStartOptions {
+    ctx: *mut c_void,
+    node_config_json: *const c_char,
+    device_index: u32,
+    fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
+    add_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+    delete_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+}
+
 #[no_mangle]
 pub extern "C" fn fubuki_start(
-    node_config_json: *const c_char,
-    ctx: *mut c_void,
-    fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
-    add_addr_fn: extern "C" fn(addr: [u8; 4], netmask: [u8; 4], ctx: *mut c_void),
-    delete_addr_fn: extern "C" fn(addr: [u8; 4], netmask: [u8; 4], ctx: *mut c_void),
-    device_index: u32,
+    opts: *const FubukiStartOptions,
+    version: u32,
     error: *mut c_char,
 ) -> *mut Handle {
+    if version != 1 {
+        let err = CString::new(format!("unknown version {}, expecting [1]", version)).unwrap();
+        let err = err.as_bytes_with_nul();
+        unsafe { std::ptr::copy(err.as_ptr(), error as *mut u8, err.len()) };
+        return null_mut();
+    }
+    let options = unsafe { &*opts };
     match fubuki_init_inner(
-        node_config_json,
-        ctx,
-        fubuki_to_if_fn,
-        add_addr_fn,
-        delete_addr_fn,
-        device_index,
+        options.node_config_json,
+        options.ctx,
+        options.fubuki_to_if_fn,
+        options.add_addr_fn,
+        options.delete_addr_fn,
+        options.device_index,
     ) {
         Ok(v) => Box::into_raw(v),
         Err(e) => {
