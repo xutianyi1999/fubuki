@@ -1009,9 +1009,10 @@ where
 
                 // tun must first set the ip address
                 if !sys_route_is_sync {
-                    let res = if sys_routing.is_some() {
-                        sys_routing.clone().unwrap().lock().await.add(&routes).await
-                    } else { Ok(()) };
+                    let res = match &sys_routing {
+                        None => Ok(()),
+                        Some(routing) => routing.lock().await.add(&routes).await
+                    };
 
                     if let Err(e) = res {
                         non_retryable = true;
