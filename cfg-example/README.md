@@ -32,7 +32,13 @@
         "10.0.0.2": ["192.168.201.0/24"]
       }
     }
-  ]
+  ],
+  "features": {
+    "disable_api_server": false,
+    "disable_hosts_operation": false,
+    "disable_signal_handling": false,
+    "disable_route_operation": false
+  }
 }
 ```
 
@@ -60,6 +66,11 @@
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
     - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
+- features: 功能开关（可选）
+    - disable\_api\_server: 禁用api server，默认为false
+    - disable\_hosts\_operation: 禁用hosts文件操作，默认为false
+    - disable\_signal\_handling: 禁用信号事件处理，默认为false
+    - disable\_route\_operation: 禁用路由操作，默认为false
 
 ### server-config.json
 
