@@ -68,7 +68,7 @@ pub extern "C" fn if_to_fubuki(handle: *const Handle, packet: *const u8, len: us
     let mut buff = alloc(packet.len());
     buff.copy_from_slice(packet);
 
-    let _ = handle.if_to_fubuki_tx.send(buff);
+    let _ = handle.if_to_fubuki_tx.try_send(buff);
 }
 
 pub struct Handle {
@@ -90,7 +90,7 @@ fn fubuki_init_inner(
     let rt = Runtime::new()?;
     logger_init()?;
 
-    let (tx, rx) = flume::bounded(100);
+    let (tx, rx) = flume::bounded(1024);
 
     let bridge = Bridge {
         ctx,
