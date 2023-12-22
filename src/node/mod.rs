@@ -888,7 +888,7 @@ where
         let channel_rx = channel_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
 
         defer! {
-            warn!("exiting tcp handler function ...");
+            debug!("exiting tcp handler function ...");
 
             if !config.features.disable_hosts_operation {
                 let guard = host_records.lock();
@@ -914,7 +914,7 @@ where
                 }
             }
 
-            warn!("tcp handler function exited");
+            debug!("tcp handler function exited");
         }
 
         let lan_udp_socket_addr = match (&interface.udp_socket, &group.lan_ip_addr) {
