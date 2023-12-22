@@ -133,7 +133,8 @@ pub extern "C" fn fubuki_start(
     error: *mut c_char,
 ) -> *mut Handle {
     if version != 1 {
-        let err = format!("unknown version {}, expecting [1]", version);
+        let err = CString::new(format!("unknown version {}, expecting [1]", version)).unwrap();
+        let err = err.as_bytes_with_nul();
         unsafe { std::ptr::copy(err.as_ptr(), error as *mut u8, err.len()) };
         return null_mut();
     }

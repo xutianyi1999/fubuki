@@ -341,11 +341,15 @@ where
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
             groups: list,
-            features: NodeConfigFeatureFinalize {
-                disable_hosts_operation: config.features.clone().and_then(|f| f.disable_hosts_operation).unwrap_or(false),
-                disable_signal_handling: config.features.clone().and_then(|f| f.disable_signal_handling).unwrap_or(false),
-                disable_route_operation: config.features.clone().and_then(|f| f.disable_route_operation).unwrap_or(false),
-                disable_api_server: config.features.clone().and_then(|f| f.disable_api_server).unwrap_or(false),
+            features: {
+                let features = config.features.as_ref();
+
+                NodeConfigFeatureFinalize {
+                    disable_hosts_operation: features.and_then(|f| f.disable_hosts_operation).unwrap_or(false),
+                    disable_signal_handling: features.and_then(|f| f.disable_signal_handling).unwrap_or(false),
+                    disable_route_operation: features.and_then(|f| f.disable_route_operation).unwrap_or(false),
+                    disable_api_server: features.and_then(|f| f.disable_api_server).unwrap_or(false),
+                }
             },
         };
         Ok(config_finalize)

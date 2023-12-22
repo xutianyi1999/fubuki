@@ -1365,11 +1365,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
     let serve = futures_util::future::try_join_all(future_list);
 
     if config.features.disable_signal_handling {
-        tokio::select! {
-            res = serve => {
-                res?;
-            },
-        }
+        serve.await?;
     } else {
 
         #[cfg(windows)]
