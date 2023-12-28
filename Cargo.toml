@@ -27,7 +27,6 @@ parking_lot = "0.12"
 anyhow = "1"
 ahash = "0.8"
 futures-util = "0.3"
-md5 = "0.7"
 ipnet = { version = "2", features = ["serde"] }
 arc-swap = "1"
 human-panic = "1"
@@ -39,6 +38,9 @@ arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
 gethostname = "0.4"
 flume = { version = "0.11", default-features = false, features = ["async"] }
+sha2 = "0.10"
+digest = "0.10"
+crossbeam-utils = "0.8"
 
 linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 klask = { git = "https://github.com/xosxos/klask.git", optional = true }

@@ -9,11 +9,9 @@
 
 #![cfg_attr(all(target_os = "windows", feature = "gui"), windows_subsystem = "windows")]
 
-extern crate core;
 #[macro_use]
 extern crate log;
 
-use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -31,7 +29,7 @@ use log::LevelFilter;
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
 
-use crate::common::cipher::{Cipher, XorCipher};
+use crate::common::cipher::{Cipher, CipherEnum, NoOpCipher, RotationCipher, XorCipher};
 use crate::common::net::get_interface_addr;
 use crate::common::net::protocol::{NetProtocol, ProtocolMode, SERVER_VIRTUAL_ADDR, VirtualAddr};
 
@@ -55,13 +53,14 @@ pub mod ffi_export;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-type Key = XorCipher;
+type Key = CipherEnum;
 
 #[derive(Deserialize, Clone)]
 struct Group {
     name: String,
     listen_addr: SocketAddr,
-    key: String,
+    key: Option<String>,
+    enable_key_rotation: Option<bool>,
     address_range: Ipv4Net,
 }
 
@@ -97,12 +96,7 @@ struct ServerConfigFinalize<K> {
     groups: Vec<GroupFinalize<K>>,
 }
 
-trait InnerTryFrom<'a> = TryFrom<&'a [u8]> where <Self as TryFrom<&'a [u8]>>::Error: Error + Send + Sync + 'static;
-
-impl<K> TryFrom<ServerConfig> for ServerConfigFinalize<K>
-where
-    for<'a> K: InnerTryFrom<'a>,
-{
+impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
     type Error = anyhow::Error;
 
     fn try_from(config: ServerConfig) -> std::result::Result<Self, Self::Error> {
@@ -138,7 +132,14 @@ where
                         name: group.name,
                         listen_addr: group.listen_addr,
                         address_range: group.address_range,
-                        key: K::try_from(group.key.as_bytes())?,
+                        key: {
+                            let key = group.key.as_ref().map(|v| v.as_bytes());
+                            match key {
+                                None => CipherEnum::NoOpCipher(NoOpCipher{}),
+                                Some(k) if group.enable_key_rotation == Some(true) => CipherEnum::RotationCipher(RotationCipher::from(k)),
+                                Some(k) => CipherEnum::XorCipher(XorCipher::from(k))
+                            }
+                        },
                     };
                     list.push(v);
                 }
@@ -161,7 +162,8 @@ struct TargetGroup {
     node_name: Option<String>,
     server_addr: String,
     tun_addr: Option<TunAddr>,
-    key: String,
+    key: Option<String>,
+    enable_key_rotation: Option<bool>,
     mode: Option<ProtocolMode>,
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
@@ -230,10 +232,7 @@ pub struct NodeConfigFeatureFinalize {
     disable_api_server: bool,
 }
 
-impl<K: Clone> TryFrom<NodeConfig> for NodeConfigFinalize<K>
-where
-    for<'a> K: InnerTryFrom<'a>,
-{
+impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
     type Error = anyhow::Error;
 
     fn try_from(config: NodeConfig) -> Result<Self> {
@@ -271,10 +270,7 @@ where
                     }
                 };
 
-                if lan_ip_addr.is_ipv6() {
-                    use_ipv6 = true;
-                }
-
+                use_ipv6 |= lan_ip_addr.is_ipv6();
                 use_udp = true;
                 Some(lan_ip_addr)
             } else {
@@ -300,7 +296,14 @@ where
                     group.server_addr
                 },
                 tun_addr: group.tun_addr,
-                key: K::try_from(group.key.as_bytes())?,
+                key: {
+                    let key = group.key.as_ref().map(|v| v.as_bytes());
+                    match key {
+                        None => CipherEnum::NoOpCipher(NoOpCipher{}),
+                        Some(k) if group.enable_key_rotation == Some(true) => CipherEnum::RotationCipher(RotationCipher::from(k)),
+                        Some(k) => CipherEnum::XorCipher(XorCipher::from(k))
+                    }
+                },
                 mode,
                 lan_ip_addr,
                 allowed_ips: group.allowed_ips.unwrap_or_default(),

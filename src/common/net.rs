@@ -86,6 +86,7 @@ pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
     Ok(addr.ip())
 }
 
+// todo atomicell(stamped lock )
 #[derive(Serialize, Deserialize, Clone, Copy, Eq, PartialEq)]
 pub enum UdpStatus {
     Available {
@@ -194,6 +195,7 @@ pub mod protocol {
     use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use crate::common::cipher;
 
     use crate::common::cipher::Cipher;
 
@@ -496,7 +498,10 @@ pub mod protocol {
                 return Ok(None);
             }
 
-            key.decrypt(&mut buff[..4], 0);
+            key.decrypt(&mut buff[..4], &cipher::Options {
+                offset: 0,
+                expect_prefix: Some(&[MAGIC_NUM])
+            });
 
             if buff[0] != MAGIC_NUM {
                 return Err(anyhow!("magic number miss match"));
@@ -509,7 +514,10 @@ pub mod protocol {
 
             let buff = &mut buff[..len as usize];
             rx.read_exact(buff).await?;
-            key.decrypt(buff, 4);
+            key.decrypt(buff, &cipher::Options {
+                offset: 4,
+                expect_prefix: None
+            });
 
             TcpMsg::decode(mode, buff).map(Some)
         }
@@ -519,7 +527,7 @@ pub mod protocol {
             key: &K,
             input: &mut [u8],
         ) -> Result<()> {
-            key.encrypt(input, 0);
+            key.encrypt(input, &cipher::Options::default());
             tx.write_all(input).await?;
             Ok(())
         }

@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use crate::{GroupFinalize, ServerInfoType, ternary};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
-use crate::common::cipher::Cipher;
+use crate::common::cipher::{Cipher, Options};
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::server::api::api_start;
@@ -202,7 +202,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     for (sock_addr, seq) in list {
                         let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
                         let packet = &mut buff[..len];
-                        key.encrypt(packet, 0);
+                        key.encrypt(packet, &Options::default());
                         let res = socket.send_to(packet, sock_addr).await;
 
                         if let Err(e) = res {
@@ -241,7 +241,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     };
 
                     let packet = &mut buff[..len];
-                    key.decrypt(packet, 0);
+                    key.decrypt(packet, &Options::default());
 
                     let msg = match UdpMsg::decode(packet) {
                         Ok(msg) => msg,
@@ -276,7 +276,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             if is_known {
                                 let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
                                 let packet = &mut buff[..len];
-                                key.encrypt(packet, 0);
+                                key.encrypt(packet, &Options::default());
                                 socket.send_to(packet, peer_addr).await?;
                             }
                         }
@@ -353,7 +353,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                     }
                                                 }
 
-                                                key.encrypt(packet, 0);
+                                                key.encrypt(packet, &Options::default());
                                                 fut = Some(socket.send_to(packet, dst_addr));
                                                 break;
                                             }
@@ -676,7 +676,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                                                     let packet_len = packet.len();
                                                     let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
-                                                    key.encrypt(&mut buff[..len], 0);
+                                                    key.encrypt(&mut buff[..len], &Options::default());
 
                                                     fut = Some(udp_socket.send_to(&buff[..len], addr));
                                                     break;
