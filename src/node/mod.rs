@@ -10,6 +10,7 @@ use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
 use chrono::Utc;
+use crossbeam_utils::atomic::AtomicCell;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use hyper::{Body, Method, Request};
@@ -120,7 +121,7 @@ struct Interface<K> {
     node_map: ArcSwap<NodeMap>,
     server_addr: String,
     server_udp_hc: RwLock<HeartbeatCache>,
-    server_udp_status: ArcSwap<UdpStatus>,
+    server_udp_status: AtomicCell<UdpStatus>,
     server_tcp_hc: RwLock<HeartbeatCache>,
     server_is_connected: AtomicBool,
     tcp_handler_channel: Option<Sender<Bytes>>,
@@ -169,62 +170,27 @@ impl <K> From<&Interface<K>> for InterfaceInfo {
             },
             server_addr: value.server_addr.clone(),
             server_udp_hc: HeartbeatInfo::from(&*value.server_udp_hc.read()),
-            server_udp_status: (**value.server_udp_status.load()),
+            server_udp_status: value.server_udp_status.load(),
             server_tcp_hc: HeartbeatInfo::from(&*value.server_tcp_hc.read()),
             server_is_connected: value.server_is_connected.load(Ordering::Relaxed)
         }
     }
 }
 
-#[allow(unused)]
-struct InterfaceCache<'a, K> {
-    addr: &'a AtomicAddr,
-    cidr: &'a AtomicCidr,
-    mode: &'a ProtocolMode,
-    node_map: Cache<&'a ArcSwap<NodeMap>, Arc<NodeMap>>,
-    server_addr: &'a str,
-    server_udp_hc: &'a RwLock<HeartbeatCache>,
-    server_udp_status: Cache<&'a ArcSwap<UdpStatus>, Arc<UdpStatus>>,
-    server_tcp_hc: &'a RwLock<HeartbeatCache>,
-    server_is_connected: &'a AtomicBool,
-    tcp_handler_channel: Option<&'a Sender<Bytes>>,
-    udp_socket: Option<&'a UdpSocket>,
-    key: &'a K,
-}
-
-impl <'a, K> From<&'a Interface<K>> for InterfaceCache<'a, K> {
-    fn from(value: &'a Interface<K>) -> Self {
-        InterfaceCache {
-            addr: &value.addr,
-            cidr: &value.cidr,
-            mode: &value.mode,
-            node_map: Cache::new(&value.node_map),
-            server_addr: &value.server_addr,
-            server_udp_hc: &value.server_udp_hc,
-            server_udp_status: Cache::new(&value.server_udp_status),
-            server_tcp_hc: &value.server_tcp_hc,
-            server_is_connected: &value.server_is_connected,
-            tcp_handler_channel: value.tcp_handler_channel.as_ref(),
-            udp_socket: value.udp_socket.as_ref(),
-            key: &value.key
-        }
-    }
-}
-
 struct ExtendedNode {
     pub node: Node,
-    pub udp_status: Arc<ArcSwap<UdpStatus>>,
+    pub udp_status: Arc<AtomicCell<UdpStatus>>,
     pub hc: Arc<RwLock<HeartbeatCache>>,
-    pub peer_addr: Arc<ArcSwapOption<SocketAddr>>
+    pub peer_addr: Arc<AtomicCell<Option<SocketAddr>>>
 }
 
 impl From<Node> for ExtendedNode {
     fn from(node: Node) -> Self {
         ExtendedNode {
             node,
-            udp_status: Arc::new(ArcSwap::from_pointee(UdpStatus::Unavailable)),
+            udp_status: Arc::new(AtomicCell::new(UdpStatus::Unavailable)),
             hc: Arc::new(RwLock::new(HeartbeatCache::new())),
-            peer_addr: Arc::new(ArcSwapOption::empty())
+            peer_addr: Arc::new(AtomicCell::new(None))
         }
     }
 }
@@ -240,7 +206,7 @@ impl From<&ExtendedNode> for ExtendedNodeInfo {
     fn from(value: &ExtendedNode) -> Self {
         ExtendedNodeInfo {
             node: value.node.clone(),
-            udp_status: **value.udp_status.load(),
+            udp_status: value.udp_status.load(),
             hc: HeartbeatInfo::from(&*value.hc.read())
         }
     }
@@ -253,12 +219,11 @@ async fn lookup_host(dst: &str) -> Option<SocketAddr> {
 async fn send<K: Cipher>(
     inter: &Interface<K>,
     dst_node: &ExtendedNode,
-    server_udp_status: &UdpStatus,
     buff: &mut [u8],
     packet_range: Range<usize>
 ) -> Result<()> {
     if (!inter.mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty()) {
-        let udp_status = **dst_node.udp_status.load();
+        let udp_status = dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
             debug!("tun handler: udp message p2p to node {}", dst_node.node.name);
@@ -306,7 +271,7 @@ async fn send<K: Cipher>(
                         Some(socket) => socket,
                     };
 
-                    let dst_addr = match *server_udp_status {
+                    let dst_addr = match inter.server_udp_status.load() {
                         UdpStatus::Available { dst_addr } => dst_addr,
                         UdpStatus::Unavailable => continue,
                     };
@@ -357,8 +322,8 @@ where
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut rh_cache = Cache::new(&*routing_table);
 
-        let mut interfaces_cache: Vec<InterfaceCache<K>> = interfaces.iter()
-            .map(|v| InterfaceCache::from(&**v))
+        let mut node_map_cache: Vec<_> = interfaces.iter()
+            .map(|v|  Cache::new(&v.node_map))
             .collect();
 
         let mut buff = vec![0u8; UDP_BUFF_SIZE];
@@ -386,11 +351,11 @@ where
                 Some(v) => v,
             };
 
-            let interface_cache = &mut interfaces_cache[item.interface_index];
-            let interface_addr = interface_cache.addr.load();
-            let interface_cidr = interface_cache.cidr.load();
+            let interface = &interfaces[item.interface_index];
+            let interface_addr = interface.addr.load();
+            let interface_cidr = interface.cidr.load();
 
-            if !interface_cache.server_is_connected.load(Ordering::Relaxed) {
+            if !interface.server_is_connected.load(Ordering::Relaxed) {
                 continue;
             }
 
@@ -402,10 +367,7 @@ where
                 TransferType::Unicast(dst_addr)
             };
 
-            let server_us = &**interface_cache.server_udp_status.load();
-            let node_map = &**interface_cache.node_map.load();
-
-            let inter = &*interfaces[item.interface_index];
+            let node_map = &**node_map_cache[item.interface_index].load();
 
             match transfer_type {
                 TransferType::Unicast(addr) => {
@@ -424,7 +386,7 @@ where
                         Some(node) => node
                     };
 
-                    send(inter, node, server_us, &mut buff, packet_range).await?
+                    send(interface, node, &mut buff, packet_range).await?
                 }
                 TransferType::Broadcast => {
                     debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
@@ -434,7 +396,7 @@ where
                             continue;
                         }
 
-                        send(inter, node, server_us, &mut buff, packet_range.clone()).await?;
+                        send(interface, node, &mut buff, packet_range.clone()).await?;
                     }
                 }
             }
@@ -484,9 +446,9 @@ where
                         server_hc_guard.check();
 
                         if server_hc_guard.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss &&
-                            **interface.server_udp_status.load() != UdpStatus::Unavailable
+                            interface.server_udp_status.load() != UdpStatus::Unavailable
                         {
-                            interface.server_udp_status.store(Arc::new(UdpStatus::Unavailable));
+                            interface.server_udp_status.store(UdpStatus::Unavailable);
                         }
 
                         server_hc_guard.request();
@@ -512,7 +474,7 @@ where
                             }
 
                             let is_over: bool;
-                            let udp_status = **ext_node.udp_status.load();
+                            let udp_status = ext_node.udp_status.load();
 
                             let seq = {
                                 let mut hc = ext_node.hc.write();
@@ -520,7 +482,7 @@ where
                                 is_over = hc.packet_continuous_loss_count >= config.udp_heartbeat_continuous_loss;
 
                                 if is_over && udp_status != UdpStatus::Unavailable {
-                                    ext_node.udp_status.store(Arc::new(UdpStatus::Unavailable));
+                                    ext_node.udp_status.store(UdpStatus::Unavailable);
                                 }
 
                                 if ext_node.node.lan_udp_addr.is_none() ||
@@ -544,10 +506,7 @@ where
                                 }
                                 _ => {
                                     if let (Some(lan), Some(wan)) = (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr) {
-                                        let addr = ext_node.peer_addr
-                                            .load()
-                                            .as_ref()
-                                            .map(|v| **v);
+                                        let addr = ext_node.peer_addr.load();
 
                                         let packet = packet.as_slice();
                                         let rt = &*table.load_full();
@@ -631,10 +590,10 @@ where
                                 is_known = true;
                             } else if is_p2p {
                                 if let Some(en) = interface.node_map.load().get(&from_addr) {
-                                    let old = en.peer_addr.load().as_ref().map(|v| **v);
+                                    let old = en.peer_addr.load();
 
                                     if old != Some(peer_addr) {
-                                        en.peer_addr.store(Some(Arc::new(peer_addr)));
+                                        en.peer_addr.store(Some(peer_addr));
                                     }
                                     is_known = true;
                                 }
@@ -657,7 +616,7 @@ where
                         }
                         UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
                             if from_addr == SERVER_VIRTUAL_ADDR {
-                                let udp_status = **interface.server_udp_status.load();
+                                let udp_status = interface.server_udp_status.load();
 
                                 match udp_status {
                                     UdpStatus::Available { dst_addr } => {
@@ -668,7 +627,7 @@ where
 
                                         if lookup_host(&interface.server_addr).await == Some(peer_addr) {
                                             if interface.server_udp_hc.write().response(seq).is_some() {
-                                                interface.server_udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                                                interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
                                             }
                                         }
                                     }
@@ -680,7 +639,7 @@ where
                                                 server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
                                             {
                                                 drop(server_hc_guard);
-                                                interface.server_udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                                                interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
                                             }
                                         }
                                     }
@@ -690,16 +649,15 @@ where
                                     let mut hc_guard = node.hc.write();
 
                                     if hc_guard.response(seq).is_some() {
-                                        if **node.udp_status.load() == UdpStatus::Unavailable &&
+                                        if node.udp_status.load() == UdpStatus::Unavailable &&
                                             hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
                                             !in_routing_table(&**table.load(), peer_addr)
                                         {
                                             drop(hc_guard);
 
-                                            let status = Arc::new(UdpStatus::Available {
+                                            node.udp_status.store(UdpStatus::Available {
                                                 dst_addr: peer_addr,
                                             });
-                                            node.udp_status.store(status);
                                         }
                                     }
                                 }
@@ -1312,7 +1270,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
             node_map: ArcSwap::from_pointee(NodeMap::new()),
             server_addr: group.server_addr.clone(),
             server_udp_hc: RwLock::new(HeartbeatCache::new()),
-            server_udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
+            server_udp_status: AtomicCell::new(UdpStatus::Unavailable),
             server_tcp_hc: RwLock::new(HeartbeatCache::new()),
             server_is_connected: AtomicBool::new(false),
             tcp_handler_channel: channel_tx,

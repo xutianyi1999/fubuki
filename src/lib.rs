@@ -157,6 +157,7 @@ struct TunAddr {
     netmask: Ipv4Addr,
 }
 
+// todo add supported mode for sending to dest node, override config
 #[derive(Deserialize, Clone)]
 struct TargetGroup {
     node_name: Option<String>,

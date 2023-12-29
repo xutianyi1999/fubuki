@@ -37,7 +37,7 @@ scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
 gethostname = "0.4"
-flume = { version = "0.11", default-features = false, features = ["async"] }
+flume = { version = "0.11", default-features = false, features = ["async", "spin"] }
 sha2 = "0.10"
 digest = "0.10"
 crossbeam-utils = "0.8"

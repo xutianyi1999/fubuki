@@ -7,6 +7,7 @@ use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use chrono::Utc;
+use crossbeam_utils::atomic::AtomicCell;
 use hyper::{Body, Method, Request};
 use hyper::body::Buf;
 use ipnet::Ipv4Net;
@@ -34,7 +35,7 @@ pub type NodeMap = HashMap<VirtualAddr, Node>;
 
 struct NodeHandle {
     node: ArcSwap<Node>,
-    udp_status: ArcSwap<UdpStatus>,
+    udp_status: AtomicCell<UdpStatus>,
     udp_heartbeat_cache: RwLock<HeartbeatCache>,
     tcp_heartbeat_cache: RwLock<HeartbeatCache>,
     tx: Sender<Bytes>,
@@ -52,7 +53,7 @@ impl From<&NodeHandle> for NodeInfo {
     fn from(value: &NodeHandle) -> Self {
         NodeInfo {
             node: (**value.node.load()).clone(),
-            udp_status: **value.udp_status.load(),
+            udp_status: value.udp_status.load(),
             udp_heartbeat_cache: HeartbeatInfo::from(&*value.udp_heartbeat_cache.read()),
             tcp_heartbeat_cache: HeartbeatInfo::from(&*value.tcp_heartbeat_cache.read())
         }
@@ -99,7 +100,7 @@ impl GroupHandle {
             NodeHandle {
                 node: ArcSwap::from_pointee(node),
                 tx,
-                udp_status: ArcSwap::from_pointee(UdpStatus::Unavailable),
+                udp_status: AtomicCell::new(UdpStatus::Unavailable),
                 udp_heartbeat_cache: RwLock::new(HeartbeatCache::new()),
                 tcp_heartbeat_cache: RwLock::new(HeartbeatCache::new())
             },
@@ -188,10 +189,10 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             let mut heartbeat_status = node.udp_heartbeat_cache.write();
                             heartbeat_status.check();
 
-                            if **node.udp_status.load() != UdpStatus::Unavailable &&
+                            if node.udp_status.load() != UdpStatus::Unavailable &&
                                 heartbeat_status.packet_continuous_loss_count >= packet_loss_limit
                             {
-                                node.udp_status.store(Arc::new(UdpStatus::Unavailable));
+                                node.udp_status.store(UdpStatus::Unavailable);
                             }
 
                             heartbeat_status.request();
@@ -290,10 +291,10 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                     continue;
                                 }
 
-                                if **node.udp_status.load() == UdpStatus::Unavailable &&
+                                if node.udp_status.load() == UdpStatus::Unavailable &&
                                     udp_heartbeat_cache.packet_continuous_recv_count >= packet_continuous_recv
                                 {
-                                    node.udp_status.store(Arc::new(UdpStatus::Available {dst_addr: peer_addr}));
+                                    node.udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
                                 }
                             }
                         }
@@ -332,7 +333,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                 }
                                             }
                                             NetProtocol::UDP => {
-                                                let status = **handle.udp_status.load();
+                                                let status = handle.udp_status.load();
 
                                                 let dst_addr = match status {
                                                     UdpStatus::Available { dst_addr } => dst_addr,
@@ -662,7 +663,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                                     }
                                                 }
                                                 NetProtocol::UDP =>  {
-                                                    let udp_status = **handle.udp_status.load();
+                                                    let udp_status = handle.udp_status.load();
 
                                                     let addr = match udp_status {
                                                         UdpStatus::Available { dst_addr } => dst_addr,

@@ -86,7 +86,6 @@ pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
     Ok(addr.ip())
 }
 
-// todo atomicell(stamped lock )
 #[derive(Serialize, Deserialize, Clone, Copy, Eq, PartialEq)]
 pub enum UdpStatus {
     Available {
