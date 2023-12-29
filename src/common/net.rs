@@ -194,8 +194,8 @@ pub mod protocol {
     use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    use crate::common::cipher;
 
+    use crate::common::cipher;
     use crate::common::cipher::Cipher;
 
     pub type VirtualAddr = Ipv4Addr;
@@ -497,10 +497,12 @@ pub mod protocol {
                 return Ok(None);
             }
 
-            key.decrypt(&mut buff[..4], &cipher::Options {
+            let mut ctx = cipher::CipherContext {
                 offset: 0,
-                expect_prefix: Some(&[MAGIC_NUM])
-            });
+                expect_prefix: Some(&[MAGIC_NUM]),
+                key_timestamp: None
+            };
+            key.decrypt(&mut buff[..4], &mut ctx);
 
             if buff[0] != MAGIC_NUM {
                 return Err(anyhow!("magic number miss match"));
@@ -513,11 +515,10 @@ pub mod protocol {
 
             let buff = &mut buff[..len as usize];
             rx.read_exact(buff).await?;
-            key.decrypt(buff, &cipher::Options {
-                offset: 4,
-                expect_prefix: None
-            });
 
+            ctx.offset = 4;
+            ctx.expect_prefix = None;
+            key.decrypt(buff, &mut ctx);
             TcpMsg::decode(mode, buff).map(Some)
         }
 
@@ -526,7 +527,7 @@ pub mod protocol {
             key: &K,
             input: &mut [u8],
         ) -> Result<()> {
-            key.encrypt(input, &cipher::Options::default());
+            key.encrypt(input, &mut cipher::CipherContext::default());
             tx.write_all(input).await?;
             Ok(())
         }

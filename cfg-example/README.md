@@ -22,14 +22,24 @@
         "netmask": "255.255.255.0"
       },
       "key": "123",
+      "enable_key_rotation": false,
       "mode": {
-        "p2p": ["UDP"],
-        "relay": ["UDP", "TCP"]
+        "p2p": [
+          "UDP"
+        ],
+        "relay": [
+          "UDP",
+          "TCP"
+        ]
       },
       "lan_ip_addr": "192.168.0.2",
-      "allowed_ips": ["192.168.200.0/24"],
+      "allowed_ips": [
+        "192.168.200.0/24"
+      ],
       "ips": {
-        "10.0.0.2": ["192.168.201.0/24"]
+        "10.0.0.2": [
+          "192.168.201.0/24"
+        ]
       }
     }
   ],
@@ -59,7 +69,8 @@
     - tun_addr(可选): 本地节点的IP地址与掩码，默认从地址池获取
         - ip: 节点IP地址
         - netmask: 子网掩码
-    - key: 预共享密钥
+    - key(可选): 预共享密钥, 不设置则不开启加密
+    - enable_key_rotation(可选): 基于时间的密钥轮换，要求节点之间的系统时间尽可能的同步, 默认为false
     - mode(可选): 数据传递方式，默认直连为UDP，中转优先使用UDP，备选TCP
         - p2p: 直连的协议，目前仅支持UDP
         - relay: 中转的协议，支持UDP与TCP
@@ -88,6 +99,7 @@
       "name": "group1",
       "listen_addr": "0.0.0.0:12345",
       "key": "123",
+      "enable_key_rotation": false,
       "address_range": "10.0.0.0/24"
     }
   ]
@@ -104,5 +116,6 @@
 - groups 配置多组网段
     - name: 组名称
     - listen_addr: 监听地址
-    - key: 预共享密钥
+    - key(可选): 预共享密钥, 不设置则不开启加密
+    - enable_key_rotation(可选): 基于时间的密钥轮换，要求节点之间的系统时间尽可能的同步, 默认为false
     - address_range: 网段

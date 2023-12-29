@@ -7,25 +7,26 @@ use crossbeam_utils::atomic::AtomicCell;
 use digest::Digest;
 use sha2::Sha256;
 
-#[derive(Copy, Clone)]
-pub struct Options<'a> {
+pub struct CipherContext<'a> {
     pub offset: usize,
-    pub expect_prefix: Option<&'a [u8]>
+    pub expect_prefix: Option<&'a [u8]>,
+    pub key_timestamp: Option<i64>,
 }
 
-impl Default for Options<'static> {
+impl Default for CipherContext<'static> {
     fn default() -> Self {
-        Options {
+        CipherContext {
             offset: 0,
-            expect_prefix: None
+            expect_prefix: None,
+            key_timestamp: None,
         }
     }
 }
 
 pub trait Cipher {
-    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], options: &Options);
+    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &mut CipherContext);
 
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], options: &Options);
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext);
 }
 
 #[derive(Clone, Copy)]
@@ -34,9 +35,8 @@ pub struct XorCipher {
 }
 
 impl Cipher for XorCipher {
-    #[inline]
-    fn encrypt(&self, mut data: &mut [u8], options: &Options) {
-        let offset = options.offset;
+    fn encrypt(&self, mut data: &mut [u8], context: &mut CipherContext) {
+        let offset = context.offset;
         let v = offset % 32;
 
         if v != 0 {
@@ -61,8 +61,8 @@ impl Cipher for XorCipher {
     }
 
     #[inline]
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], options: &Options) {
-        self.encrypt(ciphertext_to_plaintext, options)
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext) {
+        self.encrypt(ciphertext_to_plaintext, context)
     }
 }
 
@@ -83,10 +83,10 @@ struct TimePeriod<K> {
     timestamp: i64,
     prev: K,
     curr: K,
-    next: K
+    next: K,
 }
 
-impl <K: for<'a> From<&'a [u8]>> TimePeriod<K> {
+impl<K: for<'a> From<&'a [u8]>> TimePeriod<K> {
     fn build_inner_cipher(key: &[u8; 32], timestamp: i64) -> K {
         let mut input = [0u8; 32 + 8];
         input[..32].copy_from_slice(key);
@@ -98,29 +98,27 @@ impl <K: for<'a> From<&'a [u8]>> TimePeriod<K> {
         key: &[u8; 32],
         prev: i64,
         curr: i64,
-        next: i64
+        next: i64,
     ) -> TimePeriod<K> {
         TimePeriod {
             timestamp: curr,
             prev: Self::build_inner_cipher(key, prev),
             curr: Self::build_inner_cipher(key, curr),
-            next: Self::build_inner_cipher(key, next)
+            next: Self::build_inner_cipher(key, next),
         }
     }
 }
 
 const PERIOD_SECS: i64 = 60;
-const FUZZY_RANGE_SECS: i64 = 10;
 
 #[derive(Clone)]
 pub struct RotationCipher<K> {
     key: [u8; 32],
     time_period: Arc<AtomicCell<TimePeriod<K>>>,
     period_secs: i64,
-    fuzzy_range_secs: i64
 }
 
-impl <K: for<'a> From<&'a [u8]>> From<&[u8]> for RotationCipher<K> {
+impl<K: for<'a> From<&'a [u8]>> From<&[u8]> for RotationCipher<K> {
     fn from(value: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(value);
@@ -136,15 +134,14 @@ impl <K: for<'a> From<&'a [u8]>> From<&[u8]> for RotationCipher<K> {
                 out,
                 curr - PERIOD_SECS,
                 curr,
-                curr + PERIOD_SECS
+                curr + PERIOD_SECS,
             ))),
             period_secs: PERIOD_SECS,
-            fuzzy_range_secs: FUZZY_RANGE_SECS
         }
     }
 }
 
-impl <K: Copy + for<'a> From<&'a [u8]>> RotationCipher<K> {
+impl<K: Copy + for<'a> From<&'a [u8]>> RotationCipher<K> {
     fn sync(&self, now: i64) -> TimePeriod<K> {
         let curr = now - (now % self.period_secs);
         let mut tp = self.time_period.load();
@@ -154,7 +151,7 @@ impl <K: Copy + for<'a> From<&'a [u8]>> RotationCipher<K> {
                 &self.key,
                 curr - self.period_secs,
                 curr,
-                curr + self.period_secs
+                curr + self.period_secs,
             );
             self.time_period.store(tp);
         }
@@ -162,72 +159,85 @@ impl <K: Copy + for<'a> From<&'a [u8]>> RotationCipher<K> {
     }
 }
 
-impl <K: Cipher + Copy + for<'a> From<&'a [u8]>> Cipher for RotationCipher<K> {
-    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], options: &Options) {
+impl<K: Cipher + Copy + for<'a> From<&'a [u8]>> Cipher for RotationCipher<K> {
+    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &mut CipherContext) {
         let now = Utc::now().timestamp();
         let tp = self.sync(now);
-        tp.curr.encrypt(plaintext_to_ciphertext, options);
+        tp.curr.encrypt(plaintext_to_ciphertext, context);
     }
 
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], options: &Options) {
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext) {
         let now = Utc::now().timestamp();
         let tp = self.sync(now);
-        tp.curr.decrypt(ciphertext_to_plaintext, options);
 
-        if let Some(expect) = options.expect_prefix {
+        if let Some(key_timestamp) = context.key_timestamp {
+            if key_timestamp == tp.timestamp {
+                tp.curr.decrypt(ciphertext_to_plaintext, context);
+            } else if key_timestamp == tp.timestamp - self.period_secs {
+                tp.prev.decrypt(ciphertext_to_plaintext, context);
+            } else if key_timestamp == tp.timestamp + self.period_secs {
+                tp.next.decrypt(ciphertext_to_plaintext, context);
+            }
+            return;
+        }
+
+        tp.curr.decrypt(ciphertext_to_plaintext, context);
+        context.key_timestamp = Some(tp.timestamp);
+
+        if let Some(expect) = context.expect_prefix {
             if expect == &ciphertext_to_plaintext[..expect.len()] {
                 return;
             }
 
-            tp.curr.encrypt(ciphertext_to_plaintext, options);
+            tp.curr.encrypt(ciphertext_to_plaintext, context);
 
-            if now - tp.timestamp <= self.fuzzy_range_secs {
-                tp.prev.decrypt(ciphertext_to_plaintext, options);
-            } else if tp.timestamp + self.period_secs - now <= self.fuzzy_range_secs {
-                tp.next.decrypt(ciphertext_to_plaintext, options);
+            if now - tp.timestamp < self.period_secs / 2 {
+                tp.prev.decrypt(ciphertext_to_plaintext, context);
+                context.key_timestamp = Some(tp.timestamp - self.period_secs);
+            } else if now - tp.timestamp >= self.period_secs / 2 {
+                tp.next.decrypt(ciphertext_to_plaintext, context);
+                context.key_timestamp = Some(tp.timestamp + self.period_secs);
             }
         }
     }
 }
 
 #[derive(Copy, Clone)]
-pub struct NoOpCipher{}
+pub struct NoOpCipher {}
 
 impl From<&[u8]> for NoOpCipher {
     fn from(_: &[u8]) -> Self {
-        NoOpCipher{}
+        NoOpCipher {}
     }
 }
 
 impl Cipher for NoOpCipher {
-    fn encrypt(&self, _plaintext_to_ciphertext: &mut [u8], _options: &Options) {
-    }
+    fn encrypt(&self, _plaintext_to_ciphertext: &mut [u8], _context: &mut CipherContext) {}
 
-    fn decrypt(&self, _ciphertext_to_plaintext: &mut [u8], _options: &Options) {
-    }
+    fn decrypt(&self, _ciphertext_to_plaintext: &mut [u8], _context: &mut CipherContext) {}
 }
 
 #[derive(Clone)]
 pub enum CipherEnum {
     XorCipher(XorCipher),
     RotationCipher(RotationCipher<XorCipher>),
-    NoOpCipher(NoOpCipher)
+    NoOpCipher(NoOpCipher),
 }
 
 impl Cipher for CipherEnum {
-    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], options: &Options) {
+    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &mut CipherContext) {
         match self {
-            CipherEnum::XorCipher(k) => k.encrypt(plaintext_to_ciphertext, options),
-            CipherEnum::RotationCipher(k) => k.encrypt(plaintext_to_ciphertext, options),
-            CipherEnum::NoOpCipher(k) => k.encrypt(plaintext_to_ciphertext, options),
+            CipherEnum::XorCipher(k) => k.encrypt(plaintext_to_ciphertext, context),
+            CipherEnum::RotationCipher(k) => k.encrypt(plaintext_to_ciphertext, context),
+            CipherEnum::NoOpCipher(k) => k.encrypt(plaintext_to_ciphertext, context),
         }
     }
 
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], options: &Options) {
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext) {
         match self {
-            CipherEnum::XorCipher(k) => k.decrypt(ciphertext_to_plaintext, options),
-            CipherEnum::RotationCipher(k) => k.decrypt(ciphertext_to_plaintext, options),
-            CipherEnum::NoOpCipher(k) => k.decrypt(ciphertext_to_plaintext, options),
+            CipherEnum::XorCipher(k) => k.decrypt(ciphertext_to_plaintext, context),
+            CipherEnum::RotationCipher(k) => k.decrypt(ciphertext_to_plaintext, context),
+            CipherEnum::NoOpCipher(k) => k.decrypt(ciphertext_to_plaintext, context),
         }
     }
 }
@@ -237,11 +247,12 @@ fn test() {
     let k = XorCipher::try_from(b"abc".as_ref()).unwrap();
     let mut text = *b"abcdef";
 
-    k.encrypt(&mut text, &Options::default());
-    k.decrypt(&mut text[..2], &Options::default());
-    k.decrypt(&mut text[2..], &Options {
+    k.encrypt(&mut text, &mut CipherContext::default());
+    k.decrypt(&mut text[..2], &mut CipherContext::default());
+    k.decrypt(&mut text[2..], &mut CipherContext {
         offset: 2,
-        expect_prefix: None
+        expect_prefix: None,
+        key_timestamp: None,
     });
 
     assert_eq!(&text, b"abcdef");

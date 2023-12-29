@@ -507,7 +507,12 @@ pub fn launch(args: Args) -> Result<()> {
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
                     let rt = Runtime::new()?;
-                    rt.block_on(node::start(c, tun::create().context("failed to create tun")?))?;
+
+                    rt.block_on(async {
+                        // creating AsyncTun must be in the tokio runtime
+                        let tun = tun::create().context("failed to create tun")?;
+                        node::start(c, tun).await
+                    })?;
                 }
                 NodeCmd::Info { api, info_type } => {
                     let rt = tokio::runtime::Builder::new_current_thread()

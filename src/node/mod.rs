@@ -34,9 +34,9 @@ use tokio::time;
 use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, ternary};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
-use crate::common::cipher::Options;
+use crate::common::cipher::CipherContext;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, MAGIC_NUM, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::nat::{add_nat, del_nat};
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
@@ -235,7 +235,7 @@ async fn send<K: Cipher>(
 
             let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
             UdpMsg::data_encode(packet_range.len(), packet);
-            inter.key.encrypt(packet, &Options::default());
+            inter.key.encrypt(packet, &mut CipherContext::default());
             socket.send_to(packet, dst_addr).await?;
             return Ok(());
         }
@@ -255,7 +255,7 @@ async fn send<K: Cipher>(
                     packet[DATA_START..].copy_from_slice(&buff[packet_range.start..packet_range.end]);
 
                     TcpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), &mut packet);
-                    inter.key.encrypt(&mut packet, &Options::default());
+                    inter.key.encrypt(&mut packet, &mut CipherContext::default());
 
                     match tx.try_send(packet) {
                         Ok(_) => {
@@ -281,7 +281,7 @@ async fn send<K: Cipher>(
                     let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSG_HEADER_LEN..packet_range.end];
 
                     UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
-                    inter.key.encrypt(packet, &Options::default());
+                    inter.key.encrypt(packet, &mut CipherContext::default());
                     socket.send_to(packet, dst_addr).await?;
                     return Ok(())
                 }
@@ -462,7 +462,7 @@ where
                         &mut packet,
                     );
 
-                    key.encrypt(&mut packet, &Options::default());
+                    key.encrypt(&mut packet, &mut CipherContext::default());
                     socket.send_to(&packet, &interface.server_addr).await?;
 
                     if is_p2p {
@@ -496,7 +496,7 @@ where
                             };
 
                             UdpMsg::heartbeat_encode(interface_addr, seq, HeartbeatType::Req, &mut packet);
-                            key.encrypt(&mut packet, &Options::default());
+                            key.encrypt(&mut packet, &mut CipherContext::default());
 
                             match udp_status {
                                 UdpStatus::Available { dst_addr } if !is_over => {
@@ -579,7 +579,11 @@ where
                 };
 
                 let packet = &mut buff[..len];
-                key.decrypt(packet, &Options::default());
+                key.decrypt(packet, &mut CipherContext {
+                    offset: 0,
+                    expect_prefix: Some(&[MAGIC_NUM]),
+                    key_timestamp: None
+                });
 
                 if let Ok(packet) = UdpMsg::decode(packet) {
                     match packet {
@@ -610,7 +614,7 @@ where
                                 );
 
                                 let packet = &mut buff[..len];
-                                key.encrypt(packet, &Options::default());
+                                key.encrypt(packet, &mut CipherContext::default());
                                 socket.send_to(packet, peer_addr).await?;
                             }
                         }
@@ -1073,7 +1077,7 @@ where
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                                         TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
-                                        key.encrypt(&mut buff, &Options::default());
+                                        key.encrypt(&mut buff, &mut CipherContext::default());
 
                                         let res = inner_channel_tx
                                             .send(buff)
@@ -1158,7 +1162,7 @@ where
 
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                                 TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
-                                key.encrypt(&mut buff, &Options::default());
+                                key.encrypt(&mut buff, &mut CipherContext::default());
                                 inner_channel_tx.send(buff).map_err(|e| anyhow!(e.to_string()))?;
 
                                 tokio::time::sleep(config.tcp_heartbeat_interval).await;
