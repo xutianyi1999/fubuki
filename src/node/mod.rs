@@ -118,6 +118,7 @@ struct Interface<K> {
     addr: AtomicAddr,
     cidr: AtomicCidr,
     mode: ProtocolMode,
+    specify_mode: LinearMap<VirtualAddr, ProtocolMode>,
     node_map: ArcSwap<NodeMap>,
     server_addr: String,
     server_udp_hc: RwLock<HeartbeatCache>,
@@ -222,7 +223,9 @@ async fn send<K: Cipher>(
     buff: &mut [u8],
     packet_range: Range<usize>
 ) -> Result<()> {
-    if (!inter.mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty()) {
+    let mode = inter.specify_mode.get(&dst_node.node.virtual_addr).unwrap_or(&inter.mode);
+
+    if (!mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty()) {
         let udp_status = dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
@@ -241,8 +244,8 @@ async fn send<K: Cipher>(
         }
     }
 
-    if (!inter.mode.relay.is_empty()) && (!dst_node.node.mode.relay.is_empty()) {
-        for np in &inter.mode.relay {
+    if (!mode.relay.is_empty()) && (!dst_node.node.mode.relay.is_empty()) {
+        for np in &mode.relay {
             match np {
                 NetProtocol::TCP => {
                     let tx = match inter.tcp_handler_channel {
@@ -1271,6 +1274,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
             addr: AtomicAddr::from(VirtualAddr::UNSPECIFIED),
             cidr: AtomicCidr::from(Ipv4Net::default()),
             mode: group.mode.clone(),
+            specify_mode: group.specify_mode.iter().map(|(k, v)| (*k, v.clone())).collect(),
             node_map: ArcSwap::from_pointee(NodeMap::new()),
             server_addr: group.server_addr.clone(),
             server_udp_hc: RwLock::new(HeartbeatCache::new()),

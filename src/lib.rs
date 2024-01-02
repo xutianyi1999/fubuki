@@ -157,7 +157,6 @@ struct TunAddr {
     netmask: Ipv4Addr,
 }
 
-// todo add supported mode for sending to dest node, override config
 #[derive(Deserialize, Clone)]
 struct TargetGroup {
     node_name: Option<String>,
@@ -166,6 +165,7 @@ struct TargetGroup {
     key: Option<String>,
     enable_key_rotation: Option<bool>,
     mode: Option<ProtocolMode>,
+    specify_mode: Option<HashMap<VirtualAddr, ProtocolMode>>,
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
@@ -203,6 +203,7 @@ struct TargetGroupFinalize<K> {
     tun_addr: Option<TunAddr>,
     key: K,
     mode: ProtocolMode,
+    specify_mode: HashMap<VirtualAddr, ProtocolMode>,
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
@@ -306,6 +307,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                     }
                 },
                 mode,
+                specify_mode: group.specify_mode.unwrap_or_default(),
                 lan_ip_addr,
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default()

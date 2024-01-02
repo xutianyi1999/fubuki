@@ -19,15 +19,37 @@
         "netmask": "255.255.255.0"
       },
       "key": "123",
+      "enable_key_rotation": false,
       "mode": {
-        "p2p": ["UDP"],
-        "relay": ["UDP", "TCP"]
+        "p2p": [
+          "UDP"
+        ],
+        "relay": [
+          "UDP",
+          "TCP"
+        ]
+      },
+      "specify_mode": {
+        "10.0.0.2": {
+          "p2p": [],
+          "relay": ["UDP", "TCP"]
+        }
       },
       "lan_ip_addr": "192.168.0.2",
-      "allowed_ips": ["192.168.200.0/24"],
+      "allowed_ips": [
+        "192.168.200.0/24"
+      ],
       "ips": {
-        "10.0.0.2": ["192.168.201.0/24"]
+        "10.0.0.2": [
+          "192.168.201.0/24"
+        ]
       }
     }
-  ]
+  ],
+  "features": {
+    "disable_api_server": false,
+    "disable_hosts_operation": false,
+    "disable_signal_handling": false,
+    "disable_route_operation": false
+  }
 }

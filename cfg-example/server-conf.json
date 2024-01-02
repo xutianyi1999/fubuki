@@ -11,6 +11,7 @@
       "name": "group1",
       "listen_addr": "0.0.0.0:12345",
       "key": "123",
+      "enable_key_rotation": false,
       "address_range": "10.0.0.0/24"
     }
   ]
