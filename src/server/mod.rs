@@ -559,7 +559,10 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
     }
 
     async fn exec(&mut self) -> Result<()> {
-        self.stream.as_ref().unwrap().set_keepalive()?;
+        let stream = self.stream.as_ref().unwrap();
+        stream.set_keepalive()?;
+        stream.set_nodelay(true)?;
+
         self.init().await?;
 
         info!("tcp handler: node {} is registered", self.register.as_ref().unwrap().node_name);

@@ -734,6 +734,8 @@ where
         .await
         .with_context(|| format!("connect to {} error", &group.server_addr))?;
 
+    stream.set_nodelay(true)?;
+
     let mut buff = allocator::alloc(1024);
 
     let (virtual_addr, cidr) = match register_addr {
