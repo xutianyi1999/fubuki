@@ -3,7 +3,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{ensure, Result};
 use parking_lot::RwLock;
 
 pub struct Bytes {
@@ -44,14 +43,16 @@ impl Bytes {
         }
     }
 
-    pub fn split(&self, size: usize) -> Result<Bytes> {
+    pub fn split(&self, size: usize) -> Result<Bytes, usize> {
         let mut start = self.start.load(Ordering::Relaxed);
 
         loop {
             let new_start = start + size;
             let end = self.end;
 
-            ensure!(new_start <= end);
+            if new_start > end {
+                return Err(new_start);
+            }
 
             if let Err(v) = self.start.compare_exchange_weak(start, new_start, Ordering::Relaxed, Ordering::Relaxed) {
                 start = v;
@@ -68,12 +69,14 @@ impl Bytes {
         }
     }
 
-    pub fn split_mut(&mut self, size: usize) -> Result<Bytes> {
+    pub fn split_mut(&mut self, size: usize) -> Result<Bytes, usize> {
         let start = self.start.get_mut();
         let new_start = *start + size;
         let end = self.end;
 
-        ensure!(new_start <= end);
+        if new_start > end {
+            return Err(new_start);
+        }
 
         let new_bytes = Bytes {
             inner: self.inner.clone(),
