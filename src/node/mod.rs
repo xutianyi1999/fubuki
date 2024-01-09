@@ -825,6 +825,7 @@ fn update_tun_addr<T: TunDevice, K, RT: RoutingTable + Clone>(
     tun: &T,
     rt: &ArcSwap<RT>,
     interface: &Interface<K>,
+    allowed_ips: &[Ipv4Net],
     old_addr: VirtualAddr,
     addr: VirtualAddr,
     old_cidr: Ipv4Net,
@@ -836,18 +837,41 @@ fn update_tun_addr<T: TunDevice, K, RT: RoutingTable + Clone>(
         interface_index: interface.index
     };
 
+    let allowed_ips_item = allowed_ips.iter()
+        .map(|&allowed| Item {
+            cidr: allowed,
+            gateway: addr,
+            interface_index: interface.index
+        })
+        .collect::<Vec<_>>();
+
     rt.rcu(|v| {
         let mut t = (**v).clone();
-        t.remove(&old_cidr);
-        t.add(item.clone());
+
+        // update default tun route
+        if cidr != old_cidr {
+            t.remove(&old_cidr);
+            t.add(item.clone());
+        }
+
+        // update allowed_ips route
+        if addr != old_addr {
+            for i in &allowed_ips_item {
+                t.remove(&i.cidr);
+                t.add(i.clone());
+            }
+        }
         t
     });
 
-    tun.delete_addr(old_addr, old_cidr.netmask())?;
-    tun.add_addr(addr, cidr.netmask())?;
+    if addr != old_addr ||
+        cidr != old_cidr {
+        tun.delete_addr(old_addr, old_cidr.netmask())?;
+        tun.add_addr(addr, cidr.netmask())?;
 
-    interface.addr.store(addr);
-    interface.cidr.store(cidr);
+        interface.addr.store(addr);
+        interface.cidr.store(cidr);
+    }
     Ok(())
 }
 
@@ -919,6 +943,7 @@ where
                     &tun,
                     &routing_table,
                     &*interface,
+                    &group.allowed_ips,
                     VirtualAddr::UNSPECIFIED,
                     addr.ip,
                     Ipv4Net::default(),
@@ -963,6 +988,7 @@ where
                                 &tun,
                                 &routing_table,
                                 &*interface,
+                                &group.allowed_ips,
                                 old_addr,
                                 *addr,
                                 old_cidr,
