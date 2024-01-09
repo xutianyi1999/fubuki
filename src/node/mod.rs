@@ -47,6 +47,7 @@ mod api;
 mod sys_route;
 
 // todo use vec
+// todo sorted
 type NodeMap = LinearMap<VirtualAddr, ExtendedNode>;
 
 struct AtomicAddr {
@@ -312,6 +313,98 @@ fn find_route<RT: RoutingTable>(rt: &RT, mut dst_addr: Ipv4Addr) -> Option<(Ipv4
     Some((dst_addr, item))
 }
 
+struct PacketSender<'a, RT, Tun> {
+    rt_cache: Cache<&'a ArcSwap<RT>, Arc<RT>>,
+    nodes_cache: Vec<Cache<&'a ArcSwap<NodeMap>, Arc<NodeMap>>>,
+    tun: &'a Tun
+}
+
+impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
+    where
+        RT: RoutingTable,
+        Tun: TunDevice
+{
+    fn new(
+        rt: &'a ArcSwap<RT>,
+        node_map: &'a [&'a ArcSwap<NodeMap>],
+        tun: &'a Tun
+    ) -> Self {
+        PacketSender {
+            rt_cache: Cache::new(rt),
+            nodes_cache: node_map.iter().map(|&v| Cache::new(v)).collect(),
+            tun
+        }
+    }
+
+    async fn send_packet<K: Cipher>(
+        &mut self,
+        packet_range: Range<usize>,
+        buff: &mut [u8],
+        interfaces: &[&Interface<K>]
+    ) -> Result<()> {
+        let packet = &buff[packet_range.clone()];
+        let src_addr = get_ip_src_addr(packet)?;
+        let dst_addr = get_ip_dst_addr(packet)?;
+
+        let rt = &**self.rt_cache.load();
+
+        let (dst_addr, item) = match find_route(rt, dst_addr) {
+            None => return Ok(()),
+            Some(v) => v,
+        };
+
+        let if_index = item.interface_index;
+
+        let (interface, node_map) = match interfaces.binary_search_by_key(&if_index, |i| i.index) {
+            Ok(i) => (interfaces[i], &**self.nodes_cache[i].load()),
+            Err(_) => return Ok(())
+        };
+
+        let interface_addr = interface.addr.load();
+        let interface_cidr = interface.cidr.load();
+
+        if !interface.server_is_connected.load(Ordering::Relaxed) {
+            return Ok(())
+        }
+
+        let transfer_type = if dst_addr.is_broadcast() && interface_addr == src_addr {
+            TransferType::Broadcast
+        } else if interface_cidr.broadcast() == dst_addr {
+            TransferType::Broadcast
+        } else {
+            TransferType::Unicast(dst_addr)
+        };
+
+        match transfer_type {
+            TransferType::Unicast(addr) => {
+                debug!("tun handler: packet {}->{}; gateway: {}", src_addr, dst_addr, item.gateway);
+
+                if interface_addr == addr {
+                    return self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun");
+                }
+
+                match node_map.get(&addr) {
+                    None => warn!("cannot find node {}", addr),
+                    Some(node) => send(interface, node, buff, packet_range).await?
+                };
+
+            }
+            TransferType::Broadcast => {
+                debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
+
+                for node in node_map.values() {
+                    if node.node.virtual_addr == interface_addr {
+                        continue;
+                    }
+
+                    send(interface, node, buff, packet_range.clone()).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 async fn tun_handler<T, K, RT>(
     tun: T,
     routing_table: Arc<ArcSwap<RT>>,
@@ -323,86 +416,30 @@ where
     RT: RoutingTable + Send + Sync + 'static
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
-        let mut rh_cache = Cache::new(&*routing_table);
+        let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
+        let node_map = interfaces.iter().map(|v| &v.node_map).collect::<Vec<_>>();
 
-        let mut node_map_cache: Vec<_> = interfaces.iter()
-            .map(|v|  Cache::new(&v.node_map))
-            .collect();
+        let mut sender = PacketSender::new(
+            &*routing_table,
+            &node_map,
+            &tun,
+        );
 
         let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
         loop {
             const START: usize = UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
 
-            let data = match tun
+            let packet_range = match tun
                 .recv_packet(&mut buff[START..])
                 .await
                 .context("error receive packet from tun")?
             {
                 0 => continue,
-                len => &buff[START..START + len],
+                len => START..START + len,
             };
 
-            let packet_range = START..START + data.len();
-            let src_addr = get_ip_src_addr(data)?;
-            let dst_addr = get_ip_dst_addr(data)?;
-
-            let rt = &**rh_cache.load();
-
-            let (dst_addr, item) = match find_route(rt, dst_addr) {
-                None => continue,
-                Some(v) => v,
-            };
-
-            let interface = &interfaces[item.interface_index];
-            let interface_addr = interface.addr.load();
-            let interface_cidr = interface.cidr.load();
-
-            if !interface.server_is_connected.load(Ordering::Relaxed) {
-                continue;
-            }
-
-            let transfer_type = if dst_addr.is_broadcast() && interface_addr == src_addr {
-                TransferType::Broadcast
-            } else if interface_cidr.broadcast() == dst_addr {
-                TransferType::Broadcast
-            } else {
-                TransferType::Unicast(dst_addr)
-            };
-
-            let node_map = &**node_map_cache[item.interface_index].load();
-
-            match transfer_type {
-                TransferType::Unicast(addr) => {
-                    debug!("tun handler: packet {}->{}; gateway: {}", src_addr, dst_addr, item.gateway);
-
-                    if interface_addr == addr {
-                        tun.send_packet(data).await.context("error send packet to tun")?;
-                        continue;
-                    }
-
-                    let node = match node_map.get(&addr) {
-                        None => {
-                            warn!("cannot find node {}", addr);
-                            continue;
-                        },
-                        Some(node) => node
-                    };
-
-                    send(interface, node, &mut buff, packet_range).await?
-                }
-                TransferType::Broadcast => {
-                    debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
-
-                    for node in node_map.values() {
-                        if node.node.virtual_addr == interface_addr {
-                            continue;
-                        }
-
-                        send(interface, node, &mut buff, packet_range.clone()).await?;
-                    }
-                }
-            }
+            sender.send_packet(packet_range, &mut buff, &interfaces).await?;
         }
     });
     join.await?.context("tun handler error")
@@ -557,10 +594,14 @@ where
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
+            let node_map = [&interface.node_map];
+            let mut sender = PacketSender::new(&*table, &node_map, &tun);
             let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
             loop {
-                let (len, peer_addr) = match socket.recv_from(&mut buff).await {
+                const START: usize = size_of::<VirtualAddr>();
+
+                let (len, peer_addr) = match socket.recv_from(&mut buff[START..]).await {
                     Ok(v) => v,
                     Err(e) => {
                         #[cfg(target_os = "windows")]
@@ -581,7 +622,7 @@ where
                     }
                 };
 
-                let packet = &mut buff[..len];
+                let packet = &mut buff[START..START + len];
                 key.decrypt(packet, &mut CipherContext {
                     offset: 0,
                     expect_prefix: Some(&[MAGIC_NUM]),
@@ -671,36 +712,14 @@ where
                             };
                         }
                         // todo verify peer_addr exists in node_map
-                        // todo when packet is forwarded on virtual network, no need to send tun.
-                        UdpMsg::Data(packet) => {
-                            if log::max_level() >= log::Level::Debug {
-                                let f = || {
-                                    let src = get_ip_src_addr(packet)?;
-                                    let dst = get_ip_dst_addr(packet)?;
-                                    Result::<_, anyhow::Error>::Ok((src, dst))
-                                };
-
-                                if let Ok((src, dst)) = f() {
-                                    debug!("node {} udp handler: udp message p2p to tun; packet {}->{}", group.node_name, src, dst);
-                                }
-                            }
-
-                            tun.send_packet(packet).await.context("send packet to tun error")?;
+                        // todo forward packet ttl minus one
+                        UdpMsg::Data(_) => {
+                            const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
+                            sender.send_packet(START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
                         }
-                        UdpMsg::Relay(_, packet) => {
-                            if log::max_level() >= log::Level::Debug {
-                                let f = || {
-                                    let src = get_ip_src_addr(packet)?;
-                                    let dst = get_ip_dst_addr(packet)?;
-                                    Result::<_, anyhow::Error>::Ok((src, dst))
-                                };
-
-                                if let Ok((src, dst)) = f() {
-                                    debug!("node {} udp handler: udp message relay to tun; packet {}->{}", group.node_name, src, dst);
-                                }
-                            }
-
-                            tun.send_packet(packet).await.context("send packet to tun error")?;
+                        UdpMsg::Relay(_, _) => {
+                            const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
+                            sender.send_packet(START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
                         }
                     }
                 }
@@ -1008,13 +1027,18 @@ where
                     let inner_channel_tx = inner_channel_tx.clone();
                     let host_records = host_records.clone();
                     let tun = tun.clone();
+                    let routing_table = routing_table.clone();
 
                     let join = tokio::spawn(async move {
                         let fut = async {
+                            let node_map = [&interface.node_map];
+                            let mut sender = PacketSender::new(&*routing_table, &node_map, &tun);
+
+                            const START: usize = UDP_MSG_HEADER_LEN;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
 
                             loop {
-                                let msg = TcpMsg::read_msg(&mut rx, key, &mut buff).await?
+                                let msg = TcpMsg::read_msg(&mut rx, key, &mut buff[START..]).await?
                                     .ok_or_else(|| anyhow!("server connection closed"))?;
 
                                 match msg {
@@ -1064,20 +1088,9 @@ where
 
                                         interface.node_map.store(Arc::new(new_map));
                                     }
-                                    TcpMsg::Relay(_, buff) => {
-                                        if log::max_level() >= log::Level::Debug {
-                                            let f = || {
-                                                let src = get_ip_src_addr(buff)?;
-                                                let dst = get_ip_dst_addr(buff)?;
-                                                Result::<_, anyhow::Error>::Ok((src, dst))
-                                            };
-
-                                            if let Ok((src, dst)) = f() {
-                                                debug!("node {} tcp handler: tcp message relay to tun; packet {}->{}", group.node_name, src, dst);
-                                            }
-                                        }
-
-                                        tun.send_packet(buff).await?;
+                                    TcpMsg::Relay(_, data) => {
+                                        const DATA_START: usize = START + size_of::<VirtualAddr>();
+                                        sender.send_packet(DATA_START..DATA_START + data.len(), &mut buff, &[&interface]).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());

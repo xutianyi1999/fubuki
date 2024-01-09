@@ -5,7 +5,7 @@ authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
 [lib]
-name = "fubuki"
+name = "libfubuki"
 crate-type = ["lib", "staticlib", "cdylib"]
 path = "src/lib.rs"
 
