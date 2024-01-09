@@ -5,7 +5,8 @@ authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
 [lib]
-name = "libfubuki"
+# differentiate from bin
+name = "fubukil"
 crate-type = ["lib", "staticlib", "cdylib"]
 path = "src/lib.rs"
 

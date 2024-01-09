@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use human_panic::setup_panic;
 
-use libfubuki::{Args, launch};
+use fubukil::{Args, launch};
 
 #[cfg(not(feature = "gui"))]
 fn main() -> ExitCode {
