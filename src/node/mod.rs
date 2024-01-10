@@ -31,7 +31,7 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize, ternary};
+use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, routing_table, TargetGroupFinalize, ternary};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::CipherContext;
@@ -40,7 +40,7 @@ use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, M
 use crate::nat::{add_nat, del_nat};
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
-use crate::routing_table::{Item, RoutingTable};
+use crate::routing_table::{Item, ItemKind, RoutingTable};
 use crate::tun::TunDevice;
 
 mod api;
@@ -319,6 +319,12 @@ struct PacketSender<'a, RT, Tun> {
     tun: &'a Tun
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Direction {
+    Output,
+    Input
+}
+
 impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
     where
         RT: RoutingTable,
@@ -338,6 +344,7 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
 
     async fn send_packet<K: Cipher>(
         &mut self,
+        direction: Direction,
         packet_range: Range<usize>,
         buff: &mut [u8],
         interfaces: &[&Interface<K>]
@@ -387,17 +394,23 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
                     None => warn!("cannot find node {}", addr),
                     Some(node) => send(interface, node, buff, packet_range).await?
                 };
-
             }
             TransferType::Broadcast => {
                 debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
 
-                for node in node_map.values() {
-                    if node.node.virtual_addr == interface_addr {
-                        continue;
-                    }
+                match direction {
+                    Direction::Output => {
+                        for node in node_map.values() {
+                            if node.node.virtual_addr == interface_addr {
+                                continue;
+                            }
 
-                    send(interface, node, buff, packet_range.clone()).await?;
+                            send(interface, node, buff, packet_range.clone()).await?;
+                        }
+                    }
+                    Direction::Input => {
+                        self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun")?;
+                    }
                 }
             }
         }
@@ -439,16 +452,16 @@ where
                 len => START..START + len,
             };
 
-            sender.send_packet(packet_range, &mut buff, &interfaces).await?;
+            sender.send_packet(Direction::Output, packet_range, &mut buff, &interfaces).await?;
         }
     });
     join.await?.context("tun handler error")
 }
 
-fn in_routing_table<RT: RoutingTable>(routing_table: &RT, dst: SocketAddr) -> bool {
+fn through_virtual_gateway<RT: RoutingTable>(routing_table: &RT, dst: SocketAddr) -> bool {
     match dst {
         SocketAddr::V4(addr) => {
-           routing_table.find(*addr.ip()).is_some()
+           routing_table.find(*addr.ip()).is_some_and(|i| i.extend.item_kind != Some(ItemKind::AllowedIpsRoute))
         }
         SocketAddr::V6(_) => false
     }
@@ -553,7 +566,7 @@ where
 
                                         macro_rules! send {
                                             ($peer_addr: expr) => {
-                                                if !in_routing_table(rt, $peer_addr) {
+                                                if !through_virtual_gateway(rt, $peer_addr) {
                                                     socket.send_to(&packet, $peer_addr).await?;
                                                 }
                                             };
@@ -699,7 +712,7 @@ where
                                     if hc_guard.response(seq).is_some() {
                                         if node.udp_status.load() == UdpStatus::Unavailable &&
                                             hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                            !in_routing_table(&**table.load(), peer_addr)
+                                            !through_virtual_gateway(&**table.load(), peer_addr)
                                         {
                                             drop(hc_guard);
 
@@ -715,11 +728,11 @@ where
                         // todo forward packet ttl minus one
                         UdpMsg::Data(_) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
-                            sender.send_packet(START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
+                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
                         }
                         UdpMsg::Relay(_, _) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
-                            sender.send_packet(START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
+                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
                         }
                     }
                 }
@@ -834,14 +847,20 @@ fn update_tun_addr<T: TunDevice, K, RT: RoutingTable + Clone>(
     let item = Item {
         cidr,
         gateway: Ipv4Addr::UNSPECIFIED,
-        interface_index: interface.index
+        interface_index: interface.index,
+        extend: routing_table::Extend {
+            item_kind: Some(ItemKind::VirtualRange)
+        }
     };
 
     let allowed_ips_item = allowed_ips.iter()
         .map(|&allowed| Item {
             cidr: allowed,
             gateway: addr,
-            interface_index: interface.index
+            interface_index: interface.index,
+            extend: routing_table::Extend {
+                item_kind: Some(ItemKind::AllowedIpsRoute)
+            }
         })
         .collect::<Vec<_>>();
 
@@ -1116,7 +1135,7 @@ where
                                     }
                                     TcpMsg::Relay(_, data) => {
                                         const DATA_START: usize = START + size_of::<VirtualAddr>();
-                                        sender.send_packet(DATA_START..DATA_START + data.len(), &mut buff, &[&interface]).await?;
+                                        sender.send_packet(Direction::Input, DATA_START..DATA_START + data.len(), &mut buff, &[&interface]).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
@@ -1251,7 +1270,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
     let tun = Arc::new(tun);
     tun.set_mtu(config.mtu)?;
 
-    let mut rt = crate::routing_table::create();
+    let mut rt = routing_table::create();
 
     for (index, group) in config.groups.iter().enumerate() {
         for (dst, cidrs) in &group.ips {
@@ -1259,7 +1278,10 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
                 let item = Item {
                     cidr: *cidr,
                     gateway: *dst,
-                    interface_index: index
+                    interface_index: index,
+                    extend: routing_table::Extend {
+                        item_kind: Some(ItemKind::IpsRoute)
+                    }
                 };
 
                 rt.add(item);
