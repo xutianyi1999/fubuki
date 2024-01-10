@@ -46,9 +46,19 @@ use crate::tun::TunDevice;
 mod api;
 mod sys_route;
 
-// todo use vec
-// todo sorted
-type NodeMap = LinearMap<VirtualAddr, ExtendedNode>;
+type NodeList = Vec<ExtendedNode>;
+
+trait NodeListOps {
+    fn get_node(&self, addr: &VirtualAddr) -> Option<&ExtendedNode>;
+}
+
+impl NodeListOps for NodeList {
+    fn get_node(&self, addr: &VirtualAddr) -> Option<&ExtendedNode> {
+        self.binary_search_by_key(addr, |node| node.node.virtual_addr)
+            .ok()
+            .map(|v| &self[v])
+    }
+}
 
 struct AtomicAddr {
     inner: AtomicU32
@@ -120,7 +130,7 @@ struct Interface<K> {
     cidr: AtomicCidr,
     mode: ProtocolMode,
     specify_mode: LinearMap<VirtualAddr, ProtocolMode>,
-    node_map: ArcSwap<NodeMap>,
+    node_list: ArcSwap<NodeList>,
     server_addr: String,
     server_udp_hc: RwLock<HeartbeatCache>,
     server_udp_status: AtomicCell<UdpStatus>,
@@ -162,11 +172,11 @@ impl <K> From<&Interface<K>> for InterfaceInfo {
             cidr: value.cidr.load(),
             mode: value.mode.clone(),
             node_map: {
-                value.node_map
+                value.node_list
                     .load_full()
                     .iter()
-                    .map(|(k, v)| {
-                        (*k, ExtendedNodeInfo::from(v))
+                    .map(|node| {
+                        (node.node.virtual_addr, ExtendedNodeInfo::from(node))
                     })
                     .collect()
             },
@@ -315,7 +325,7 @@ fn find_route<RT: RoutingTable>(rt: &RT, mut dst_addr: Ipv4Addr) -> Option<(Ipv4
 
 struct PacketSender<'a, RT, Tun> {
     rt_cache: Cache<&'a ArcSwap<RT>, Arc<RT>>,
-    nodes_cache: Vec<Cache<&'a ArcSwap<NodeMap>, Arc<NodeMap>>>,
+    nodes_cache: Vec<Cache<&'a ArcSwap<NodeList>, Arc<NodeList>>>,
     tun: &'a Tun
 }
 
@@ -332,12 +342,12 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
 {
     fn new(
         rt: &'a ArcSwap<RT>,
-        node_map: &'a [&'a ArcSwap<NodeMap>],
+        node_list: &'a [&'a ArcSwap<NodeList>],
         tun: &'a Tun
     ) -> Self {
         PacketSender {
             rt_cache: Cache::new(rt),
-            nodes_cache: node_map.iter().map(|&v| Cache::new(v)).collect(),
+            nodes_cache: node_list.iter().map(|&v| Cache::new(v)).collect(),
             tun
         }
     }
@@ -362,7 +372,7 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
 
         let if_index = item.interface_index;
 
-        let (interface, node_map) = match interfaces.binary_search_by_key(&if_index, |i| i.index) {
+        let (interface, node_list) = match interfaces.binary_search_by_key(&if_index, |i| i.index) {
             Ok(i) => (interfaces[i], &**self.nodes_cache[i].load()),
             Err(_) => return Ok(())
         };
@@ -390,7 +400,7 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
                     return self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun");
                 }
 
-                match node_map.get(&addr) {
+                match node_list.get_node(&addr) {
                     None => warn!("cannot find node {}", addr),
                     Some(node) => send(interface, node, buff, packet_range).await?
                 };
@@ -400,7 +410,7 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
 
                 match direction {
                     Direction::Output => {
-                        for node in node_map.values() {
+                        for node in node_list {
                             if node.node.virtual_addr == interface_addr {
                                 continue;
                             }
@@ -430,11 +440,11 @@ where
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
-        let node_map = interfaces.iter().map(|v| &v.node_map).collect::<Vec<_>>();
+        let node_list = interfaces.iter().map(|v| &v.node_list).collect::<Vec<_>>();
 
         let mut sender = PacketSender::new(
             &*routing_table,
-            &node_map,
+            &node_list,
             &tun,
         );
 
@@ -519,9 +529,9 @@ where
                     socket.send_to(&packet, &interface.server_addr).await?;
 
                     if is_p2p {
-                        let node_map = interface.node_map.load_full();
+                        let node_list = interface.node_list.load_full();
 
-                        for ext_node in node_map.values() {
+                        for ext_node in node_list.as_slice() {
                             if !ext_node.node.mode.p2p.contains(&NetProtocol::UDP) {
                                 continue;
                             }
@@ -607,8 +617,8 @@ where
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
-            let node_map = [&interface.node_map];
-            let mut sender = PacketSender::new(&*table, &node_map, &tun);
+            let node_list = [&interface.node_list];
+            let mut sender = PacketSender::new(&*table, &node_list, &tun);
             let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
             loop {
@@ -650,7 +660,7 @@ where
                             if from_addr == SERVER_VIRTUAL_ADDR {
                                 is_known = true;
                             } else if is_p2p {
-                                if let Some(en) = interface.node_map.load().get(&from_addr) {
+                                if let Some(en) = interface.node_list.load().get_node(&from_addr) {
                                     let old = en.peer_addr.load();
 
                                     if old != Some(peer_addr) {
@@ -706,7 +716,7 @@ where
                                     }
                                 };
                             } else if is_p2p {
-                                if let Some(node) = interface.node_map.load_full().get(&from_addr) {
+                                if let Some(node) = interface.node_list.load_full().get_node(&from_addr) {
                                     let mut hc_guard = node.hc.write();
 
                                     if hc_guard.response(seq).is_some() {
@@ -724,7 +734,6 @@ where
                                 }
                             };
                         }
-                        // todo verify peer_addr exists in node_map
                         // todo forward packet ttl minus one
                         UdpMsg::Data(_) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
@@ -1076,8 +1085,8 @@ where
 
                     let join = tokio::spawn(async move {
                         let fut = async {
-                            let node_map = [&interface.node_map];
-                            let mut sender = PacketSender::new(&*routing_table, &node_map, &tun);
+                            let node_list = [&interface.node_list];
+                            let mut sender = PacketSender::new(&*routing_table, &node_list, &tun);
 
                             const START: usize = UDP_MSG_HEADER_LEN;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -1088,15 +1097,15 @@ where
 
                                 match msg {
                                     TcpMsg::NodeMap(map) => {
-                                        let mut new_map = NodeMap::with_capacity(map.len());
+                                        let mut new_list = NodeList::with_capacity(map.len());
 
                                         {
-                                            let old_map = interface.node_map.load();
+                                            let old_list = interface.node_list.load();
 
                                             for (virtual_addr, node) in map {
-                                                match old_map.get(&virtual_addr) {
+                                                match old_list.get_node(&virtual_addr) {
                                                     None => {
-                                                        new_map.insert(virtual_addr, ExtendedNode::from(node));
+                                                        new_list.push(ExtendedNode::from(node));
                                                     },
                                                     Some(v) => {
                                                         let en = ExtendedNode {
@@ -1105,18 +1114,20 @@ where
                                                             udp_status: v.udp_status.clone(),
                                                             peer_addr: v.peer_addr.clone()
                                                         };
-                                                        new_map.insert(virtual_addr, en);
+                                                        new_list.push(en);
                                                     }
                                                 }
                                             }
                                         }
+
+                                        new_list.sort_unstable_by_key(|n| n.node.virtual_addr);
 
                                         if !config.features.disable_hosts_operation {
                                             let host_key = format!("FUBUKI-{}", group_info.name);
                                             let mut hb = hostsfile::HostsBuilder::new(&host_key);
                                             host_records.lock().insert(host_key);
 
-                                            for node in new_map.values() {
+                                            for node in &new_list {
                                                 let node = &node.node;
                                                 hb.add_hostname(IpAddr::from(node.virtual_addr), format!("{}.{}", &node.name, &group_info.name));
                                             }
@@ -1131,7 +1142,7 @@ where
                                             });
                                         }
 
-                                        interface.node_map.store(Arc::new(new_map));
+                                        interface.node_list.store(Arc::new(new_list));
                                     }
                                     TcpMsg::Relay(_, data) => {
                                         const DATA_START: usize = START + size_of::<VirtualAddr>();
@@ -1338,7 +1349,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
             cidr: AtomicCidr::from(Ipv4Net::default()),
             mode: group.mode.clone(),
             specify_mode: group.specify_mode.iter().map(|(k, v)| (*k, v.clone())).collect(),
-            node_map: ArcSwap::from_pointee(NodeMap::new()),
+            node_list: ArcSwap::from_pointee(NodeList::new()),
             server_addr: group.server_addr.clone(),
             server_udp_hc: RwLock::new(HeartbeatCache::new()),
             server_udp_status: AtomicCell::new(UdpStatus::Unavailable),
