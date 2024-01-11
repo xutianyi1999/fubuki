@@ -323,8 +323,9 @@ fn find_route<RT: RoutingTable>(rt: &RT, mut dst_addr: Ipv4Addr) -> Option<(Ipv4
     Some((dst_addr, item))
 }
 
-struct PacketSender<'a, RT, Tun> {
+struct PacketSender<'a, RT, Tun, K> {
     rt_cache: Cache<&'a ArcSwap<RT>, Arc<RT>>,
+    interfaces: &'a [&'a Interface<K>],
     nodes_cache: Vec<Cache<&'a ArcSwap<NodeList>, Arc<NodeList>>>,
     tun: &'a Tun
 }
@@ -335,31 +336,34 @@ enum Direction {
     Input
 }
 
-impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
+impl <'a, RT, Tun, K> PacketSender<'a, RT, Tun, K>
     where
         RT: RoutingTable,
-        Tun: TunDevice
+        Tun: TunDevice,
+        K: Cipher
 {
     fn new(
         rt: &'a ArcSwap<RT>,
-        node_list: &'a [&'a ArcSwap<NodeList>],
+        interfaces: &'a [&'a Interface<K>],
         tun: &'a Tun
     ) -> Self {
         PacketSender {
             rt_cache: Cache::new(rt),
-            nodes_cache: node_list.iter().map(|&v| Cache::new(v)).collect(),
+            interfaces,
+            nodes_cache: interfaces.iter().map(|v| Cache::new(&v.node_list)).collect::<Vec<_>>(),
             tun
         }
     }
 
-    async fn send_packet<K: Cipher>(
+    async fn send_packet(
         &mut self,
         direction: Direction,
         packet_range: Range<usize>,
         buff: &mut [u8],
-        interfaces: &[&Interface<K>],
         allow_packet_not_in_rules_send_to_kernel: bool
     ) -> Result<()> {
+        let interfaces = self.interfaces;
+
         let packet = &buff[packet_range.clone()];
         let src_addr = get_ip_src_addr(packet)?;
         let dst_addr = get_ip_dst_addr(packet)?;
@@ -378,9 +382,9 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
 
         let if_index = item.interface_index;
 
-        let (interface, node_list) = match interfaces.binary_search_by_key(&if_index, |i| i.index) {
-            Ok(i) => (interfaces[i], &**self.nodes_cache[i].load()),
-            Err(_) => return Ok(())
+        let (interface, node_list) = match interfaces.iter().position(|i| i.index == if_index) {
+            Some(i) => (interfaces[i], &**self.nodes_cache[i].load()),
+            None => return Ok(())
         };
 
         let interface_addr = interface.addr.load();
@@ -454,11 +458,10 @@ where
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
-        let node_list = interfaces.iter().map(|v| &v.node_list).collect::<Vec<_>>();
 
         let mut sender = PacketSender::new(
             &*routing_table,
-            &node_list,
+            &interfaces,
             &tun,
         );
 
@@ -476,7 +479,7 @@ where
                 len => START..START + len,
             };
 
-            sender.send_packet(Direction::Output, packet_range, &mut buff, &interfaces, false).await?;
+            sender.send_packet(Direction::Output, packet_range, &mut buff, false).await?;
         }
     });
     join.await?.context("tun handler error")
@@ -631,8 +634,8 @@ where
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
-            let node_list = [&interface.node_list];
-            let mut sender = PacketSender::new(&*table, &node_list, &tun);
+            let arr = [interface.as_ref()];
+            let mut sender = PacketSender::new(&*table, &arr, &tun);
             let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
             loop {
@@ -751,11 +754,11 @@ where
                         // todo forward packet ttl minus one
                         UdpMsg::Data(_) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
-                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface], group.allow_packet_not_in_rules_send_to_kernel).await?;
+                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
                         }
                         UdpMsg::Relay(_, _) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
-                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface], group.allow_packet_not_in_rules_send_to_kernel).await?;
+                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
                         }
                     }
                 }
@@ -1099,8 +1102,8 @@ where
 
                     let join = tokio::spawn(async move {
                         let fut = async {
-                            let node_list = [&interface.node_list];
-                            let mut sender = PacketSender::new(&*routing_table, &node_list, &tun);
+                            let arr = [interface.as_ref()];
+                            let mut sender = PacketSender::new(&*routing_table, &arr, &tun);
 
                             const START: usize = UDP_MSG_HEADER_LEN;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -1160,7 +1163,7 @@ where
                                     }
                                     TcpMsg::Relay(_, data) => {
                                         const DATA_START: usize = START + size_of::<VirtualAddr>();
-                                        sender.send_packet(Direction::Input, DATA_START..DATA_START + data.len(), &mut buff, &[&interface], group.allow_packet_not_in_rules_send_to_kernel).await?;
+                                        sender.send_packet(Direction::Input, DATA_START..DATA_START + data.len(), &mut buff,  group.allow_packet_not_in_rules_send_to_kernel).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
@@ -1240,7 +1243,6 @@ where
                                     guard.check();
 
                                     if guard.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
-                                        guard.packet_continuous_loss_count = 0;
                                         return Result::<(), _>::Err(anyhow!("receive tcp heartbeat timeout"));
                                     }
 
@@ -1279,6 +1281,13 @@ where
             }
 
             interface.server_is_connected.store(false, Ordering::Relaxed);
+
+            {
+                let mut guard = interface.server_tcp_hc.write();
+                guard.packet_continuous_loss_count = 0;
+                guard.is_send = false;
+            }
+
             time::sleep(config.reconnect_interval).await;
         }
     });

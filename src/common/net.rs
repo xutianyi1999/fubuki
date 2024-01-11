@@ -112,7 +112,7 @@ pub struct HeartbeatCache {
     pub packet_continuous_loss_count: u64,
     pub packet_continuous_recv_count: u64,
     pub packet_loss_count: u64,
-    is_send: bool,
+    pub is_send: bool,
 }
 
 impl HeartbeatCache {
@@ -148,6 +148,7 @@ impl HeartbeatCache {
             self.packet_loss_count += 1;
             self.packet_continuous_loss_count += 1;
         }
+        self.is_send = false;
     }
 
     pub fn request(&mut self) {

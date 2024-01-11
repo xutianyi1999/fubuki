@@ -1,5 +1,4 @@
 #![feature(portable_simd)]
-#![feature(trait_alias)]
 #![feature(split_array)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
@@ -477,7 +476,7 @@ fn logger_init() -> Result<()> {
             Root::builder()
                 .appender("stdout")
                 .build(LevelFilter::from_str(
-                    &std::env::var("FUBUKI_LOG").unwrap_or_else(|_| String::from("INFO")),
+                    std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
                 )?),
         )?;
 
