@@ -357,7 +357,8 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
         direction: Direction,
         packet_range: Range<usize>,
         buff: &mut [u8],
-        interfaces: &[&Interface<K>]
+        interfaces: &[&Interface<K>],
+        allow_packet_not_in_rules_send_to_kernel: bool
     ) -> Result<()> {
         let packet = &buff[packet_range.clone()];
         let src_addr = get_ip_src_addr(packet)?;
@@ -366,7 +367,12 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
         let rt = &**self.rt_cache.load();
 
         let (dst_addr, item) = match find_route(rt, dst_addr) {
-            None => return Ok(()),
+            None => {
+                if direction == Direction::Input && allow_packet_not_in_rules_send_to_kernel {
+                    self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun")?;
+                }
+                return Ok(())
+            },
             Some(v) => v,
         };
 
@@ -384,7 +390,15 @@ impl <'a, RT, Tun> PacketSender<'a, RT, Tun>
             return Ok(())
         }
 
-        let transfer_type = if dst_addr.is_broadcast() && interface_addr == src_addr {
+        let transfer_type = if dst_addr.is_broadcast() {
+            if direction == Direction::Output && interface_addr != src_addr {
+                return Ok(())
+            }
+
+            if direction == Direction::Input && !interface_cidr.contains(&src_addr) {
+                return Ok(())
+            }
+
             TransferType::Broadcast
         } else if interface_cidr.broadcast() == dst_addr {
             TransferType::Broadcast
@@ -462,7 +476,7 @@ where
                 len => START..START + len,
             };
 
-            sender.send_packet(Direction::Output, packet_range, &mut buff, &interfaces).await?;
+            sender.send_packet(Direction::Output, packet_range, &mut buff, &interfaces, false).await?;
         }
     });
     join.await?.context("tun handler error")
@@ -737,11 +751,11 @@ where
                         // todo forward packet ttl minus one
                         UdpMsg::Data(_) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
-                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
+                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface], group.allow_packet_not_in_rules_send_to_kernel).await?;
                         }
                         UdpMsg::Relay(_, _) => {
                             const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
-                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface]).await?;
+                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, &[&interface], group.allow_packet_not_in_rules_send_to_kernel).await?;
                         }
                     }
                 }
@@ -1146,7 +1160,7 @@ where
                                     }
                                     TcpMsg::Relay(_, data) => {
                                         const DATA_START: usize = START + size_of::<VirtualAddr>();
-                                        sender.send_packet(Direction::Input, DATA_START..DATA_START + data.len(), &mut buff, &[&interface]).await?;
+                                        sender.send_packet(Direction::Input, DATA_START..DATA_START + data.len(), &mut buff, &[&interface], group.allow_packet_not_in_rules_send_to_kernel).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());

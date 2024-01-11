@@ -169,6 +169,7 @@ struct TargetGroup {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
+    allow_packet_not_in_rules_send_to_kernel: Option<bool>
 }
 
 #[derive(Deserialize, Clone)]
@@ -207,6 +208,7 @@ struct TargetGroupFinalize<K> {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
+    allow_packet_not_in_rules_send_to_kernel: bool
 }
 
 #[derive(Clone)]
@@ -310,7 +312,8 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 specify_mode: group.specify_mode.unwrap_or_default(),
                 lan_ip_addr,
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
-                ips: group.ips.unwrap_or_default()
+                ips: group.ips.unwrap_or_default(),
+                allow_packet_not_in_rules_send_to_kernel: group.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false)
             };
             list.push(group_finalize)
         }

@@ -21,13 +21,8 @@
       "key": "123",
       "enable_key_rotation": false,
       "mode": {
-        "p2p": [
-          "UDP"
-        ],
-        "relay": [
-          "UDP",
-          "TCP"
-        ]
+        "p2p": ["UDP"],
+        "relay": ["UDP", "TCP"]
       },
       "specify_mode": {
         "10.0.0.2": {
@@ -43,7 +38,8 @@
         "10.0.0.2": [
           "192.168.201.0/24"
         ]
-      }
+      },
+      "allow_packet_not_in_rules_send_to_kernel": false
     }
   ],
   "features": {

@@ -24,13 +24,8 @@
       "key": "123",
       "enable_key_rotation": false,
       "mode": {
-        "p2p": [
-          "UDP"
-        ],
-        "relay": [
-          "UDP",
-          "TCP"
-        ]
+        "p2p": ["UDP"],
+        "relay": ["UDP", "TCP"]
       },
       "specify_mode": {
         "10.0.0.2": {
@@ -46,7 +41,8 @@
         "10.0.0.2": [
           "192.168.201.0/24"
         ]
-      }
+      },
+      "allow_packet_not_in_rules_send_to_kernel": false
     }
   ],
   "features": {
@@ -84,6 +80,7 @@
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
     - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
+    - allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
 - features: 功能开关（可选）
     - disable\_api\_server: 禁用api server，默认为false
     - disable\_hosts\_operation: 禁用hosts文件操作，默认为false
