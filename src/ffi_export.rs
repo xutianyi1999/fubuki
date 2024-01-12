@@ -11,11 +11,15 @@ use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
 
+type FubukiToIfFn = extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void);
+type AddAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
+type DeleteAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
+
 struct Bridge {
     ctx: *mut c_void,
-    fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
-    add_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
-    delete_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+    fubuki_to_if_fn: FubukiToIfFn,
+    add_addr_fn: AddAddrFn,
+    delete_addr_fn: DeleteAddrFn,
     if_to_fubuki_rx: flume::Receiver<Bytes>,
     device_index: u32,
 }
@@ -79,9 +83,9 @@ pub struct Handle {
 fn fubuki_init_inner(
     node_config_json: *const c_char,
     ctx: *mut c_void,
-    fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
-    add_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
-    delete_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+    fubuki_to_if_fn: FubukiToIfFn,
+    add_addr_fn: AddAddrFn,
+    delete_addr_fn: DeleteAddrFn,
     device_index: u32,
 ) -> Result<Box<Handle>> {
     let s = unsafe { CStr::from_ptr(node_config_json) }.to_bytes();
@@ -121,9 +125,9 @@ pub struct FubukiStartOptions {
     ctx: *mut c_void,
     node_config_json: *const c_char,
     device_index: u32,
-    fubuki_to_if_fn: extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void),
-    add_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
-    delete_addr_fn: extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void),
+    fubuki_to_if_fn: FubukiToIfFn,
+    add_addr_fn: AddAddrFn,
+    delete_addr_fn: DeleteAddrFn,
 }
 
 #[no_mangle]

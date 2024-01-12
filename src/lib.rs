@@ -5,6 +5,7 @@
 #![feature(get_mut_unchecked)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(lazy_cell)]
+#![feature(sync_unsafe_cell)]
 
 #![cfg_attr(all(target_os = "windows", feature = "gui"), windows_subsystem = "windows")]
 
@@ -32,8 +33,9 @@ use crate::common::cipher::{Cipher, CipherEnum, NoOpCipher, RotationCipher, XorC
 use crate::common::net::get_interface_addr;
 use crate::common::net::protocol::{NetProtocol, ProtocolMode, SERVER_VIRTUAL_ADDR, VirtualAddr};
 
-mod node;
+#[macro_use]
 mod common;
+mod node;
 mod server;
 mod tun;
 
@@ -46,7 +48,7 @@ mod nat;
 mod web;
 mod routing_table;
 
-pub mod ffi_export;
+mod ffi_export;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -184,6 +186,7 @@ struct NodeConfig {
     reconnect_interval_secs: Option<u64>,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
+    external_routing_table: Option<PathBuf>,
     groups: Vec<TargetGroup>,
     features: Option<NodeConfigFeature>,
 }
@@ -223,12 +226,13 @@ struct NodeConfigFinalize<K> {
     reconnect_interval: Duration,
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
+    external_routing_table: Option<PathBuf>,
     groups: Vec<TargetGroupFinalize<K>>,
     features: NodeConfigFeatureFinalize,
 }
 
 #[derive(Clone)]
-pub struct NodeConfigFeatureFinalize {
+struct NodeConfigFeatureFinalize {
     disable_hosts_operation: bool,
     disable_signal_handling: bool,
     disable_route_operation: bool,
@@ -350,6 +354,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             udp_socket_recv_buffer_size: config.udp_socket_recv_buffer_size,
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
             groups: list,
+            external_routing_table: config.external_routing_table,
             features: {
                 let features = config.features.as_ref();
 

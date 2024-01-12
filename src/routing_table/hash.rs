@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::net::Ipv4Addr;
 
 use ahash::HashMap;
@@ -19,12 +20,12 @@ impl RoutingTable for HashRoutingTable {
         self.cidrs.remove(cidr)
     }
 
-    fn find(&self, addr: Ipv4Addr) -> Option<&Item> {
+    fn find(&self, _src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>> {
         let cidrs = &self.cidrs;
 
         for len in (0..=32).rev() {
-            let cidr = Ipv4Net::new(addr, len).unwrap().trunc();
-            let item = cidrs.get(&cidr);
+            let cidr = Ipv4Net::new(to, len).unwrap().trunc();
+            let item = cidrs.get(&cidr).map(|v| Cow::Borrowed(v));
 
             if item.is_some() {
                 return item;

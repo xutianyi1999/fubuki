@@ -5,7 +5,6 @@ pub mod cipher;
 pub mod net;
 pub mod allocator;
 
-#[macro_export]
 macro_rules! ternary {
     ($condition: expr, $_true: expr, $_false: expr) => {
         if $condition { $_true } else { $_false }

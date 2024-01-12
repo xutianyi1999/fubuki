@@ -20,7 +20,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use crate::{GroupFinalize, ServerInfoType, ternary};
+use crate::{GroupFinalize, ServerInfoType};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::{Cipher, CipherContext};
