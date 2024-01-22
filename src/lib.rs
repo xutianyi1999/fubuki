@@ -1,5 +1,4 @@
 #![feature(portable_simd)]
-#![feature(split_array)]
 #![feature(new_uninit)]
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]

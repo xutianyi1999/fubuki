@@ -49,7 +49,7 @@ impl Cipher for XorCipher {
         }
 
         while data.len() >= 32 {
-            let (l, r) = data.split_array_mut::<32>();
+            let (l, r) = data.split_first_chunk_mut::<32>().unwrap();
             data = r;
             let new = u8x32::from_array(*l) ^ self.key;
             *l = *new.as_array();
