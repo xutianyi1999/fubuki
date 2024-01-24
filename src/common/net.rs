@@ -43,10 +43,10 @@ macro_rules! build_socket_ext {
 }
 
 #[cfg(windows)]
-build_socket_ext!(std::os::windows::io::AsRawSocket);
+build_socket_ext!(std::os::windows::io::AsSocket);
 
 #[cfg(unix)]
-build_socket_ext!(std::os::unix::io::AsRawFd);
+build_socket_ext!(std::os::unix::io::AsFd);
 
 macro_rules! get {
     ($slice: expr, $index: expr, $error_msg: expr) => {
