@@ -477,38 +477,53 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
     interfaces: Vec<Arc<Interface<K>>>,
 ) -> Result<()>
     where
-        T: TunDevice + Send + Sync + 'static,
+        T: TunDevice + Clone + Send + Sync + 'static,
         K: Cipher + Clone + Send + Sync + 'static,
         InterRT: RoutingTable + Send + Sync + 'static,
         ExternRT: RoutingTable + Send + Sync + 'static
 {
-    let join: JoinHandle<Result<()>> = tokio::spawn(async move {
-        let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
+    let mut futs = Vec::new();
 
-        let mut sender = PacketSender::new(
-            &*routing_table,
-            &interfaces,
-            &tun,
-        );
+    for _ in 0..2 {
+        let fut = async {
+            let tun = tun.clone();
+            let routing_table = routing_table.clone();
+            let interfaces = interfaces.clone();
 
-        let mut buff = vec![0u8; UDP_BUFF_SIZE];
+            let join: JoinHandle<Result<()>> = tokio::spawn(async move {
+                let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
 
-        loop {
-            const START: usize = UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
+                let mut sender = PacketSender::new(
+                    &*routing_table,
+                    &interfaces,
+                    &tun,
+                );
 
-            let packet_range = match tun
-                .recv_packet(&mut buff[START..])
-                .await
-                .context("error receive packet from tun")?
-            {
-                0 => continue,
-                len => START..START + len,
-            };
+                let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
-            sender.send_packet(Direction::Output, packet_range, &mut buff, false).await?;
-        }
-    });
-    join.await?.context("tun handler error")
+                loop {
+                    const START: usize = UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
+
+                    let packet_range = match tun
+                        .recv_packet(&mut buff[START..])
+                        .await
+                        .context("error receive packet from tun")?
+                    {
+                        0 => continue,
+                        len => START..START + len,
+                    };
+
+                    sender.send_packet(Direction::Output, packet_range, &mut buff, false).await?;
+                }
+            });
+            join.await?
+        };
+
+        futs.push(fut);
+    }
+    
+    futures_util::future::try_join_all(futs).await.context("tun handler error")?;
+    Ok(())
 }
 
 fn through_virtual_gateway<RT: RoutingTable + ?Sized>(routing_table: &RT, src: SocketAddr, dst: SocketAddr) -> bool {
@@ -528,7 +543,7 @@ async fn udp_handler<T, K, InterRT, ExternRT>(
     tun: T,
 ) -> Result<()>
 where
-    T: TunDevice + Send + Sync + 'static,
+    T: TunDevice + Clone + Send + Sync + 'static,
     K: Cipher + Clone + Send + Sync + 'static,
     InterRT: RoutingTable + Send + Sync + 'static,
     ExternRT: RoutingTable + Send + Sync + 'static
@@ -662,159 +677,167 @@ where
         join.await?
     };
 
-    let recv_handler = async {
-        let interface = interface.clone();
-        let table = table.clone();
 
-        let join = tokio::spawn(async move {
-            let socket = interface.udp_socket.as_ref().expect("must need udp socket");
-            let key = &interface.key;
-            let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
+    let mut recv_futs = Vec::new();
 
-            let arr = [interface.as_ref()];
-            let mut sender = PacketSender::new(&*table, &arr, &tun);
-            let mut buff = vec![0u8; UDP_BUFF_SIZE];
+    for _ in 0..2 {
+        let recv_handler = async {
+            let interface = interface.clone();
+            let table = table.clone();
+            let tun = tun.clone();
 
-            loop {
-                const START: usize = size_of::<VirtualAddr>();
+            let join = tokio::spawn(async move {
+                let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+                let key = &interface.key;
+                let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
-                let (len, peer_addr) = match socket.recv_from(&mut buff[START..]).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            const WSAECONNRESET: i32 = 10054;
-                            const WSAENETRESET: i32 = 10052;
+                let arr = [interface.as_ref()];
+                let mut sender = PacketSender::new(&*table, &arr, &tun);
+                let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
-                            let err = e.raw_os_error();
+                loop {
+                    const START: usize = size_of::<VirtualAddr>();
 
-                            if err == Some(WSAECONNRESET) ||
-                                err == Some(WSAENETRESET)
+                    let (len, peer_addr) = match socket.recv_from(&mut buff[START..]).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            #[cfg(target_os = "windows")]
                             {
-                                error!("node {} receive udp packet error {}", group.node_name, e);
-                                continue;
-                            }
-                        }
-                        return Result::<(), _>::Err(anyhow!(e))
-                    }
-                };
+                                const WSAECONNRESET: i32 = 10054;
+                                const WSAENETRESET: i32 = 10052;
 
-                let packet = &mut buff[START..START + len];
-                key.decrypt(packet, &mut CipherContext {
-                    offset: 0,
-                    expect_prefix: Some(&[MAGIC_NUM]),
-                    key_timestamp: None
-                });
+                                let err = e.raw_os_error();
 
-                if let Ok(packet) = UdpMsg::decode(packet) {
-                    match packet {
-                        UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Req) => {
-                            let mut is_known = false;
-
-                            if from_addr == SERVER_VIRTUAL_ADDR {
-                                is_known = true;
-                            } else if is_p2p {
-                                if let Some(en) = interface.node_list.load().get_node(&from_addr) {
-                                    let old = en.peer_addr.load();
-
-                                    if old != Some(peer_addr) {
-                                        en.peer_addr.store(Some(peer_addr));
-                                    }
-                                    is_known = true;
+                                if err == Some(WSAECONNRESET) ||
+                                    err == Some(WSAENETRESET)
+                                {
+                                    error!("node {} receive udp packet error {}", group.node_name, e);
+                                    continue;
                                 }
                             }
-
-                            if is_known {
-                                let interface_addr = interface.addr.load();
-
-                                let len = UdpMsg::heartbeat_encode(
-                                    interface_addr,
-                                    seq,
-                                    HeartbeatType::Resp,
-                                    &mut buff,
-                                );
-
-                                let packet = &mut buff[..len];
-                                key.encrypt(packet, &mut CipherContext::default());
-                                socket.send_to(packet, peer_addr).await?;
-                            }
+                            return Result::<(), _>::Err(anyhow!(e))
                         }
-                        UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
-                            if from_addr == SERVER_VIRTUAL_ADDR {
-                                let udp_status = interface.server_udp_status.load();
+                    };
 
-                                match udp_status {
-                                    UdpStatus::Available { dst_addr } => {
-                                        if dst_addr == peer_addr {
-                                            interface.server_udp_hc.write().response(seq);
-                                            continue;
+                    let packet = &mut buff[START..START + len];
+                    key.decrypt(packet, &mut CipherContext {
+                        offset: 0,
+                        expect_prefix: Some(&[MAGIC_NUM]),
+                        key_timestamp: None
+                    });
+
+                    if let Ok(packet) = UdpMsg::decode(packet) {
+                        match packet {
+                            UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Req) => {
+                                let mut is_known = false;
+
+                                if from_addr == SERVER_VIRTUAL_ADDR {
+                                    is_known = true;
+                                } else if is_p2p {
+                                    if let Some(en) = interface.node_list.load().get_node(&from_addr) {
+                                        let old = en.peer_addr.load();
+
+                                        if old != Some(peer_addr) {
+                                            en.peer_addr.store(Some(peer_addr));
                                         }
+                                        is_known = true;
+                                    }
+                                }
 
-                                        if lookup_host(&interface.server_addr).await == Some(peer_addr) {
-                                            if interface.server_udp_hc.write().response(seq).is_some() {
-                                                interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
+                                if is_known {
+                                    let interface_addr = interface.addr.load();
+
+                                    let len = UdpMsg::heartbeat_encode(
+                                        interface_addr,
+                                        seq,
+                                        HeartbeatType::Resp,
+                                        &mut buff,
+                                    );
+
+                                    let packet = &mut buff[..len];
+                                    key.encrypt(packet, &mut CipherContext::default());
+                                    socket.send_to(packet, peer_addr).await?;
+                                }
+                            }
+                            UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
+                                if from_addr == SERVER_VIRTUAL_ADDR {
+                                    let udp_status = interface.server_udp_status.load();
+
+                                    match udp_status {
+                                        UdpStatus::Available { dst_addr } => {
+                                            if dst_addr == peer_addr {
+                                                interface.server_udp_hc.write().response(seq);
+                                                continue;
+                                            }
+
+                                            if lookup_host(&interface.server_addr).await == Some(peer_addr) {
+                                                if interface.server_udp_hc.write().response(seq).is_some() {
+                                                    interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
+                                                }
                                             }
                                         }
-                                    }
-                                    UdpStatus::Unavailable => {
-                                        if lookup_host(&interface.server_addr).await == Some(peer_addr)  {
-                                            let mut server_hc_guard = interface.server_udp_hc.write();
+                                        UdpStatus::Unavailable => {
+                                            if lookup_host(&interface.server_addr).await == Some(peer_addr)  {
+                                                let mut server_hc_guard = interface.server_udp_hc.write();
 
-                                            if server_hc_guard.response(seq).is_some() &&
-                                                server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
+                                                if server_hc_guard.response(seq).is_some() &&
+                                                    server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
+                                                {
+                                                    drop(server_hc_guard);
+                                                    interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
+                                                }
+                                            }
+                                        }
+                                    };
+                                } else if is_p2p {
+                                    if let Some(node) = interface.node_list.load_full().get_node(&from_addr) {
+                                        let mut hc_guard = node.hc.write();
+
+                                        if hc_guard.response(seq).is_some() {
+                                            let through_vgateway = || {
+                                                let src = SocketAddr::new(lan_ip_addr, 0);
+
+                                                match &*table {
+                                                    RoutingTableEnum::Internal(v) => through_virtual_gateway(&**v.load(), src, peer_addr),
+                                                    RoutingTableEnum::External(v) => through_virtual_gateway(unsafe { &*v.get() }, src, peer_addr)
+                                                }
+                                            };
+
+                                            if node.udp_status.load() == UdpStatus::Unavailable &&
+                                                hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
+                                                !through_vgateway()
                                             {
-                                                drop(server_hc_guard);
-                                                interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
+                                                drop(hc_guard);
+
+                                                node.udp_status.store(UdpStatus::Available {
+                                                    dst_addr: peer_addr,
+                                                });
                                             }
                                         }
                                     }
                                 };
-                            } else if is_p2p {
-                                if let Some(node) = interface.node_list.load_full().get_node(&from_addr) {
-                                    let mut hc_guard = node.hc.write();
-
-                                    if hc_guard.response(seq).is_some() {
-                                        let through_vgateway = || {
-                                            let src = SocketAddr::new(lan_ip_addr, 0);
-
-                                            match &*table {
-                                                RoutingTableEnum::Internal(v) => through_virtual_gateway(&**v.load(), src, peer_addr),
-                                                RoutingTableEnum::External(v) => through_virtual_gateway(unsafe { &*v.get() }, src, peer_addr)
-                                            }
-                                        };
-
-                                        if node.udp_status.load() == UdpStatus::Unavailable &&
-                                            hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                            !through_vgateway()
-                                        {
-                                            drop(hc_guard);
-
-                                            node.udp_status.store(UdpStatus::Available {
-                                                dst_addr: peer_addr,
-                                            });
-                                        }
-                                    }
-                                }
-                            };
-                        }
-                        // todo forward packet ttl minus one
-                        UdpMsg::Data(_) => {
-                            const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
-                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
-                        }
-                        UdpMsg::Relay(_, _) => {
-                            const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
-                            sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
+                            }
+                            // todo forward packet ttl minus one
+                            UdpMsg::Data(_) => {
+                                const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
+                                sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
+                            }
+                            UdpMsg::Relay(_, _) => {
+                                const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
+                                sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
 
-        join.await?
-    };
+            join.await?
+        };
 
-    tokio::try_join!(heartbeat_schedule, recv_handler).with_context(|| format!("node {} udp handler error", group.node_name))?;
+        recv_futs.push(recv_handler);
+    }
+    
+    tokio::try_join!(heartbeat_schedule, futures_util::future::try_join_all(recv_futs)).with_context(|| format!("node {} udp handler error", group.node_name))?;
     Ok(())
 }
 
