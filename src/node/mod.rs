@@ -6,6 +6,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
+use std::path::Path;
 
 use ahash::{HashMap, HashSet, HashSetExt};
 use anyhow::{anyhow, Context as AnyhowContext};
@@ -1406,17 +1407,22 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
         }
     };
 
-    let rt = match &config.external_routing_table {
-        None => {
-            let mut rt = routing_table::internal::create();
-            init_routing_table(&mut rt);
-            RoutingTableEnum::Internal(ArcSwap::from_pointee(rt))
-        }
-        Some(path) => {
-            let mut rt = routing_table::external::create::<K>(path)?;
-            init_routing_table(&mut rt);
-            RoutingTableEnum::External(SyncUnsafeCell::new(rt))
-        }
+    let rt = if config.external_routing_table {
+        let curr = std::env::current_exe().ok();
+        let parent = curr.as_deref().and_then(|v| v.parent()).unwrap_or(Path::new(""));
+
+        #[cfg(windows)]
+        const EXTRT_DLL_NAME: &str = "fubukiextrt";
+        #[cfg(unix)]
+        const EXTRT_DLL_NAME: &str = "libfubukiextrt";
+
+        let mut rt = routing_table::external::create::<K>(&parent.join(Path::new(EXTRT_DLL_NAME)))?;
+        init_routing_table(&mut rt);
+        RoutingTableEnum::External(SyncUnsafeCell::new(rt))
+    } else {
+        let mut rt = routing_table::internal::create();
+        init_routing_table(&mut rt);
+        RoutingTableEnum::Internal(ArcSwap::from_pointee(rt))
     };
 
     let rt = Arc::new(rt);

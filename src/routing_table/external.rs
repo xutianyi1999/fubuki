@@ -150,7 +150,7 @@ pub extern "C" fn interfaces_info<K>(
 
 type AddFn = extern "C" fn(handle: *mut c_void, item_c: ItemC);
 type RemoveFn = extern "C" fn(handle: *mut c_void, cidr: *const CidrC) -> OptionC<ItemC>;
-type FindFn = extern "C" fn(handle: *mut c_void, src: u32, to: u32) -> OptionC<*const ItemC>;
+type FindFn = extern "C" fn(handle: *mut c_void, src: u32, to: u32) -> OptionC<ItemC>;
 type CreateFn = extern "C" fn(ctx: *const c_void, interfaces_info_fn: *const c_void) -> *mut c_void;
 type DropFn = extern "C" fn(*mut c_void);
 
@@ -187,7 +187,7 @@ impl <K> RoutingTable for ExternalRoutingTable<K> {
 
     fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>> {
         let optc = (self.find_fn)(self.handle, u32::from(src), u32::from(to));
-        Option::<*const ItemC>::from(optc).map(|p| unsafe { Cow::Owned(Item::from((*p).clone())) })
+        Option::<ItemC>::from(optc).map(|i| Cow::Owned(Item::from(i)) )
     }
 }
 
