@@ -8,7 +8,6 @@ use anyhow::{anyhow, Result};
 use ipnet::{IpNet, Ipv4Net};
 use netconfig::Interface;
 use parking_lot::Mutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tun::Device;
 
 use crate::common::allocator::alloc;
@@ -43,23 +42,23 @@ impl TunDevice for Macostun {
     type RecvFut<'a> = impl Future<Output=Result<usize>> + 'a;
 
     fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
-        let fd = unsafe { &mut *self.fd.get() };
+        let fd = unsafe { &*self.fd.get() };
 
         async {
             let mut buff = alloc(packet.len() + 4);
             buff[..3].copy_from_slice(&[0u8; 3]);
             buff[3] = 2;
             buff[4..].copy_from_slice(packet);
-            fd.write(&buff).await?;
+            fd.send(&buff).await?;
             Ok(())
         }
     }
 
     fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {
-        let fd = unsafe { &mut *self.fd.get() };
+        let fd = unsafe { &*self.fd.get() };
 
         async {
-            let len = fd.read(buff).await?;
+            let len = fd.recv(buff).await?;
             buff.rotate_left(4);
             Ok(len - 4)
         }

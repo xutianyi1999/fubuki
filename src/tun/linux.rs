@@ -7,7 +7,6 @@ use anyhow::{anyhow, Result};
 use ipnet::{IpNet, Ipv4Net};
 use netconfig::Interface;
 use parking_lot::Mutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tun::Device;
 
 use crate::tun::TunDevice;
@@ -43,13 +42,13 @@ impl TunDevice for Linuxtun {
     type RecvFut<'a> = impl Future<Output = Result<usize>> + 'a;
 
     fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
-        let fd = unsafe { &mut *self.fd.get() };
+        let fd = unsafe { &*self.fd.get() };
 
         async {
             // todo add from ip address message
             const INVALID_ARGUMENT: i32 = 22;
 
-            let res = fd.write(packet).await;
+            let res = fd.send(packet).await;
 
             match res {
                 Err(e) if e.raw_os_error() == Some(INVALID_ARGUMENT) => {
@@ -76,10 +75,10 @@ impl TunDevice for Linuxtun {
     }
 
     fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {
-        let fd = unsafe { &mut *self.fd.get() };
+        let fd = unsafe { &*self.fd.get() };
 
         async {
-            let len = fd.read(buff).await?;
+            let len = fd.recv(buff).await?;
             Ok(len)
         }
     }
