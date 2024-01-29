@@ -28,12 +28,7 @@ pub struct Wintun {
 }
 
 fn get_interface(luid: LUID) -> Result<Interface> {
-    for x in netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))? {
-        if x.luid().map_err(|e| anyhow!(e.to_string()))? == luid {
-            return Ok(x);
-        }
-    }
-    Err(anyhow!("cannot found interface"))
+    Interface::try_from_luid(luid).map_err(|e| anyhow!(e.to_string()))
 }
 
 pub fn create() -> Result<Wintun> {

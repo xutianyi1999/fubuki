@@ -17,9 +17,82 @@ pub trait SocketExt {
     fn set_recv_buffer_size(&self, size: usize) -> Result<()>;
 
     fn set_send_buffer_size(&self, size: usize) -> Result<()>;
+
+    fn bind_device(&self, interface: &str, ipv6: bool) -> Result<()>;
 }
 
 const TCP_KEEPALIVE: TcpKeepalive = TcpKeepalive::new().with_time(Duration::from_secs(120));
+
+#[cfg(target_os = "linux")]
+fn bind_device<T: std::os::unix::io::AsFd>(
+    socket: &T,
+    interface: &str,
+    _ipv6: bool
+) -> Result<()> {
+    let socket = socket2::SockRef::from(socket);
+    socket.bind_device(Some(interface.as_bytes()))
+}
+
+#[cfg(target_os = "macos")]
+fn bind_device<T: std::os::unix::io::AsFd>(
+    socket: &T,
+    interface: &str,
+    ipv6: bool
+) -> Result<()> {
+    use std::num::NonZeroU32;
+
+    let socket = socket2::SockRef::from(socket);
+
+    let index = netconfig::Interface::try_from_name(interface)
+        .and_then(|i| i.index())
+        .map_err(|e| std::io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    if ipv6 {
+        socket.bind_device_by_index_v6(NonZeroU32::new(index))
+    } else {
+        socket.bind_device_by_index_v4(NonZeroU32::new(index))
+    }
+}
+
+#[cfg(windows)]
+fn bind_device<T: std::os::windows::io::AsSocket>(
+    socket: &T,
+    interface: &str,
+    ipv6: bool,
+) -> Result<()> {
+    use netconfig::sys::InterfaceExt;
+    use std::os::windows::io::AsRawSocket;
+
+    let index = netconfig::Interface::try_from_alias(interface)
+        .and_then(|i| i.index())
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let raw = socket.as_socket().as_raw_socket();
+
+    unsafe {
+        let code = if ipv6 {
+            windows::Win32::Networking::WinSock::setsockopt(
+                windows::Win32::Networking::WinSock::SOCKET(raw as usize),
+                windows::Win32::Networking::WinSock::IPPROTO_IPV6.0,
+                windows::Win32::Networking::WinSock::IPV6_UNICAST_IF,
+                Some(&index.to_be_bytes()),
+            )
+        } else {
+            windows::Win32::Networking::WinSock::setsockopt(
+                windows::Win32::Networking::WinSock::SOCKET(raw as usize),
+                windows::Win32::Networking::WinSock::IPPROTO_IP.0,
+                windows::Win32::Networking::WinSock::IP_UNICAST_IF,
+                Some(&index.to_be_bytes()),
+            )
+        };
+
+        if code != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    };
+
+    Ok(())
+}
 
 macro_rules! build_socket_ext {
     ($type:path) => {
@@ -37,6 +110,10 @@ macro_rules! build_socket_ext {
             fn set_send_buffer_size(&self, size: usize) -> Result<()> {
                 let sock_ref = socket2::SockRef::from(self);
                 sock_ref.set_send_buffer_size(size)
+            }
+
+            fn bind_device(&self, interface: &str, ipv6: bool) -> Result<()> {
+                bind_device(self, interface, ipv6)
             }
         }
     };
@@ -64,20 +141,28 @@ const DST_ADDR: Range<usize> = 16..20;
 
 pub fn get_ip_dst_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
     let mut buff = [0u8; 4];
-    buff.copy_from_slice(get!(ip_packet, DST_ADDR, "get packet source address failed"));
+    buff.copy_from_slice(get!(
+        ip_packet,
+        DST_ADDR,
+        "get packet source address failed"
+    ));
     Ok(Ipv4Addr::from(buff))
 }
 
 pub fn get_ip_src_addr(ip_packet: &[u8]) -> Result<Ipv4Addr> {
     let mut buff = [0u8; 4];
-    buff.copy_from_slice(get!(ip_packet, SRC_ADDR, "get packet destination address failed"));
+    buff.copy_from_slice(get!(
+        ip_packet,
+        SRC_ADDR,
+        "get packet destination address failed"
+    ));
     Ok(Ipv4Addr::from(buff))
 }
 
 pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
     let bind_addr = match dest_addr {
         SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     };
 
     let socket = std::net::UdpSocket::bind((bind_addr, 0))?;
@@ -88,9 +173,7 @@ pub fn get_interface_addr(dest_addr: SocketAddr) -> Result<IpAddr> {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Eq, PartialEq)]
 pub enum UdpStatus {
-    Available {
-        dst_addr: SocketAddr
-    },
+    Available { dst_addr: SocketAddr },
     Unavailable,
 }
 
@@ -98,7 +181,7 @@ impl Display for UdpStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             UdpStatus::Available { dst_addr } => write!(f, "Available({})", dst_addr),
-            UdpStatus::Unavailable => write!(f, "Unavailable")
+            UdpStatus::Unavailable => write!(f, "Unavailable"),
         }
     }
 }
@@ -133,7 +216,7 @@ impl HeartbeatCache {
         if self.seq == resp {
             self.packet_continuous_loss_count = 0;
             self.packet_continuous_recv_count += 1;
-            
+
             let elapsed = Some(self.send_time.elapsed());
             self.elapsed = elapsed;
             elapsed
@@ -176,7 +259,7 @@ impl From<&HeartbeatCache> for HeartbeatInfo {
             send_count: value.send_count,
             packet_continuous_loss_count: value.packet_continuous_loss_count,
             packet_continuous_recv_count: value.packet_continuous_recv_count,
-            packet_loss_count: value.packet_loss_count
+            packet_loss_count: value.packet_loss_count,
         }
     }
 }
@@ -317,7 +400,7 @@ pub mod protocol {
         #[bincode(with_serde)]
         pub allowed_ips: Vec<Ipv4Net>,
         pub register_time: i64,
-        pub register_nonce: u32
+        pub register_nonce: u32,
     }
 
     #[repr(u8)]
@@ -333,7 +416,7 @@ pub mod protocol {
             match value {
                 REQ => Ok(HeartbeatType::Req),
                 RESP => Ok(HeartbeatType::Resp),
-                _ => Err(anyhow!("Heartbeat type not match"))
+                _ => Err(anyhow!("Heartbeat type not match")),
             }
         }
     }
@@ -386,7 +469,11 @@ pub mod protocol {
             out[0] = MAGIC_NUM;
             out[1] = NODE_MAP;
 
-            let size = bincode::encode_into_slice(node_map, &mut out[TCP_MSG_HEADER_LEN..], config::standard())?;
+            let size = bincode::encode_into_slice(
+                node_map,
+                &mut out[TCP_MSG_HEADER_LEN..],
+                config::standard(),
+            )?;
             out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
 
             Ok(TCP_MSG_HEADER_LEN + size)
@@ -396,17 +483,28 @@ pub mod protocol {
             out[0] = MAGIC_NUM;
             out[1] = REGISTER;
 
-            let size = bincode::encode_into_slice(register, &mut out[TCP_MSG_HEADER_LEN..], config::standard())?;
+            let size = bincode::encode_into_slice(
+                register,
+                &mut out[TCP_MSG_HEADER_LEN..],
+                config::standard(),
+            )?;
             out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
 
             Ok(TCP_MSG_HEADER_LEN + size)
         }
 
-        pub fn register_res_encode(register_res: &Result<GroupContent, RegisterError>, out: &mut [u8]) -> Result<usize> {
+        pub fn register_res_encode(
+            register_res: &Result<GroupContent, RegisterError>,
+            out: &mut [u8],
+        ) -> Result<usize> {
             out[0] = MAGIC_NUM;
             out[1] = REGISTER_RESULT;
 
-            let size = bincode::encode_into_slice(register_res, &mut out[TCP_MSG_HEADER_LEN..], config::standard())?;
+            let size = bincode::encode_into_slice(
+                register_res,
+                &mut out[TCP_MSG_HEADER_LEN..],
+                config::standard(),
+            )?;
             out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
 
             Ok(TCP_MSG_HEADER_LEN + size)
@@ -418,7 +516,8 @@ pub mod protocol {
 
             let data_size = size_of::<VirtualAddr>() + packet_size;
             out[2..4].copy_from_slice(&(data_size as u16).to_be_bytes());
-            out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()].copy_from_slice(&to.octets());
+            out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()]
+                .copy_from_slice(&to.octets());
 
             TCP_MSG_HEADER_LEN + data_size
         }
@@ -430,7 +529,8 @@ pub mod protocol {
             const DATA_SIZE: usize = size_of::<Seq>() + size_of::<HeartbeatType>();
 
             out[2..4].copy_from_slice(&(DATA_SIZE as u16).to_be_bytes());
-            out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<Seq>()].copy_from_slice(&seq.to_be_bytes());
+            out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<Seq>()]
+                .copy_from_slice(&seq.to_be_bytes());
             out[TCP_MSG_HEADER_LEN + size_of::<Seq>()] = heartbeat_type as u8;
 
             TCP_MSG_HEADER_LEN + DATA_SIZE
@@ -439,14 +539,15 @@ pub mod protocol {
         fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
             let msg = match mode {
                 REGISTER => {
-                    let (register, _) = bincode::decode_from_slice::<Register, _>(data, config::standard())?;
+                    let (register, _) =
+                        bincode::decode_from_slice::<Register, _>(data, config::standard())?;
                     TcpMsg::Register(register)
                 }
                 REGISTER_RESULT => {
-                    let (res, _) = bincode::decode_from_slice::<Result<GroupContent, RegisterError>, _>(
-                        data,
-                        config::standard(),
-                    )?;
+                    let (res, _) = bincode::decode_from_slice::<
+                        Result<GroupContent, RegisterError>,
+                        _,
+                    >(data, config::standard())?;
                     TcpMsg::RegisterRes(res)
                 }
                 NODE_MAP => {
@@ -501,7 +602,7 @@ pub mod protocol {
             let mut ctx = cipher::CipherContext {
                 offset: 0,
                 expect_prefix: Some(&[MAGIC_NUM]),
-                key_timestamp: None
+                key_timestamp: None,
             };
             key.decrypt(&mut buff[..4], &mut ctx);
 
@@ -557,7 +658,10 @@ pub mod protocol {
             out[6..10].copy_from_slice(&seq.to_be_bytes());
 
             out[10] = heartbeat_type as u8;
-            UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()
+            UDP_MSG_HEADER_LEN
+                + size_of::<VirtualAddr>()
+                + size_of::<Seq>()
+                + size_of::<HeartbeatType>()
         }
 
         pub fn data_encode(packet_len: usize, out: &mut [u8]) -> usize {
@@ -579,7 +683,7 @@ pub mod protocol {
             let data = &packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(anyhow!("magic number miss match"))
+                return Err(anyhow!("magic number miss match"));
             };
 
             match mode {

@@ -29,17 +29,13 @@ pub fn create() -> Result<Macostun> {
     let device = tun::create_as_async(&config)?;
     let device_name = device.get_ref().name()?;
 
-    for inter in netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))? {
-        if inter.name().map_err(|e| anyhow!(e.to_string()))? == device_name {
-            return Ok(Macostun {
-                ips: Mutex::new(HashSet::new()),
-                fd: UnsafeCell::new(device),
-                inter,
-            });
-        }
-    }
+    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| anyhow!(e.to_string()))?;
 
-    Err(anyhow!("cannot found interface"))
+    Ok(Macostun {
+        ips: Mutex::new(HashSet::new()),
+        fd: UnsafeCell::new(device),
+        inter,
+    })
 }
 
 impl TunDevice for Macostun {
