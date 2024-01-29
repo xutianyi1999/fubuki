@@ -27,7 +27,7 @@ use rand::random;
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
@@ -858,11 +858,25 @@ async fn register<K>(
 where
     K: Cipher + Clone
 {
-    let mut stream = TcpStream::connect(&group.server_addr)
+    let server_addr = lookup_host(&group.server_addr)
+        .await
+        .ok_or_else(|| anyhow!("failed to resolve server {}", group.server_addr))?;
+
+    let socket = if server_addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+
+    socket.set_nodelay(true)?;
+
+    if let Some(device) = &group.socket_bind_device {
+        socket.bind_device(device, server_addr.is_ipv6())?;
+    }
+
+    let mut stream = socket.connect(server_addr)
         .await
         .with_context(|| format!("connect to {} error", &group.server_addr))?;
-
-    stream.set_nodelay(true)?;
 
     let mut buff = allocator::alloc(1024);
 
@@ -1460,6 +1474,10 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
 
                 if let Some(v) = config.udp_socket_send_buffer_size {
                     udp_socket.set_send_buffer_size(v)?;
+                }
+
+                if let Some(device) = &group.socket_bind_device {
+                    udp_socket.bind_device(device, bind_addr.is_ipv6())?;
                 }
                 Some(udp_socket)
             }
