@@ -190,7 +190,8 @@ impl Display for UdpStatus {
 pub struct HeartbeatCache {
     pub seq: Seq,
     pub send_time: Instant,
-    pub elapsed: Option<Duration>,
+    pub is_resp: bool,
+    pub last_elapsed: Option<Duration>,
     pub send_count: u64,
     pub packet_continuous_loss_count: u64,
     pub packet_continuous_recv_count: u64,
@@ -203,7 +204,8 @@ impl HeartbeatCache {
         HeartbeatCache {
             seq: 0,
             send_time: Instant::now(),
-            elapsed: None,
+            is_resp: false,
+            last_elapsed: None,
             send_count: 0,
             packet_continuous_loss_count: 0,
             packet_continuous_recv_count: 0,
@@ -218,7 +220,8 @@ impl HeartbeatCache {
             self.packet_continuous_recv_count += 1;
 
             let elapsed = Some(self.send_time.elapsed());
-            self.elapsed = elapsed;
+            self.is_resp = true;
+            self.last_elapsed = elapsed;
             elapsed
         } else {
             None
@@ -226,7 +229,7 @@ impl HeartbeatCache {
     }
 
     pub fn check(&mut self) {
-        if self.is_send && self.elapsed.is_none() {
+        if self.is_send && !self.is_resp {
             self.packet_continuous_recv_count = 0;
             self.packet_loss_count += 1;
             self.packet_continuous_loss_count += 1;
@@ -236,7 +239,7 @@ impl HeartbeatCache {
 
     pub fn request(&mut self) {
         self.is_send = true;
-        self.elapsed = None;
+        self.is_resp = false;
         self.send_time = Instant::now();
         self.seq = self.seq.overflowing_add(1).0;
         self.send_count += 1;
@@ -255,7 +258,7 @@ pub struct HeartbeatInfo {
 impl From<&HeartbeatCache> for HeartbeatInfo {
     fn from(value: &HeartbeatCache) -> Self {
         HeartbeatInfo {
-            elapsed: value.elapsed,
+            elapsed: value.last_elapsed,
             send_count: value.send_count,
             packet_continuous_loss_count: value.packet_continuous_loss_count,
             packet_continuous_recv_count: value.packet_continuous_recv_count,
