@@ -39,7 +39,8 @@
           "192.168.201.0/24"
         ]
       },
-      "allow_packet_not_in_rules_send_to_kernel": false
+      "allow_packet_not_in_rules_send_to_kernel": false,
+      "socket_bind_device": "eth0"
     }
   ],
   "features": {
