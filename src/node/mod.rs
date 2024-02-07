@@ -871,7 +871,7 @@ where
     socket.set_nodelay(true)?;
 
     if let Some(device) = &group.socket_bind_device {
-        socket.bind_device(device, server_addr.is_ipv6())?;
+        SocketExt::bind_device(&socket, device, server_addr.is_ipv6())?;
     }
 
     let mut stream = socket.connect(server_addr)
@@ -1477,7 +1477,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
                 }
 
                 if let Some(device) = &group.socket_bind_device {
-                    udp_socket.bind_device(device, bind_addr.is_ipv6())?;
+                    SocketExt::bind_device(&udp_socket, device, bind_addr.is_ipv6())?;
                 }
                 Some(udp_socket)
             }
