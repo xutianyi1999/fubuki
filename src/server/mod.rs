@@ -195,7 +195,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                 node.udp_status.store(UdpStatus::Unavailable);
                             }
 
-                            heartbeat_status.request();
+                            heartbeat_status.ping();
                             list.push((socket_addr, heartbeat_status.seq));
                         }
                     };
@@ -291,7 +291,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             if let Some(node) = guard.get(&dst_virt_addr) {
                                 let mut udp_heartbeat_cache = node.udp_heartbeat_cache.write();
 
-                                if udp_heartbeat_cache.response(seq).is_none() {
+                                if udp_heartbeat_cache.reply(seq).is_none() {
                                     continue;
                                 }
 
@@ -605,7 +605,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                 return Err(anyhow!("heartbeat receive timeout"))
                             }
 
-                            hc.request();
+                            hc.ping();
                             hc.seq
                         };
 
@@ -707,7 +707,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                             TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
                                 match group_handle.mapping.read().get(&virtual_addr) {
                                     None => return Err(anyhow!("can't get current environment node")),
-                                    Some(node) => node.tcp_heartbeat_cache.write().response(recv_seq)
+                                    Some(node) => node.tcp_heartbeat_cache.write().reply(recv_seq)
                                 };
                             }
                             _ => return Result::<()>::Err(anyhow!("invalid tcp msg")),

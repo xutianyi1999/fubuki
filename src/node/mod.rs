@@ -576,7 +576,7 @@ where
                             interface.server_udp_status.store(UdpStatus::Unavailable);
                         }
 
-                        server_hc_guard.request();
+                        server_hc_guard.ping();
                         server_hc_guard.seq
                     };
 
@@ -616,7 +616,7 @@ where
                                     continue;
                                 }
 
-                                hc.request();
+                                hc.ping();
                                 hc.seq
                             };
 
@@ -767,12 +767,12 @@ where
                                     match udp_status {
                                         UdpStatus::Available { dst_addr } => {
                                             if dst_addr == peer_addr {
-                                                interface.server_udp_hc.write().response(seq);
+                                                interface.server_udp_hc.write().reply(seq);
                                                 continue;
                                             }
 
                                             if lookup_host(&interface.server_addr).await == Some(peer_addr) {
-                                                if interface.server_udp_hc.write().response(seq).is_some() {
+                                                if interface.server_udp_hc.write().reply(seq).is_some() {
                                                     interface.server_udp_status.store(UdpStatus::Available {dst_addr: peer_addr});
                                                 }
                                             }
@@ -781,7 +781,7 @@ where
                                             if lookup_host(&interface.server_addr).await == Some(peer_addr)  {
                                                 let mut server_hc_guard = interface.server_udp_hc.write();
 
-                                                if server_hc_guard.response(seq).is_some() &&
+                                                if server_hc_guard.reply(seq).is_some() &&
                                                     server_hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv
                                                 {
                                                     drop(server_hc_guard);
@@ -794,7 +794,7 @@ where
                                     if let Some(node) = interface.node_list.load_full().get_node(&from_addr) {
                                         let mut hc_guard = node.hc.write();
 
-                                        if hc_guard.response(seq).is_some() {
+                                        if hc_guard.reply(seq).is_some() {
                                             let through_vgateway = || {
                                                 let src = SocketAddr::new(lan_ip_addr, 0);
 
@@ -1277,7 +1277,7 @@ where
                                         }
                                     }
                                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
-                                        interface.server_tcp_hc.write().response(recv_seq);
+                                        interface.server_tcp_hc.write().reply(recv_seq);
                                     }
                                     _ => continue,
                                 }
@@ -1344,7 +1344,7 @@ where
                                         return Result::<(), _>::Err(anyhow!("receive tcp heartbeat timeout"));
                                     }
 
-                                    guard.request();
+                                    guard.ping();
                                     guard.seq
                                 };
 

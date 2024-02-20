@@ -190,7 +190,7 @@ impl Display for UdpStatus {
 pub struct HeartbeatCache {
     pub seq: Seq,
     pub send_time: Instant,
-    pub is_resp: bool,
+    pub is_reply: bool,
     pub last_elapsed: Option<Duration>,
     pub send_count: u64,
     pub packet_continuous_loss_count: u64,
@@ -204,7 +204,7 @@ impl HeartbeatCache {
         HeartbeatCache {
             seq: 0,
             send_time: Instant::now(),
-            is_resp: false,
+            is_reply: false,
             last_elapsed: None,
             send_count: 0,
             packet_continuous_loss_count: 0,
@@ -214,13 +214,13 @@ impl HeartbeatCache {
         }
     }
 
-    pub fn response(&mut self, resp: Seq) -> Option<Duration> {
-        if self.seq == resp {
+    pub fn reply(&mut self, reply_seq: Seq) -> Option<Duration> {
+        if self.seq == reply_seq {
             self.packet_continuous_loss_count = 0;
             self.packet_continuous_recv_count += 1;
 
             let elapsed = Some(self.send_time.elapsed());
-            self.is_resp = true;
+            self.is_reply = true;
             self.last_elapsed = elapsed;
             elapsed
         } else {
@@ -229,7 +229,7 @@ impl HeartbeatCache {
     }
 
     pub fn check(&mut self) {
-        if self.is_send && !self.is_resp {
+        if self.is_send && !self.is_reply {
             self.packet_continuous_recv_count = 0;
             self.packet_loss_count += 1;
             self.packet_continuous_loss_count += 1;
@@ -237,9 +237,9 @@ impl HeartbeatCache {
         self.is_send = false;
     }
 
-    pub fn request(&mut self) {
+    pub fn ping(&mut self) {
         self.is_send = true;
-        self.is_resp = false;
+        self.is_reply = false;
         self.send_time = Instant::now();
         self.seq = self.seq.overflowing_add(1).0;
         self.send_count += 1;
