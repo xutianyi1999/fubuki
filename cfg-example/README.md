@@ -42,6 +42,7 @@
           "192.168.201.0/24"
         ]
       },
+      "allow_packet_forward": true,
       "allow_packet_not_in_rules_send_to_kernel": false,
       "socket_bind_device": "eth0"
     }
@@ -81,6 +82,7 @@
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
     - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
+    - allow_packet_forward(可选): 允许转发目标地址不是自己的数据包, 默认为true
     - allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
     - socket_bind_device(可选): 监听的socket从指定网卡发送数据包
 - features: 功能开关（可选）

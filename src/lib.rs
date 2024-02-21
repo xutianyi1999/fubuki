@@ -169,6 +169,7 @@ struct TargetGroup {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
+    allow_packet_forward: Option<bool>,
     allow_packet_not_in_rules_send_to_kernel: Option<bool>,
     socket_bind_device: Option<String>
 }
@@ -210,6 +211,7 @@ struct TargetGroupFinalize<K> {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
+    allow_packet_forward: bool,
     allow_packet_not_in_rules_send_to_kernel: bool,
     socket_bind_device: Option<String>
 }
@@ -317,6 +319,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 lan_ip_addr,
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
+                allow_packet_forward: group.allow_packet_forward.unwrap_or(true),
                 allow_packet_not_in_rules_send_to_kernel: group.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false),
                 socket_bind_device: group.socket_bind_device
             };

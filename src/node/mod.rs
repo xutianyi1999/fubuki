@@ -383,6 +383,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
         direction: Direction,
         packet_range: Range<usize>,
         buff: &mut [u8],
+        allow_packet_forward: bool,
         allow_packet_not_in_rules_send_to_kernel: bool
     ) -> Result<()> {
         let interfaces = self.interfaces;
@@ -444,10 +445,18 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                     return self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun");
                 }
 
-                match node_list.get_node(&addr) {
-                    None => warn!("cannot find node {}", addr),
-                    Some(node) => send(interface, node, buff, packet_range).await?
+                let f = match direction {
+                    Direction::Output => true,
+                    Direction::Input if allow_packet_forward => true,
+                    _ => false,
                 };
+
+                if f {
+                    match node_list.get_node(&addr) {
+                        None => warn!("cannot find node {}", addr),
+                        Some(node) => send(interface, node, buff, packet_range).await?
+                    };
+                }
             }
             TransferType::Broadcast => {
                 debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
@@ -514,7 +523,13 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
                         len => START..START + len,
                     };
 
-                    sender.send_packet(Direction::Output, packet_range, &mut buff, false).await?;
+                    sender.send_packet(
+                        Direction::Output,
+                        packet_range,
+                        &mut buff,
+                        true,
+                        false
+                    ).await?;
                 }
             });
             join.await?
@@ -821,11 +836,23 @@ where
                             // todo forward packet ttl minus one
                             UdpMsg::Data(_) => {
                                 const START_DATA: usize = START + UDP_MSG_HEADER_LEN;
-                                sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
+                                sender.send_packet(
+                                    Direction::Input,
+                                    START_DATA..START_DATA + len,
+                                    &mut buff,
+                                    group.allow_packet_forward,
+                                    group.allow_packet_not_in_rules_send_to_kernel
+                                ).await?;
                             }
                             UdpMsg::Relay(_, _) => {
                                 const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
-                                sender.send_packet(Direction::Input, START_DATA..START_DATA + len, &mut buff, group.allow_packet_not_in_rules_send_to_kernel).await?;
+                                sender.send_packet(
+                                    Direction::Input,
+                                    START_DATA..START_DATA + len,
+                                    &mut buff,
+                                    group.allow_packet_forward,
+                                    group.allow_packet_not_in_rules_send_to_kernel
+                                ).await?;
                             }
                         }
                     }
@@ -1261,7 +1288,13 @@ where
                                     }
                                     TcpMsg::Relay(_, data) => {
                                         const DATA_START: usize = START + size_of::<VirtualAddr>();
-                                        sender.send_packet(Direction::Input, DATA_START..DATA_START + data.len(), &mut buff,  group.allow_packet_not_in_rules_send_to_kernel).await?;
+                                        sender.send_packet(
+                                            Direction::Input,
+                                            DATA_START..DATA_START + data.len(),
+                                            &mut buff,
+                                            group.allow_packet_forward,
+                                            group.allow_packet_not_in_rules_send_to_kernel
+                                        ).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
