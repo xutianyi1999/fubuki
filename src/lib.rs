@@ -63,6 +63,7 @@ struct Group {
     key: Option<String>,
     enable_key_rotation: Option<bool>,
     address_range: Ipv4Net,
+    flow_control_rules: Option<Vec<(Ipv4Net, byte_unit::Byte)>>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -83,6 +84,7 @@ struct GroupFinalize<K> {
     listen_addr: SocketAddr,
     key: K,
     address_range: Ipv4Net,
+    flow_control_rules: Vec<(Ipv4Net, u64)>,
 }
 
 #[derive(Clone)]
@@ -141,6 +143,9 @@ impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
                                 Some(k) => CipherEnum::XorCipher(XorCipher::from(k))
                             }
                         },
+                        flow_control_rules: group.flow_control_rules
+                            .map(|v| v.into_iter().map(|(range, l)| (range, l.as_u64())).collect::<Vec<_>>())
+                            .unwrap_or_default()
                     };
                     list.push(v);
                 }

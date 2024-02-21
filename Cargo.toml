@@ -43,6 +43,7 @@ sha2 = "0.10"
 digest = "0.10"
 crossbeam-utils = "0.8"
 libloading = "0.8"
+byte-unit = { version = "5", features = ["serde"] }
 
 linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 klask = { git = "https://github.com/xosxos/klask.git", optional = true }

@@ -4,6 +4,10 @@ use std::io::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::Range;
 use std::time::Instant;
+use chrono::Utc;
+use crossbeam_utils::atomic::AtomicCell;
+use ipnet::Ipv4Net;
+use parking_lot::RwLock;
 
 use serde::{Deserialize, Serialize};
 use socket2::TcpKeepalive;
@@ -263,6 +267,102 @@ impl From<&HeartbeatCache> for HeartbeatInfo {
             packet_continuous_loss_count: value.packet_continuous_loss_count,
             packet_continuous_recv_count: value.packet_continuous_recv_count,
             packet_loss_count: value.packet_loss_count,
+        }
+    }
+}
+
+pub struct FlowControl {
+    // flow rule, (address range, byte/s), example: { "192.168.8.0/24": "2048", "192.168.8.10/32": "1024" }
+    rule: Vec<(Ipv4Net, u64)>,
+    // sorted address mapping, (address, traffic at current timestamp, UTC timestamp(seconds))
+    pool: RwLock<Vec<(Ipv4Addr, AtomicCell<(u64, i64)>)>>
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub enum PushResult {
+    Accept,
+    Reject
+}
+
+impl FlowControl {
+    pub fn new(rule: Vec<(Ipv4Net, u64)>) -> Self {
+        FlowControl {
+            rule,
+            pool: RwLock::new(Vec::new())
+        }
+    }
+
+    pub fn push(
+        &self,
+        packet_dst: Ipv4Addr,
+        packet_len: u64
+    ) -> PushResult {
+        let limit_opt = self.rule.iter()
+            .find(|(cidr, _)| cidr.contains(&packet_dst))
+            .map(|(_, limit)| *limit);
+
+        let limit = match limit_opt {
+            None => return PushResult::Accept,
+            Some(limit) => limit
+        };
+
+        if packet_len > limit {
+            return PushResult::Reject;
+        }
+
+        let guard = self.pool.read();
+        let now = Utc::now().timestamp();
+
+        let index_opt = guard.binary_search_by_key(&packet_dst, |(addr, _)| *addr);
+
+        let index = match index_opt {
+            Ok(v) => v,
+            Err(_) => return PushResult::Reject,
+        };
+
+        let (_, value) = &(*guard)[index];
+
+        let res = value.fetch_update(|(f, t)| {
+            if t == now {
+                let new_traffic = f + packet_len;
+
+                if new_traffic <= limit {
+                    Some((new_traffic, t))
+                } else {
+                    None
+                }
+            } else {
+                Some((packet_len, now))
+            }
+        });
+
+        if res.is_ok() {
+            PushResult::Accept
+        } else {
+            PushResult::Reject
+        }
+    }
+
+    pub fn add_address(&self, addr: Ipv4Addr) {
+        let mut guard = self.pool.write();
+        let index_opt = guard.binary_search_by_key(&addr, |(addr, _)| *addr);
+
+        let v = (addr, AtomicCell::new((0, Utc::now().timestamp())));
+
+        match index_opt {
+            Ok(i) => {
+                guard.insert(i, v);
+            },
+            Err(_) => guard.push(v)
+        }
+    }
+
+    pub fn remove_address(&self, addr: &Ipv4Addr) {
+        let mut guard = self.pool.write();
+        let index_opt = guard.binary_search_by_key(addr, |(addr, _)| *addr);
+
+        if let Ok(i) = index_opt {
+            guard.remove(i);
         }
     }
 }

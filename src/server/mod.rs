@@ -24,7 +24,7 @@ use crate::{GroupFinalize, ServerInfoType};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::{Cipher, CipherContext};
-use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
+use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, HeartbeatCache, HeartbeatInfo, PushResult, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, MAGIC_NUM, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::server::api::api_start;
 use crate::ServerConfigFinalize;
@@ -72,12 +72,13 @@ struct GroupHandle {
     limit: usize,
     mapping: RwLock<HashMap<VirtualAddr, NodeHandle>>,
     watch: (watch::Sender<Arc<NodeMap>>, watch::Receiver<Arc<NodeMap>>),
+    flow_control: FlowControl
 }
 
 impl GroupHandle {
     fn new<K>(
         channel_limit: usize,
-        group_config: &GroupFinalize<K>
+        group_config: &GroupFinalize<K>,
     ) -> Self {
         GroupHandle {
             name: group_config.name.clone(),
@@ -86,6 +87,7 @@ impl GroupHandle {
             limit: channel_limit,
             mapping: RwLock::new(HashMap::new()),
             watch: watch::channel(Arc::new(HashMap::new())),
+            flow_control: FlowControl::new(group_config.flow_control_rules.clone())
         }
     }
 
@@ -94,9 +96,10 @@ impl GroupHandle {
         let (tx, rx) = mpsc::channel(self.limit);
 
         let mut mp_guard = self.mapping.write();
+        let vaddr = node.virtual_addr;
 
         mp_guard.insert(
-            node.virtual_addr,
+            vaddr,
             NodeHandle {
                 node: ArcSwap::from_pointee(node),
                 tx,
@@ -106,6 +109,8 @@ impl GroupHandle {
             },
         );
         self.sync(&mp_guard)?;
+
+        self.flow_control.add_address(vaddr);
 
         let bridge = Bridge {
             channel_rx: rx,
@@ -303,6 +308,12 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             }
                         }
                         UdpMsg::Relay(dst_virt_addr, data) => {
+                            let flow_control_res = group_handle.flow_control.push(dst_virt_addr, data.len() as u64);
+
+                            if flow_control_res == PushResult::Reject {
+                                continue;
+                            }
+
                             let mut fut = None;
 
                             {
@@ -647,6 +658,12 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                         match msg {
                             TcpMsg::Relay(dst_virt_addr, packet) => {
+                                let flow_control_res = group_handle.flow_control.push(dst_virt_addr, packet.len() as u64);
+
+                                if flow_control_res == PushResult::Reject {
+                                    continue;
+                                }
+
                                 let mut fut = None;
                                 {
                                     let guard = group_handle.mapping.read();
@@ -774,6 +791,7 @@ impl<T> Drop for Tunnel<T> {
                 }
             }
 
+            self.group_handle.flow_control.remove_address(&reg.virtual_addr);
             self.address_pool.inner.lock().release(&reg.virtual_addr)
         }
     }

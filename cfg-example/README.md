@@ -108,7 +108,10 @@
       "listen_addr": "0.0.0.0:12345",
       "key": "123",
       "enable_key_rotation": false,
-      "address_range": "10.0.0.0/24"
+      "address_range": "10.0.0.0/24",
+      "flow_control_rules": [
+        ["10.0.0.0/24", "10Mib"]
+      ]
     }
   ]
 }
@@ -127,3 +130,5 @@
     - key(可选): 预共享密钥, 不设置则不开启加密
     - enable_key_rotation(可选): 基于时间的密钥轮换，要求节点之间的系统时间尽可能的同步, 默认为false
     - address_range: 网段
+    - flow_control_rules(可选): 目标网段中转流量规则, 只限制目标下行
+      - ["目标网段", "单个节点每秒流量"]

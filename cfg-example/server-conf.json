@@ -12,7 +12,10 @@
       "listen_addr": "0.0.0.0:12345",
       "key": "123",
       "enable_key_rotation": false,
-      "address_range": "10.0.0.0/24"
+      "address_range": "10.0.0.0/24",
+      "flow_control_rules": [
+        ["10.0.0.0/24", "10Mib"]
+      ]
     }
   ]
 }
