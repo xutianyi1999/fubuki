@@ -3,6 +3,7 @@ use std::future::Future;
 use std::net::Ipv4Addr;
 use std::ptr::null_mut;
 use std::slice;
+use std::sync::Once;
 
 use anyhow::Result;
 use tokio::runtime::Runtime;
@@ -92,7 +93,12 @@ fn fubuki_init_inner(
     let config: NodeConfig = serde_json::from_slice(s)?;
     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
     let rt = Runtime::new()?;
-    logger_init()?;
+
+    static LOGGER_INIT: Once = Once::new();
+
+    LOGGER_INIT.call_once(|| {
+        logger_init().expect("logger initialization failed");
+    });
 
     let (tx, rx) = flume::bounded(1024);
 
