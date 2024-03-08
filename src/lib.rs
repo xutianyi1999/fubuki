@@ -14,6 +14,7 @@ extern crate log;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Once;
 use std::time::Duration;
 
 use ahash::HashMap;
@@ -495,7 +496,11 @@ fn logger_init() -> Result<()> {
 }
 
 pub fn launch(args: Args) -> Result<()> {
-    logger_init()?;
+    static LOGGER_INIT: Once = Once::new();
+
+    LOGGER_INIT.call_once(|| {
+        logger_init().expect("logger initialization failed");
+    });
 
     match args {
         Args::Server { cmd } => {

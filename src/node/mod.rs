@@ -389,8 +389,11 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
         let interfaces = self.interfaces;
 
         let packet = &buff[packet_range.clone()];
-        let src_addr = get_ip_src_addr(packet)?;
-        let dst_addr = get_ip_dst_addr(packet)?;
+
+        let (Ok(src_addr), Ok(dst_addr)) = (get_ip_src_addr(packet), get_ip_dst_addr(packet)) else {
+            error!("Illegal ipv4 packet");
+            return Ok(());
+        };
 
         let opt = match &mut self.rt_ref {
             RoutingTableRefEnum::Cache(v) => find_route(&**v.load(), src_addr, dst_addr),
