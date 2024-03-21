@@ -44,7 +44,7 @@ impl <T: Copy> Clone for OptionC<T> {
     fn clone(&self) -> Self {
         OptionC {
             is_some: self.is_some,
-            value: self.value.clone()
+            value: self.value
         }
     }
 }
@@ -182,7 +182,7 @@ impl <K> RoutingTable for ExternalRoutingTable<K> {
 
     fn remove(&mut self, cidr: &Ipv4Net) -> Option<Item> {
         let optc = (self.remove_fn)(self.handle, &CidrC::from(*cidr));
-        Option::<ItemC>::from(optc).map(|i| Item::from(i))
+        Option::<ItemC>::from(optc).map(Item::from)
     }
 
     fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>> {

@@ -109,6 +109,7 @@ impl GroupHandle {
             },
         );
         self.sync(&mp_guard)?;
+        drop(mp_guard);
 
         self.flow_control.add_address(vaddr);
 

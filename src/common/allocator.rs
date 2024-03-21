@@ -85,7 +85,7 @@ impl Bytes {
         };
 
         *start = new_start;
-        return Ok(new_bytes);
+        Ok(new_bytes)
     }
 
     #[allow(unused)]

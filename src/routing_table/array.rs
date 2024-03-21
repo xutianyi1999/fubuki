@@ -32,7 +32,7 @@ impl RoutingTable for ArrayRoutingTable {
         self.inner
             .iter()
             .find(|v| v.cidr.contains(&to))
-            .map(|v| Cow::Borrowed(v))
+            .map(Cow::Borrowed)
     }
 }
 

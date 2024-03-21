@@ -397,13 +397,13 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
 
         let opt = match &mut self.rt_ref {
             RoutingTableRefEnum::Cache(v) => find_route(&**v.load(), src_addr, dst_addr),
-            RoutingTableRefEnum::Ref(v) => unsafe { find_route(&mut *v.get(), src_addr, dst_addr) }
+            RoutingTableRefEnum::Ref(v) => unsafe { find_route(&*v.get(), src_addr, dst_addr) }
         };
 
         let (dst_addr, item) = match opt {
             None => {
                 if direction == Direction::Input && allow_packet_not_in_rules_send_to_kernel {
-                    self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun")?;
+                    self.tun.send_packet(&buff[packet_range]).await.context("error send packet to tun")?;
                 }
                 return Ok(())
             },
@@ -445,7 +445,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                 debug!("tun handler: packet {}->{}; gateway: {}", src_addr, dst_addr, addr);
 
                 if interface_addr == addr {
-                    return self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun");
+                    return self.tun.send_packet(&buff[packet_range]).await.context("error send packet to tun");
                 }
 
                 let f = match direction {
@@ -475,7 +475,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                         }
                     }
                     Direction::Input => {
-                        self.tun.send_packet(&mut buff[packet_range]).await.context("error send packet to tun")?;
+                        self.tun.send_packet(&buff[packet_range]).await.context("error send packet to tun")?;
                     }
                 }
             }

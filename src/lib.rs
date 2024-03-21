@@ -333,7 +333,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
         }
 
         let config_finalize = NodeConfigFinalize {
-            mtu: config.mtu.unwrap_or_else(|| {
+            mtu: config.mtu.unwrap_or({
                 if use_udp {
                     if use_ipv6 {
                         // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 40byte IPV6 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
