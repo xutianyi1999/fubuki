@@ -31,7 +31,9 @@ futures-util = "0.3"
 ipnet = { version = "2", features = ["serde"] }
 arc-swap = "1"
 human-panic = "1"
-hyper = { version = "0.14", features = ["server", "client", "http1", "tcp"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["tokio"] }
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 prettytable-rs = "0.10"
 scopeguard = "1"

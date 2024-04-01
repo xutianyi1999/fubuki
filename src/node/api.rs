@@ -1,10 +1,13 @@
-use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use hyper::{Body, http, Request, Response};
-use hyper::service::{make_service_fn, service_fn};
+use http_body_util::Full;
+use hyper::{http, Request, Response};
+use hyper::body::{Bytes, Incoming};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use tokio::net::TcpListener;
 
 use crate::node::{Interface, InterfaceInfo};
 
@@ -13,76 +16,75 @@ struct Context<K> {
 }
 
 fn info<K>(
-    _req: Request<Body>,
+    _req: Request<Incoming>,
     interfaces: &[Arc<Interface<K>>],
-) -> Result<Response<Body>, http::Error> {
+) -> Result<Response<Full<Bytes>>, http::Error> {
     let mut list = Vec::with_capacity(interfaces.len());
 
     for inter in interfaces {
         list.push(InterfaceInfo::from(&**inter));
     }
-    
+
     let resp = match serde_json::to_vec(&list) {
-        Ok(v) => Response::new(Body::from(v)),
+        Ok(v) => Response::new(Full::new(Bytes::from(v))),
         Err(e) => {
             error!("api server error: {}", e);
 
             Response::builder()
                 .status(500)
-                .body(Body::from(e.to_string()))?
+                .body(Full::new(Bytes::from(e.to_string())))?
         }
     };
     Ok(resp)
 }
 
 fn router<K>(
-    ctx: Arc<Context<K>>,
-    req: Request<Body>,
-) -> Result<Response<Body>, http::Error> {
+    ctx: &Context<K>,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, http::Error> {
     let path = req.uri().path();
 
     match path {
         "/info" => info(req, ctx.interfaces.as_slice()),
-        "/type" => Ok(Response::new(Body::from("node"))),
+        "/type" => Ok(Response::new(Full::new(Bytes::from("node")))),
         #[cfg(feature = "web")]
         path => crate::web::static_files(path.trim_start_matches('/')),
         #[cfg(not(feature = "web"))]
-        _ => {
-            Response::builder()
-                .status(404)
-                .body(Body::empty())
-        }
+        _ => Response::builder()
+            .status(404)
+            .body(Full::new(Bytes::new())),
     }
 }
 
 pub(super) async fn api_start<K: Send + Sync + 'static>(
     bind: SocketAddr,
-    interfaces: Vec<Arc<Interface<K>>>
+    interfaces: Vec<Arc<Interface<K>>>,
 ) -> Result<()> {
-    let ctx = Context {
-        interfaces,
-    };
-
+    let ctx = Context { interfaces };
     let ctx = Arc::new(ctx);
 
-    let make_svc = make_service_fn(move |_conn|  {
-        let ctx = ctx.clone();
-
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                let ctx = ctx.clone();
-
-                async {
-                    router(ctx, req)
-                }
-            }))
-        }
-    });
-
+    let listener = TcpListener::bind(bind).await?;
     info!("api listening on http://{}", bind);
 
-    tokio::spawn(hyper::server::Server::try_bind(&bind)?
-            .serve(make_svc)).await??;
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let stream = hyper_util::rt::TokioIo::new(stream);
+        let ctx = ctx.clone();
 
-    Ok(())
+        tokio::spawn(async move {
+            let ctx = &ctx;
+            let res = http1::Builder::new()
+                .serve_connection(
+                    stream,
+                    service_fn(move |req| {
+                        std::future::ready(router(ctx, req))
+                    }),
+                )
+                .await;
+
+            if let Err(e) = res {
+                error!("error serving connection: {:?}", e);
+            }
+        });
+    }
 }

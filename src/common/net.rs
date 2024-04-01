@@ -741,6 +741,7 @@ pub mod protocol {
     pub enum UdpMsg<'a> {
         // todo Heartbeat(from, to, seq, type)
         Heartbeat(VirtualAddr, Seq, HeartbeatType),
+        #[allow(unused)]
         Data(&'a [u8]),
         // todo remove relay
         Relay(VirtualAddr, &'a [u8]),

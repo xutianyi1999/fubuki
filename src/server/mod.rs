@@ -1,5 +1,6 @@
 use std::mem::size_of;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,8 +9,9 @@ use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use chrono::Utc;
 use crossbeam_utils::atomic::AtomicCell;
-use hyper::{Body, Method, Request};
-use hyper::body::Buf;
+use http_body_util::{BodyExt, Empty};
+use hyper::{Method, Request};
+use hyper_util::rt::TokioIo;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
@@ -970,24 +972,26 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 
 pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()> {
     let req = Request::builder()
-        .method(Method::GET)
-        .uri(format!("http://{}/info", api_addr))
-        .body(Body::empty())?;
+    .method(Method::GET)
+    .uri(format!("http://{}/info", api_addr))
+    .body(Empty::<hyper::body::Bytes>::new())?;
 
-    let c = hyper::client::Client::new();
-    let resp = c.request(req).await?;
+    let stream = TcpStream::connect(api_addr).await?;
+    let stream = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
 
+    tokio::spawn(conn);
+
+    let resp = sender.send_request(req).await?;
     let (parts, body) = resp.into_parts();
+    let bytes = body.collect().await?.to_bytes();
 
     if parts.status != 200 {
-        let bytes = hyper::body::to_bytes(body).await?;
         let msg = String::from_utf8(bytes.to_vec())?;
         return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
     }
 
-    let body = hyper::body::aggregate(body).await?;
-    let groups: Vec<GroupInfo> = serde_json::from_reader(body.reader())?;
-
+    let groups: Vec<GroupInfo> = serde_json::from_slice(bytes.deref())?;
     let mut table = Table::new();
 
     match info_type {

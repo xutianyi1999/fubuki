@@ -518,7 +518,7 @@ pub fn launch(args: Args) -> Result<()> {
                 }
                 ServerCmd::Info { api, info_type } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
+                        .enable_io()
                         .build()?;
 
                     rt.block_on(server::info(&api, info_type))?;
@@ -540,7 +540,7 @@ pub fn launch(args: Args) -> Result<()> {
                 }
                 NodeCmd::Info { api, info_type } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
+                        .enable_io()
                         .build()?;
 
                     rt.block_on(node::info(&api, info_type))?;
