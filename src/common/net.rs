@@ -347,13 +347,9 @@ impl FlowControl {
         let mut guard = self.pool.write();
         let index_opt = guard.binary_search_by_key(&addr, |(addr, _)| *addr);
 
-        let v = (addr, AtomicCell::new((0, Utc::now().timestamp())));
-
-        match index_opt {
-            Ok(i) => {
-                guard.insert(i, v);
-            },
-            Err(_) => guard.push(v)
+        if let Err(i) = index_opt {
+            let v = (addr, AtomicCell::new((0, Utc::now().timestamp())));
+            guard.insert(i, v);
         }
     }
 
