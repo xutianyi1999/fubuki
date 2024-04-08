@@ -285,7 +285,9 @@ pub enum PushResult {
 }
 
 impl FlowControl {
-    pub fn new(rule: Vec<(Ipv4Net, u64)>) -> Self {
+    pub fn new(mut rule: Vec<(Ipv4Net, u64)>) -> Self {
+        rule.sort_unstable_by_key(|(cidr, _)| std::cmp::Reverse(cidr.prefix_len()));
+
         FlowControl {
             rule,
             pool: RwLock::new(Vec::new())

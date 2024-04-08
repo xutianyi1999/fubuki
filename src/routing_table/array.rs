@@ -10,14 +10,9 @@ pub struct ArrayRoutingTable {
 
 impl RoutingTable for ArrayRoutingTable {
     fn add(&mut self, item: Item) {
-        let index = self.inner
-            .iter()
-            .position(|v| v.cidr.prefix_len() < item.cidr.prefix_len());
-
-        match index {
-            None => self.inner.push(item),
-            Some(i) => self.inner.insert(i, item)
-        };
+        let index = self.inner.binary_search_by_key(&std::cmp::Reverse(item.cidr.prefix_len()), |v| std::cmp::Reverse(v.cidr.prefix_len()));
+        let i = index.unwrap_or_else(|i| i);
+        self.inner.insert(i, item);
     }
 
     fn remove(&mut self, cidr: &Ipv4Net) -> Option<Item> {
