@@ -9,6 +9,7 @@ fubuki是网状VPN实现，用于不同内网机器之间相互通信
 - Windows
 - Linux
 - macOS
+- Android
 
 受支持的协议类型：
 

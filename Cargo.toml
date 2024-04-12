@@ -17,7 +17,6 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-log4rs = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,7 +29,7 @@ ahash = "0.8"
 futures-util = "0.3"
 ipnet = { version = "2", features = ["serde"] }
 arc-swap = "1"
-human-panic = "1"
+human-panic = "2"
 hyper = { version = "1", features = ["server", "client", "http1"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -46,24 +45,28 @@ digest = "0.10"
 crossbeam-utils = "0.8"
 libloading = "0.8"
 byte-unit = { version = "5", features = ["serde"] }
-
 linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
-klask = { git = "https://github.com/xosxos/klask.git", optional = true }
+mimalloc = { version = "*", default-features = false, optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }
 hostsfile = { git = "https://github.com/tonarino/innernet.git" }
+klask = { git = "https://github.com/xosxos/klask.git", optional = true }
+log4rs = "1"
 
-mimalloc = { version = "*", default-features = false, optional = true }
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "3"
 
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))'.dependencies]
 tun = { git = "https://github.com/xutianyi1999/rust-tun.git", features = ["async"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
-windows = { version = "0.54", features = ["Win32_Networking_WinSock"] }
+windows = { version = "0.56", features = ["Win32_Networking_WinSock"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"

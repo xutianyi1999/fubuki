@@ -14,7 +14,6 @@ extern crate log;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Once;
 use std::time::Duration;
 
 use ahash::HashMap;
@@ -22,9 +21,6 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use gethostname::gethostname;
 use ipnet::Ipv4Net;
-use log4rs::append::console::ConsoleAppender;
-use log4rs::config::{Appender, Root};
-use log4rs::encode::pattern::PatternEncoder;
 use log::LevelFilter;
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
@@ -39,6 +35,7 @@ mod node;
 mod server;
 mod tun;
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[cfg_attr(target_os = "windows", path = "nat/windows.rs")]
 #[cfg_attr(target_os = "linux", path = "nat/linux.rs")]
 #[cfg_attr(target_os = "macos", path = "nat/macos.rs")]
@@ -49,10 +46,6 @@ mod web;
 mod routing_table;
 
 mod ffi_export;
-
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type Key = CipherEnum;
 
@@ -242,6 +235,7 @@ struct NodeConfigFinalize<K> {
 
 #[derive(Clone)]
 struct NodeConfigFeatureFinalize {
+    #[allow(unused)]
     disable_hosts_operation: bool,
     disable_signal_handling: bool,
     disable_route_operation: bool,
@@ -475,37 +469,59 @@ fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_reader(file).context("failed to parse config")
 }
 
+#[cfg(target_os = "android")]
 fn logger_init() -> Result<()> {
-    let pattern = if cfg!(debug_assertions) {
-        "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {f}:{L} - {m}{n}"
-    } else {
-        "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}"
-    };
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(LevelFilter::from_str(
+                std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+            )?),
+    );
 
-    let stdout = ConsoleAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(pattern)))
-        .build();
+    Ok(())
+}
 
-    let config = log4rs::Config::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .build(
-            Root::builder()
-                .appender("stdout")
-                .build(LevelFilter::from_str(
-                    std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
-                )?),
-        )?;
+#[cfg(not(target_os = "android"))]
+fn logger_init() -> Result<()> {
+    fn init() -> Result<()> {
+        use log4rs::append::console::ConsoleAppender;
+        use log4rs::config::{Appender, Root};
+        use log4rs::encode::pattern::PatternEncoder;
 
-    log4rs::init_config(config)?;
+        let pattern = if cfg!(debug_assertions) {
+            "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {f}:{L} - {m}{n}"
+        } else {
+            "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}"
+        };
+
+        let stdout = ConsoleAppender::builder()
+            .encoder(Box::new(PatternEncoder::new(pattern)))
+            .build();
+
+        let config = log4rs::Config::builder()
+            .appender(Appender::builder().build("stdout", Box::new(stdout)))
+            .build(
+                Root::builder()
+                    .appender("stdout")
+                    .build(LevelFilter::from_str(
+                        std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+                    )?),
+            )?;
+
+        log4rs::init_config(config)?;
+        Ok(())
+    }
+
+    static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
+
+    LOGGER_INIT.call_once(|| {
+        init().expect("logger initialization failed");
+    });
     Ok(())
 }
 
 pub fn launch(args: Args) -> Result<()> {
-    static LOGGER_INIT: Once = Once::new();
-
-    LOGGER_INIT.call_once(|| {
-        logger_init().expect("logger initialization failed");
-    });
+    logger_init()?;
 
     match args {
         Args::Server { cmd } => {
@@ -527,6 +543,7 @@ pub fn launch(args: Args) -> Result<()> {
         }
         Args::Node { cmd } => {
             match cmd {
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 NodeCmd::Daemon { config_path } => {
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
@@ -544,6 +561,10 @@ pub fn launch(args: Args) -> Result<()> {
                         .build()?;
 
                     rt.block_on(node::info(&api, info_type))?;
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+                _ => {
+                    return Err(anyhow!("fubuki does not support the current platform"))
                 }
             }
         }

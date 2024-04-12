@@ -3,14 +3,19 @@ use std::future::Future;
 use std::net::Ipv4Addr;
 use std::ptr::null_mut;
 use std::slice;
-use std::sync::Once;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
 
 use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
+
+const FUBUKI_START_OPTIONS_VERSION_V1: u32 = 1;
+
+// Android platform
+#[cfg(target_os = "android")]
+const FUBUKI_START_OPTIONS_VERSION_V2: u32 = 2;
 
 type FubukiToIfFn = extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void);
 type AddAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
@@ -73,12 +78,19 @@ pub extern "C" fn if_to_fubuki(handle: *const Handle, packet: *const u8, len: us
     let mut buff = alloc(packet.len());
     buff.copy_from_slice(packet);
 
-    let _ = handle.if_to_fubuki_tx.try_send(buff);
+    let _ = handle.if_to_fubuki_tx.as_ref().unwrap().try_send(buff);
 }
 
 pub struct Handle {
     _rt: Runtime,
-    if_to_fubuki_tx: flume::Sender<Bytes>,
+    if_to_fubuki_tx: Option<flume::Sender<Bytes>>,
+}
+
+fn parse_config(node_config_json: *const c_char) -> Result<NodeConfigFinalize<Key>> {
+    let s = unsafe { CStr::from_ptr(node_config_json) }.to_bytes();
+    let config: NodeConfig = serde_json::from_slice(s)?;
+    let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
+    Ok(c)
 }
 
 fn fubuki_init_inner(
@@ -88,17 +100,10 @@ fn fubuki_init_inner(
     add_addr_fn: AddAddrFn,
     delete_addr_fn: DeleteAddrFn,
     device_index: u32,
-) -> Result<Box<Handle>> {
-    let s = unsafe { CStr::from_ptr(node_config_json) }.to_bytes();
-    let config: NodeConfig = serde_json::from_slice(s)?;
-    let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
+) -> Result<Handle> {
+    let c = parse_config(node_config_json)?;
     let rt = Runtime::new()?;
-
-    static LOGGER_INIT: Once = Once::new();
-
-    LOGGER_INIT.call_once(|| {
-        logger_init().expect("logger initialization failed");
-    });
+    logger_init()?;
 
     let (tx, rx) = flume::bounded(1024);
 
@@ -111,19 +116,47 @@ fn fubuki_init_inner(
         if_to_fubuki_rx: rx,
     };
 
-    rt.spawn(
-        async move {
-            if let Err(e) = node::start(c, bridge).await {
-                error!("{:?}", e);
-            }
+    rt.spawn(async move {
+        if let Err(e) = node::start(c, bridge).await {
+            error!("{:?}", e);
         }
-    );
+    });
 
     let h = Handle {
         _rt: rt,
-        if_to_fubuki_tx: tx,
+        if_to_fubuki_tx: Some(tx),
     };
-    Ok(Box::new(h))
+    Ok(h)
+}
+
+#[cfg(target_os = "android")]
+fn fubuki_init_with_tun(
+    node_config_json: *const c_char,
+    tun_fd: std::os::fd::RawFd
+) -> Result<Handle> {
+    use anyhow::Context;
+
+    let c = parse_config(node_config_json)?;
+    let rt = Runtime::new()?;
+    logger_init()?;
+
+    rt.spawn(async move {
+        let fut = async {
+            // creating AsyncTun must be in the tokio runtime
+            let tun = crate::tun::create(tun_fd).context("failed to create tun")?;
+            node::start(c, tun).await
+        };
+
+        if let Err(e) = fut.await {
+            error!("{:?}", e);
+        }
+    });
+
+    let h = Handle {
+        _rt: rt,
+        if_to_fubuki_tx: None
+    };
+    Ok(h)
 }
 
 #[repr(C)]
@@ -134,6 +167,7 @@ pub struct FubukiStartOptions {
     fubuki_to_if_fn: FubukiToIfFn,
     add_addr_fn: AddAddrFn,
     delete_addr_fn: DeleteAddrFn,
+    tun_fd: i32
 }
 
 #[no_mangle]
@@ -142,22 +176,36 @@ pub extern "C" fn fubuki_start(
     version: u32,
     error: *mut c_char,
 ) -> *mut Handle {
-    if version != 1 {
-        let err = CString::new(format!("unknown version {}, expecting [1]", version)).unwrap();
-        let err = err.as_bytes_with_nul();
-        unsafe { std::ptr::copy(err.as_ptr(), error as *mut u8, err.len()) };
-        return null_mut();
-    }
     let options = unsafe { &*opts };
-    match fubuki_init_inner(
-        options.node_config_json,
-        options.ctx,
-        options.fubuki_to_if_fn,
-        options.add_addr_fn,
-        options.delete_addr_fn,
-        options.device_index,
-    ) {
-        Ok(v) => Box::into_raw(v),
+
+    let res = match version {
+        FUBUKI_START_OPTIONS_VERSION_V1 => {
+            fubuki_init_inner(
+                options.node_config_json,
+                options.ctx,
+                options.fubuki_to_if_fn,
+                options.add_addr_fn,
+                options.delete_addr_fn,
+                options.device_index,
+            )
+        }
+        #[cfg(target_os = "android")]
+        FUBUKI_START_OPTIONS_VERSION_V2 => {
+            fubuki_init_with_tun(
+                options.node_config_json,
+                options.tun_fd as std::os::fd::RawFd
+            )
+        }
+        _ => {
+            Err(anyhow!(
+                "unknown version {}",
+                version
+            ))
+        }
+    };
+
+    match res {
+        Ok(p) => Box::into_raw(Box::new(p)),
         Err(e) => {
             let e = CString::new(e.to_string()).unwrap();
             let src = e.as_bytes_with_nul();

@@ -8,7 +8,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use std::path::Path;
 
-use ahash::{HashMap, HashSet, HashSetExt};
+use ahash::HashMap;
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+use ahash::{HashSet, HashSetExt};
+
 use anyhow::{anyhow, Context as AnyhowContext};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
@@ -21,8 +25,8 @@ use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use ipnet::Ipv4Net;
 use linear_map::LinearMap;
-use net_route::Route;
-use parking_lot::{Mutex, RwLock};
+use sys_route::Route;
+use parking_lot::RwLock;
 use prettytable::{row, Table};
 use rand::random;
 use scopeguard::defer;
@@ -41,13 +45,15 @@ use crate::common::allocator::Bytes;
 use crate::common::cipher::CipherContext;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, MAGIC_NUM, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
-use crate::nat::{add_nat, del_nat};
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
 use crate::routing_table::{Item, ItemKind, RoutingTable};
 use crate::tun::TunDevice;
 
 mod api;
+
+#[cfg_attr(any(target_os = "windows", target_os = "linux", target_os = "macos"), path = "sys_route.rs")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux", target_os = "macos")), path = "fake_sys_route.rs")]
 mod sys_route;
 
 type NodeList = Vec<ExtendedNode>;
@@ -1066,9 +1072,13 @@ where
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
         let mut sys_route_is_sync = false;
+
         // use defer must use atomic
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         let is_add_nat = AtomicBool::new(false);
-        let host_records = Arc::new(Mutex::new(HashSet::new()));
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        let host_records = Arc::new(parking_lot::Mutex::new(HashSet::new()));
 
         // todo requires Arc + Mutex to pass compile
         let channel_rx = channel_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
@@ -1076,6 +1086,7 @@ where
         defer! {
             debug!("exiting tcp handler function ...");
 
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             if !config.features.disable_hosts_operation {
                 let guard = host_records.lock();
 
@@ -1092,10 +1103,11 @@ where
                 }
             }
 
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             if is_add_nat.load(Ordering::Relaxed) {
                 info!("clear node {} nat list", group.node_name);
 
-                if let Err(e) = del_nat(&group.allowed_ips, interface.cidr.load()) {
+                if let Err(e) = crate::nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
                     error!("failed to delete nat: {}", e);
                 }
             }
@@ -1124,8 +1136,9 @@ where
                     cidr,
                 )?;
 
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 if !group.allowed_ips.is_empty() {
-                    add_nat(&group.allowed_ips, cidr)?;
+                    crate::nat::add_nat(&group.allowed_ips, cidr)?;
                     is_add_nat.store(true, Ordering::Relaxed);
                 }
 
@@ -1169,16 +1182,17 @@ where
                                 *cidr,
                             )?;
 
+                            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                             if !group.allowed_ips.is_empty() {
                                 if old_cidr != *cidr &&
                                     is_add_nat.load(Ordering::Relaxed)
                                 {
-                                    del_nat(&group.allowed_ips,old_cidr)?;
+                                    crate::nat::del_nat(&group.allowed_ips,old_cidr)?;
                                     is_add_nat.store(false, Ordering::Relaxed);
                                 }
 
                                 if !is_add_nat.load(Ordering::Relaxed) {
-                                    add_nat(&group.allowed_ips, *cidr)?;
+                                    crate::nat::add_nat(&group.allowed_ips, *cidr)?;
                                     is_add_nat.store(true, Ordering::Relaxed);
                                 }
                             }
@@ -1225,7 +1239,10 @@ where
                     let mut notified = notified.clone();
                     let interface = interface.clone();
                     let inner_channel_tx = inner_channel_tx.clone();
+
+                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                     let host_records = host_records.clone();
+
                     let tun = tun.clone();
                     let routing_table = routing_table.clone();
 
@@ -1268,6 +1285,7 @@ where
 
                                         new_list.sort_unstable_by_key(|n| n.node.virtual_addr);
 
+                                        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                                         if !config.features.disable_hosts_operation {
                                             let host_key = format!("FUBUKI-{}", group_info.name);
                                             let mut hb = hostsfile::HostsBuilder::new(&host_key);
@@ -1484,6 +1502,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
         let arc = Arc::new(tokio::sync::Mutex::new(SystemRouteHandle::new()?));
         Some(arc)
     };
+    #[allow(unused)]
     let tun_index = tun.get_index();
 
     for (index, group) in config.groups.iter().enumerate() {
@@ -1543,8 +1562,10 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
         let interface = Arc::new(interface);
         interfaces.push(interface.clone());
 
+        #[allow(unused_mut)]
         let mut routes = Vec::new();
 
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         for (gateway, cidrs) in &group.ips {
             for cidr in cidrs {
                 let route = Route::new(IpAddr::V4(cidr.network()), cidr.prefix_len())
@@ -1628,7 +1649,7 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
     Ok(())
 }
 
-pub(crate) async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> {
+pub async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> {
     let req = Request::builder()
         .method(Method::GET)
         .uri(format!("http://{}/info", api_addr))

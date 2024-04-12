@@ -878,7 +878,7 @@ impl NoncePool {
     }
 }
 
-pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
+pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
     where
         K: Cipher + Clone + Send + Sync + 'static
 {
@@ -970,7 +970,7 @@ pub(crate) async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
     Ok(())
 }
 
-pub(crate) async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()> {
+pub async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()> {
     let req = Request::builder()
     .method(Method::GET)
     .uri(format!("http://{}/info", api_addr))

@@ -2,7 +2,9 @@ use std::pin::pin;
 
 use anyhow::Result;
 use futures_util::stream::StreamExt;
-use net_route::{Handle, Route};
+use net_route::Handle;
+
+pub use net_route::Route;
 
 pub struct SystemRouteHandle {
     handle: Handle,

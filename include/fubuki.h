@@ -25,9 +25,12 @@ struct FubukiStartOptions {
   void (*add_addr_fn)(uint32_t addr, uint32_t netmask, void *ctx);
   // the callback function to notify user program an ip should be deleted
   void (*delete_addr_fn)(uint32_t addr, uint32_t netmask, void *ctx);
+  // tun device file descriptor
+  int32_t tun_fd;
 };
 
 #define FUBUKI_START_OPTIONS_VERSION (1)
+#define FUBUKI_START_OPTIONS_VERSION2 (2)
 
 struct FubukiHandle *fubuki_start(struct FubukiStartOptions *opts,
                                   uint32_t version,

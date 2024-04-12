@@ -95,3 +95,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTUP_TOOLCHAIN: nightly
           CARGO_TERM_COLOR: always
+
+  build-android:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [
+          aarch64-linux-android,
+          armv7-linux-androideabi,
+          i686-linux-android,
+          x86_64-linux-android
+        ]
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+          
+          echo "build ${{ matrix.target }}"
+          cross +nightly build --lib --release --no-default-features --target ${{ matrix.target }}
+          
+          cd target/${{ matrix.target }}/release
+          tar -czf libfubuki-${{ matrix.target }}.tar.gz libfubukil.so
+          gh release upload ${{ github.ref_name }} libfubuki-${{ matrix.target }}.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUSTUP_TOOLCHAIN: nightly
+          CARGO_TERM_COLOR: always
