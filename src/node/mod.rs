@@ -1054,6 +1054,13 @@ fn update_tun_addr<T, K, InterRT, ExternRt>(
     Ok(())
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn update_hosts(hb: &hostsfile::HostsBuilder) -> std::io::Result<bool> {
+    static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _guard = LOCK.lock();
+    hb.write()
+}
+
 async fn tcp_handler<T, K, InterRT, ExternRt>(
     config: &'static NodeConfigFinalize<K>,
     group: &'static TargetGroupFinalize<K>,
@@ -1096,7 +1103,7 @@ where
                     for host in &*guard {
                         let hb = hostsfile::HostsBuilder::new(host);
 
-                        if let Err(e) = hb.write() {
+                        if let Err(e) = update_hosts(&hb) {
                             error!("failed to write hosts file: {}", e);
                         }
                     }
@@ -1299,8 +1306,9 @@ where
                                             tokio::task::spawn_blocking(move || {
                                                 let node_name = &group.node_name;
 
-                                                match hb.write() {
-                                                    Ok(_) => info!("node {} update hosts", node_name),
+                                                match update_hosts(&hb) {
+                                                    Ok(true) => info!("node {} update hosts", node_name),
+                                                    Ok(false) => (),
                                                     Err(e) => error!("node {} update hosts error: {}", node_name, e)
                                                 }
                                             });
