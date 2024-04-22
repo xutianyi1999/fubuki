@@ -11,11 +11,11 @@ use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
 
-const FUBUKI_START_OPTIONS_VERSION_V1: u32 = 1;
+const FUBUKI_START_OPTIONS_VERSION1: u32 = 1;
 
 // Android platform
 #[cfg(target_os = "android")]
-const FUBUKI_START_OPTIONS_VERSION_V2: u32 = 2;
+const FUBUKI_START_OPTIONS_VERSION2: u32 = 2;
 
 type FubukiToIfFn = extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void);
 type AddAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
@@ -179,7 +179,7 @@ pub extern "C" fn fubuki_start(
     let options = unsafe { &*opts };
 
     let res = match version {
-        FUBUKI_START_OPTIONS_VERSION_V1 => {
+        FUBUKI_START_OPTIONS_VERSION1 => {
             fubuki_init_inner(
                 options.node_config_json,
                 options.ctx,
@@ -190,7 +190,7 @@ pub extern "C" fn fubuki_start(
             )
         }
         #[cfg(target_os = "android")]
-        FUBUKI_START_OPTIONS_VERSION_V2 => {
+        FUBUKI_START_OPTIONS_VERSION2 => {
             fubuki_init_with_tun(
                 options.node_config_json,
                 options.tun_fd as std::os::fd::RawFd

@@ -16,16 +16,22 @@ struct FubukiStartOptions {
   // user data
   void *ctx;
   // json string as config
+  // V1 and V2 required
   const char *node_config_json;
   // index of the virtual device
+  // V1 required
   uint32_t device_index;
   // the callback function to provide packets to the user program, packet starts from the header of the ip packet
+  // V1 required
   void (*fubuki_to_if_fn)(const uint8_t *packet, size_t len, void *ctx);
   // the callback function to notify user program an ip should be added
+  // V1 required
   void (*add_addr_fn)(uint32_t addr, uint32_t netmask, void *ctx);
   // the callback function to notify user program an ip should be deleted
+  // V1 required
   void (*delete_addr_fn)(uint32_t addr, uint32_t netmask, void *ctx);
   // tun device file descriptor
+  // V2 required
   int32_t tun_fd;
 };
 
