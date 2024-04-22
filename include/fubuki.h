@@ -44,6 +44,8 @@ struct FubukiHandle *fubuki_start(struct FubukiStartOptions *opts,
 
 void fubuki_stop(struct FubukiHandle *handle);
 
+const char *fubuki_version();
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

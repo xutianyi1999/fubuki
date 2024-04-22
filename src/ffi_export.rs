@@ -219,3 +219,9 @@ pub extern "C" fn fubuki_start(
 pub extern "C" fn fubuki_stop(handle: *mut Handle) {
     let _ = unsafe { Box::from_raw(handle) };
 }
+
+#[no_mangle]
+pub extern "C" fn fubuki_version() -> *const c_char {
+    const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), '\0');
+    VERSION.as_ptr() as *const c_char
+}
