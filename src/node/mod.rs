@@ -165,6 +165,8 @@ pub struct Interface<K> {
     server_udp_status: AtomicCell<UdpStatus>,
     server_tcp_hc: RwLock<HeartbeatCache>,
     server_is_connected: AtomicBool,
+    server_allow_udp_relay: AtomicBool,
+    server_allow_tcp_relay: AtomicBool,
     tcp_handler_channel: Option<Sender<Bytes>>,
     udp_socket: Option<UdpSocket>,
     key: K,
@@ -287,7 +289,7 @@ async fn send<K: Cipher>(
     if (!mode.relay.is_empty()) && (!dst_node.node.mode.relay.is_empty()) {
         for np in &mode.relay {
             match np {
-                NetProtocol::TCP => {
+                NetProtocol::TCP if inter.server_allow_tcp_relay.load(Ordering::Relaxed) => {
                     let tx = match inter.tcp_handler_channel {
                         None => unreachable!(),
                         Some(ref v) => v,
@@ -308,7 +310,7 @@ async fn send<K: Cipher>(
                         Err(e) => error!("tun handler: tunnel error: {}", e)
                     }
                 }
-                NetProtocol::UDP => {
+                NetProtocol::UDP if inter.server_allow_udp_relay.load(Ordering::Relaxed) => {
                     let socket = match &inter.udp_socket {
                         None => unreachable!(),
                         Some(socket) => socket,
@@ -328,6 +330,7 @@ async fn send<K: Cipher>(
                     socket.send_to(packet, dst_addr).await?;
                     return Ok(())
                 }
+                _ => ()
             };
         }
     }
@@ -1215,6 +1218,8 @@ where
                 }
 
                 interface.group_name.store(Some(Arc::new(group_info.name.clone())));
+                interface.server_allow_udp_relay.store(group_info.allow_udp_relay, Ordering::Relaxed);
+                interface.server_allow_tcp_relay.store(group_info.allow_tcp_relay, Ordering::Relaxed);
 
                 // tun must first set the ip address
                 if !sys_route_is_sync {
@@ -1562,6 +1567,8 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
             server_udp_status: AtomicCell::new(UdpStatus::Unavailable),
             server_tcp_hc: RwLock::new(HeartbeatCache::new()),
             server_is_connected: AtomicBool::new(false),
+            server_allow_udp_relay: AtomicBool::new(false),
+            server_allow_tcp_relay: AtomicBool::new(false),
             tcp_handler_channel: channel_tx,
             udp_socket: udp_opt,
             key: group.key.clone()

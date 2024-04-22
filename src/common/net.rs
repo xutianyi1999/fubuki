@@ -444,6 +444,8 @@ pub mod protocol {
         pub name: String,
         #[bincode(with_serde)]
         pub cidr: Ipv4Net,
+        pub allow_udp_relay: bool,
+        pub allow_tcp_relay: bool
     }
 
     #[derive(Encode, Decode, Clone)]

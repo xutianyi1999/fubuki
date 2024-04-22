@@ -57,6 +57,8 @@ struct Group {
     enable_key_rotation: Option<bool>,
     address_range: Ipv4Net,
     flow_control_rules: Option<Vec<(Ipv4Net, byte_unit::Byte)>>,
+    allow_udp_relay: Option<bool>,
+    allow_tcp_relay: Option<bool>
 }
 
 #[derive(Deserialize, Clone)]
@@ -78,6 +80,8 @@ struct GroupFinalize<K> {
     key: K,
     address_range: Ipv4Net,
     flow_control_rules: Vec<(Ipv4Net, u64)>,
+    allow_udp_relay: bool,
+    allow_tcp_relay: bool
 }
 
 #[derive(Clone)]
@@ -138,7 +142,9 @@ impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
                         },
                         flow_control_rules: group.flow_control_rules
                             .map(|v| v.into_iter().map(|(range, l)| (range, l.as_u64())).collect::<Vec<_>>())
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
+                        allow_udp_relay: group.allow_udp_relay.unwrap_or(true),
+                        allow_tcp_relay: group.allow_tcp_relay.unwrap_or(true)
                     };
                     list.push(v);
                 }

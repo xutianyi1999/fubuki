@@ -111,7 +111,9 @@
       "address_range": "10.0.0.0/24",
       "flow_control_rules": [
         ["10.0.0.0/24", "10Mib"]
-      ]
+      ],
+      "allow_udp_relay": true,
+      "allow_tcp_relay": true
     }
   ]
 }
@@ -132,3 +134,5 @@
     - address_range: 网段
     - flow_control_rules(可选): 目标网段中转流量规则, 只限制目标下行
       - ["目标网段", "单个节点每秒流量"]
+    - allow_udp_relay(可选): 是否允许UDP中继，默认为true
+    - allow_tcp_relay(可选): 是否允许TCP中继，默认为true

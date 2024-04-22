@@ -311,6 +311,10 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             }
                         }
                         UdpMsg::Relay(dst_virt_addr, data) => {
+                            if !group.allow_udp_relay {
+                                continue;
+                            }
+
                             let flow_control_res = group_handle.flow_control.push(dst_virt_addr, data.len() as u64);
 
                             if flow_control_res == PushResult::Reject {
@@ -561,7 +565,9 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                     let gc = GroupContent {
                         name: self.group.name.clone(),
-                        cidr: self.group.address_range
+                        cidr: self.group.address_range,
+                        allow_udp_relay: self.group.allow_udp_relay,
+                        allow_tcp_relay: self.group.allow_tcp_relay
                     };
 
                     let len = TcpMsg::register_res_encode(&Ok(gc), buff)?;
@@ -661,6 +667,10 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                         match msg {
                             TcpMsg::Relay(dst_virt_addr, packet) => {
+                                if !group.allow_tcp_relay {
+                                    continue;
+                                }
+
                                 let flow_control_res = group_handle.flow_control.push(dst_virt_addr, packet.len() as u64);
 
                                 if flow_control_res == PushResult::Reject {

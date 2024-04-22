@@ -15,7 +15,9 @@
       "address_range": "10.0.0.0/24",
       "flow_control_rules": [
         ["10.0.0.0/24", "10Mib"]
-      ]
+      ],
+      "allow_udp_relay": true,
+      "allow_tcp_relay": true
     }
   ]
 }
