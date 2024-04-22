@@ -1,3 +1,5 @@
+#![cfg_attr(all(target_os = "windows", feature = "gui"), windows_subsystem = "windows")]
+
 use std::process::ExitCode;
 use fubukil::{Args, launch};
 
