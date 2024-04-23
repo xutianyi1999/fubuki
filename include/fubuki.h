@@ -46,6 +46,8 @@ void fubuki_stop(struct FubukiHandle *handle);
 
 const char *fubuki_version();
 
+void interfaces_info(struct FubukiHandle *handle, char *interfaces_info_json);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

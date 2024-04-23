@@ -1,6 +1,6 @@
 use std::borrow::Cow;
-use std::ffi::{c_void, c_char, CString};
-use std::mem::{MaybeUninit, transmute};
+use std::ffi::{c_char, c_void};
+use std::mem::{transmute, MaybeUninit};
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -9,7 +9,8 @@ use anyhow::Result;
 use ipnet::Ipv4Net;
 use libloading::{Library, Symbol};
 
-use crate::node::{Interface, InterfaceInfo};
+use crate::ffi_export::generic_interfaces_info;
+use crate::node::Interface;
 use crate::routing_table::{Item, ItemKind, RoutingTable};
 
 #[repr(C)]
@@ -40,11 +41,11 @@ struct OptionC<T> {
     value: MaybeUninit<T>,
 }
 
-impl <T: Copy> Clone for OptionC<T> {
+impl<T: Copy> Clone for OptionC<T> {
     fn clone(&self) -> Self {
         OptionC {
             is_some: self.is_some,
-            value: self.value
+            value: self.value,
         }
     }
 }
@@ -69,7 +70,7 @@ impl<T> From<Option<T>> for OptionC<T> {
             Some(v) => OptionC {
                 is_some: true,
                 value: MaybeUninit::new(v),
-            }
+            },
         }
     }
 }
@@ -83,7 +84,7 @@ struct ExtendC {
 impl From<ExtendC> for super::Extend {
     fn from(value: ExtendC) -> Self {
         super::Extend {
-            item_kind: Option::from(value.item_kind)
+            item_kind: Option::from(value.item_kind),
         }
     }
 }
@@ -91,7 +92,7 @@ impl From<ExtendC> for super::Extend {
 impl From<super::Extend> for ExtendC {
     fn from(value: crate::routing_table::Extend) -> Self {
         ExtendC {
-            item_kind: OptionC::from(value.item_kind)
+            item_kind: OptionC::from(value.item_kind),
         }
     }
 }
@@ -128,24 +129,11 @@ impl From<Item> for ItemC {
 }
 
 pub struct Context<K> {
-    interfaces: OnceLock<Vec<Arc<Interface<K>>>>
+    interfaces: Arc<OnceLock<Vec<Arc<Interface<K>>>>>,
 }
 
-pub extern "C" fn interfaces_info<K>(
-    ctx: &Context<K>,
-    info_json: *mut c_char
-) {
-    let empty_interfaces = Vec::new();
-    let interfaces = ctx.interfaces.get().unwrap_or(&empty_interfaces);
-    let mut list = Vec::with_capacity(interfaces.len());
-
-    for inter in interfaces {
-        list.push(InterfaceInfo::from(&**inter));
-    }
-
-    let out = CString::new(serde_json::to_string(&list).unwrap()).unwrap();
-    let out = out.as_bytes_with_nul();
-    unsafe { std::ptr::copy(out.as_ptr(), info_json as *mut u8, out.len()) };
+pub extern "C" fn interfaces_info<K>(ctx: &Context<K>, info_json: *mut c_char) {
+    generic_interfaces_info(&ctx.interfaces, info_json)
 }
 
 type AddFn = extern "C" fn(handle: *mut c_void, item_c: ItemC);
@@ -157,7 +145,7 @@ type DropFn = extern "C" fn(*mut c_void);
 // self reference
 pub struct ExternalRoutingTable<K> {
     handle: *mut c_void,
-    ctx: Box<Context<K>>,
+    _ctx: Box<Context<K>>,
     _lib: Library,
     add_fn: Symbol<'static, AddFn>,
     remove_fn: Symbol<'static, RemoveFn>,
@@ -165,17 +153,11 @@ pub struct ExternalRoutingTable<K> {
     drop_fn: Symbol<'static, DropFn>,
 }
 
-unsafe impl <K: Send> Send for ExternalRoutingTable<K> {}
+unsafe impl<K: Send> Send for ExternalRoutingTable<K> {}
 
-unsafe impl <K: Sync> Sync for ExternalRoutingTable<K> {}
+unsafe impl<K: Sync> Sync for ExternalRoutingTable<K> {}
 
-impl <K> ExternalRoutingTable<K> {
-    pub fn update_interfaces(&self, interfaces: Vec<Arc<Interface<K>>>) {
-        let _ = self.ctx.interfaces.set(interfaces);
-    }
-}
-
-impl <K> RoutingTable for ExternalRoutingTable<K> {
+impl<K> RoutingTable for ExternalRoutingTable<K> {
     fn add(&mut self, item: Item) {
         (self.add_fn)(self.handle, ItemC::from(item))
     }
@@ -187,11 +169,11 @@ impl <K> RoutingTable for ExternalRoutingTable<K> {
 
     fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>> {
         let optc = (self.find_fn)(self.handle, u32::from(src), u32::from(to));
-        Option::<ItemC>::from(optc).map(|i| Cow::Owned(Item::from(i)) )
+        Option::<ItemC>::from(optc).map(|i| Cow::Owned(Item::from(i)))
     }
 }
 
-impl <K> Drop for ExternalRoutingTable<K> {
+impl<K> Drop for ExternalRoutingTable<K> {
     fn drop(&mut self) {
         (self.drop_fn)(self.handle);
     }
@@ -199,9 +181,10 @@ impl <K> Drop for ExternalRoutingTable<K> {
 
 pub fn create<K>(
     lib_path: &Path,
+    interfaces_hook: Arc<OnceLock<Vec<Arc<Interface<K>>>>>
 ) -> Result<ExternalRoutingTable<K>> {
     let ctx = Context::<K> {
-        interfaces: OnceLock::new()
+        interfaces: interfaces_hook,
     };
 
     let ctx = Box::new(ctx);
@@ -215,11 +198,14 @@ pub fn create<K>(
         let find_fn = transmute(lib.get::<FindFn>(b"find_route")?);
         let drop_fn = transmute(lib.get::<DropFn>(b"drop_routing_table")?);
 
-        let handle = create_fn(ctx.as_ref() as *const Context<K> as *const c_void, interfaces_info::<K> as *const c_void);
+        let handle = create_fn(
+            ctx.as_ref() as *const Context<K> as *const c_void,
+            interfaces_info::<K> as *const c_void,
+        );
 
         let rt = ExternalRoutingTable {
             handle,
-            ctx,
+            _ctx: ctx,
             _lib: lib,
             add_fn,
             remove_fn,

@@ -3,10 +3,12 @@ use std::future::Future;
 use std::net::Ipv4Addr;
 use std::ptr::null_mut;
 use std::slice;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
 
+use crate::node::{Interface, InterfaceInfo};
 use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
@@ -84,6 +86,7 @@ pub extern "C" fn if_to_fubuki(handle: *const Handle, packet: *const u8, len: us
 pub struct Handle {
     _rt: Runtime,
     if_to_fubuki_tx: Option<flume::Sender<Bytes>>,
+    interfaces: Arc<OnceLock<Vec<Arc<Interface<Key>>>>>
 }
 
 fn parse_config(node_config_json: *const c_char) -> Result<NodeConfigFinalize<Key>> {
@@ -116,15 +119,22 @@ fn fubuki_init_inner(
         if_to_fubuki_rx: rx,
     };
 
-    rt.spawn(async move {
-        if let Err(e) = node::start(c, bridge).await {
-            error!("{:?}", e);
+    let interfaces_hook = Arc::new(OnceLock::new());
+    
+    rt.spawn({
+        let ih = interfaces_hook.clone();
+
+        async move {
+            if let Err(e) = node::start(c, bridge, ih).await {
+                error!("{:?}", e);
+            }
         }
     });
 
     let h = Handle {
         _rt: rt,
         if_to_fubuki_tx: Some(tx),
+        interfaces: interfaces_hook
     };
     Ok(h)
 }
@@ -140,21 +150,28 @@ fn fubuki_init_with_tun(
     let rt = Runtime::new()?;
     logger_init()?;
 
-    rt.spawn(async move {
-        let fut = async {
-            // creating AsyncTun must be in the tokio runtime
-            let tun = crate::tun::create(tun_fd).context("failed to create tun")?;
-            node::start(c, tun).await
-        };
+    let interfaces_hook = Arc::new(OnceLock::new());
 
-        if let Err(e) = fut.await {
-            error!("{:?}", e);
+    rt.spawn({
+        let ih = interfaces_hook.clone();
+
+        async move {
+            let fut = async {
+                // creating AsyncTun must be in the tokio runtime
+                let tun = crate::tun::create(tun_fd).context("failed to create tun")?;
+                node::start(c, tun, ih).await
+            };
+    
+            if let Err(e) = fut.await {
+                error!("{:?}", e);
+            }
         }
     });
 
     let h = Handle {
         _rt: rt,
-        if_to_fubuki_tx: None
+        if_to_fubuki_tx: None,
+        interfaces: interfaces_hook
     };
     Ok(h)
 }
@@ -224,4 +241,27 @@ pub extern "C" fn fubuki_stop(handle: *mut Handle) {
 pub extern "C" fn fubuki_version() -> *const c_char {
     const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), '\0');
     VERSION.as_ptr() as *const c_char
+}
+
+pub extern "C" fn generic_interfaces_info<K>(
+    interfaces: &OnceLock<Vec<Arc<Interface<K>>>>,
+    info_json: *mut c_char
+) {
+    let empty_interfaces = Vec::new();
+    let interfaces = interfaces.get().unwrap_or(&empty_interfaces);
+    let mut list = Vec::with_capacity(interfaces.len());
+
+    for inter in interfaces {
+        list.push(InterfaceInfo::from(&**inter));
+    }
+
+    let out = CString::new(serde_json::to_string(&list).unwrap()).unwrap();
+    let out = out.as_bytes_with_nul();
+    unsafe { std::ptr::copy(out.as_ptr(), info_json as *mut u8, out.len()) };
+}
+
+#[no_mangle]
+pub extern "C" fn interfaces_info(handle: *const Handle, info_json: *mut c_char) {
+    let handle = unsafe { &*handle };
+    generic_interfaces_info(&handle.interfaces, info_json)
 }

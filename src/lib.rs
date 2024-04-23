@@ -549,6 +549,8 @@ pub fn launch(args: Args) -> Result<()> {
             match cmd {
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 NodeCmd::Daemon { config_path } => {
+                    use std::sync::{Arc, OnceLock};
+
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
                     let rt = Runtime::new()?;
@@ -556,7 +558,7 @@ pub fn launch(args: Args) -> Result<()> {
                     rt.block_on(async {
                         // creating AsyncTun must be in the tokio runtime
                         let tun = tun::create().context("failed to create tun")?;
-                        node::start(c, tun).await
+                        node::start(c, tun, Arc::new(OnceLock::new())).await
                     })?;
                 }
                 NodeCmd::Info { api, info_type } => {

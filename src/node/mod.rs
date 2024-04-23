@@ -3,7 +3,7 @@ use std::cell::SyncUnsafeCell;
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::{Deref, Range};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use std::path::Path;
@@ -1461,7 +1461,11 @@ where
     join.await?.with_context(|| format!("node {} tcp handler error", group.node_name))
 }
 
-pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
+pub async fn start<K, T>(
+    config: NodeConfigFinalize<K>, 
+    tun: T,
+    interfaces_hook: Arc<OnceLock<Vec<Arc<Interface<K>>>>>
+) -> Result<()>
     where
         K: Cipher + Send + Sync + Clone + 'static,
         T: TunDevice + Send + Sync + 'static,
@@ -1498,7 +1502,10 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
         #[cfg(unix)]
         const EXTRT_DLL_NAME: &str = "libfubukiextrt";
 
-        let mut rt = routing_table::external::create::<K>(&parent.join(Path::new(EXTRT_DLL_NAME)))?;
+        let mut rt = routing_table::external::create::<K>(
+            &parent.join(Path::new(EXTRT_DLL_NAME)),
+            interfaces_hook.clone()
+        )?;
         init_routing_table(&mut rt);
         RoutingTableEnum::External(SyncUnsafeCell::new(rt))
     } else {
@@ -1615,10 +1622,8 @@ pub async fn start<K, T>(config: NodeConfigFinalize<K>, tun: T) -> Result<()>
         }
     };
 
-    if let RoutingTableEnum::External(t) = &*rt {
-        unsafe { (*t.get()).update_interfaces(interfaces.clone()); }
-    }
-    
+    let _ = interfaces_hook.set(interfaces.clone());
+   
     let tun_handler_fut = tun_handler(tun, rt, interfaces.clone());
     future_list.push(Box::pin(tun_handler_fut));
     if !config.features.disable_api_server {
