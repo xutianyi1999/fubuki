@@ -64,8 +64,8 @@ fn bind_device<T: std::os::windows::io::AsSocket>(
     interface: &str,
     ipv6: bool,
 ) -> Result<()> {
-    use netconfig::sys::InterfaceExt;
     use std::os::windows::io::AsRawSocket;
+    use netconfig::sys::InterfaceExt;
 
     let index = netconfig::Interface::try_from_alias(interface)
         .and_then(|i| i.index())
@@ -96,6 +96,33 @@ fn bind_device<T: std::os::windows::io::AsSocket>(
     };
 
     Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub fn find_interface(ip: IpAddr) -> Result<String> {
+    use netconfig::sys::InterfaceExt;
+    
+    let ifs = netconfig::list_interfaces()
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    for inter in ifs {
+        let addrs = inter.addresses()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        for addr in addrs {
+            if addr.addr() == ip {
+                #[cfg(windows)]
+                let if_name = inter.alias();
+
+                #[cfg(unix)]
+                let if_name = inter.name();
+
+                return if_name.map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+            }
+        }
+    }
+
+    Err(io::Error::new(io::ErrorKind::InvalidInput, "interface not found"))
 }
 
 macro_rules! build_socket_ext {

@@ -415,6 +415,8 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                 if direction == Direction::Input && allow_packet_not_in_rules_send_to_kernel {
                     self.tun.send_packet(&buff[packet_range]).await.context("error send packet to tun")?;
                 }
+
+                debug!("tun handler: cannot find route {}->{}", src_addr, dst_addr);
                 return Ok(())
             },
             Some(v) => v,
@@ -674,7 +676,9 @@ where
                                         
                                         macro_rules! send {
                                             ($peer_addr: expr) => {
-                                                if !through_virtual_gateway(rt, SocketAddr::new(lan_ip_addr, 0), $peer_addr) {
+                                                if group.socket_bind_device.is_some() ||
+                                                !through_virtual_gateway(rt, SocketAddr::new(lan_ip_addr, 0), $peer_addr) 
+                                                {
                                                     socket.send_to(&packet, $peer_addr).await?;
                                                 }
                                             };
@@ -834,7 +838,7 @@ where
 
                                             if node.udp_status.load() == UdpStatus::Unavailable &&
                                                 hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                                !through_vgateway()
+                                                (group.socket_bind_device.is_some() || !through_vgateway())
                                             {
                                                 drop(hc_guard);
 
@@ -1022,14 +1026,24 @@ fn update_tun_addr<T, K, InterRT, ExternRt>(
     let update_route = |t: &mut dyn RoutingTable| {
         // update default tun route
         if cidr != old_cidr {
-            t.remove(&old_cidr);
+            if t.find(Ipv4Addr::UNSPECIFIED, old_cidr.addr())
+            .and_then(|v| v.extend.item_kind) == Some(ItemKind::VirtualRange) 
+            {
+                t.remove(&old_cidr);
+            }
+
             t.add(item.clone());
         }
 
         // update allowed_ips route
         if addr != old_addr {
             for i in &allowed_ips_item {
-                t.remove(&i.cidr);
+                if t.find(Ipv4Addr::UNSPECIFIED, i.cidr.addr())
+                .and_then(|v| v.extend.item_kind) == Some(ItemKind::AllowedIpsRoute) 
+                {
+                    t.remove(&i.cidr);
+                }
+               
                 t.add(i.clone());
             }
         }
@@ -1593,6 +1607,9 @@ pub async fn start<K, T>(
                 let route = Route::new(IpAddr::V4(cidr.network()), cidr.prefix_len())
                     .with_gateway(IpAddr::V4(*gateway))
                     .with_ifindex(tun_index);
+
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
+                let route = route.with_metric(1);
 
                 routes.push(route);
             }

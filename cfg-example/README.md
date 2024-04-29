@@ -84,7 +84,7 @@
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
     - allow_packet_forward(可选): 允许转发目标地址不是自己的数据包, 默认为true
     - allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
-    - socket_bind_device(可选): 监听的socket从指定网卡发送数据包
+    - socket_bind_device(可选): 监听的socket从指定网卡发送数据包, 在Windows上是`WLAN`、`Ethernet`类似的网卡名称, Linux上则是`eth0`类似网卡名称
 - features: 功能开关（可选）
     - disable\_api\_server: 禁用api server，默认为false
     - disable\_hosts\_operation: 禁用hosts文件操作，默认为false

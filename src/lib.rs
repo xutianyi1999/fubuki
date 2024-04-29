@@ -267,28 +267,27 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 .next()
                 .ok_or_else(|| anyhow!("{} lookup failed", group.server_addr))?;
 
-            let lan_ip_addr = if mode.is_use_udp() {
-                let lan_ip_addr = match group.lan_ip_addr {
-                    None => {
-                        get_interface_addr(resolve_server_addr)?
+            let lan_ip_addr = match group.lan_ip_addr {
+                None => {
+                    get_interface_addr(resolve_server_addr)?
+                }
+                Some(addr) => {
+                    if addr.is_loopback() {
+                        return Err(anyhow!("lan address cannot be a loopback address"));
                     }
-                    Some(addr) => {
-                        if addr.is_loopback() {
-                            return Err(anyhow!("lan address cannot be a loopback address"));
-                        }
 
-                        if addr.is_unspecified() {
-                            return Err(anyhow!("lan address cannot be unspecified address"));
-                        }
-                        addr
+                    if addr.is_unspecified() {
+                        return Err(anyhow!("lan address cannot be unspecified address"));
                     }
-                };
+                    addr
+                }
+            };
 
+            let group_use_udp = mode.is_use_udp();
+
+            if group_use_udp {
                 use_ipv6 |= lan_ip_addr.is_ipv6();
                 use_udp = true;
-                Some(lan_ip_addr)
-            } else {
-                None
             };
 
             let group_finalize = TargetGroupFinalize {
@@ -320,12 +319,22 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 },
                 mode,
                 specify_mode: group.specify_mode.unwrap_or_default(),
-                lan_ip_addr,
+                lan_ip_addr: ternary!(group_use_udp, Some(lan_ip_addr), None),
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
                 allow_packet_forward: group.allow_packet_forward.unwrap_or(true),
                 allow_packet_not_in_rules_send_to_kernel: group.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false),
-                socket_bind_device: group.socket_bind_device
+                socket_bind_device: {
+                    #[allow(unused_mut)]
+                    let mut bind = group.socket_bind_device;
+
+                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                    if bind.is_none() {
+                        let if_name = crate::common::net::find_interface(lan_ip_addr)?;
+                        bind = Some(if_name);
+                    }
+                    bind
+                }
             };
             list.push(group_finalize)
         }

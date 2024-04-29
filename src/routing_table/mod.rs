@@ -35,3 +35,23 @@ pub trait RoutingTable {
 
     fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>>;
 }
+
+#[test]
+fn test() {
+    use std::str::FromStr;
+
+    let mut router = internal::create();
+
+    router.add(Item {
+        cidr: Ipv4Net::from_str("0.0.0.0/0").unwrap(),
+        gateway: Ipv4Addr::from_str("10.0.199.2").unwrap(),
+        interface_index: 0,
+        extend: Extend {
+            item_kind: Some(ItemKind::IpsRoute)
+        }
+    });
+
+    let src = Ipv4Addr::UNSPECIFIED;
+    let dst = Ipv4Addr::from_str("1.1.1.1").unwrap();
+    assert!(router.find(src, dst).is_some());
+}
