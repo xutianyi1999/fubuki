@@ -1026,10 +1026,11 @@ fn update_tun_addr<T, K, InterRT, ExternRt>(
     let update_route = |t: &mut dyn RoutingTable| {
         // update default tun route
         if cidr != old_cidr {
-            if t.find(Ipv4Addr::UNSPECIFIED, old_cidr.addr())
-            .and_then(|v| v.extend.item_kind) == Some(ItemKind::VirtualRange) 
-            {
-                t.remove(&old_cidr);
+            // todo add method for finding routing item
+            if let Some(i) = t.remove(&old_cidr) {
+                if i.extend.item_kind != Some(ItemKind::VirtualRange) {
+                    t.add(i);
+                }
             }
 
             t.add(item.clone());
@@ -1038,10 +1039,10 @@ fn update_tun_addr<T, K, InterRT, ExternRt>(
         // update allowed_ips route
         if addr != old_addr {
             for i in &allowed_ips_item {
-                if t.find(Ipv4Addr::UNSPECIFIED, i.cidr.addr())
-                .and_then(|v| v.extend.item_kind) == Some(ItemKind::AllowedIpsRoute) 
-                {
-                    t.remove(&i.cidr);
+                if let Some(old_item) = t.remove(&i.cidr) {
+                    if old_item.extend.item_kind != Some(ItemKind::AllowedIpsRoute) {
+                        t.add(old_item);
+                    }
                 }
                
                 t.add(i.clone());
