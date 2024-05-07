@@ -10,6 +10,8 @@
   "reconnect_interval_secs": 3,
   "udp_socket_recv_buffer_size": 8192,
   "udp_socket_send_buffer_size": 8192,
+  "allow_packet_forward": true,
+  "allow_packet_not_in_rules_send_to_kernel": false,
   "groups": [
     {
       "node_name": "t1",
@@ -39,8 +41,6 @@
           "192.168.201.0/24"
         ]
       },
-      "allow_packet_forward": true,
-      "allow_packet_not_in_rules_send_to_kernel": false,
       "socket_bind_device": "eth0"
     }
   ],

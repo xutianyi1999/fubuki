@@ -13,6 +13,8 @@
   "reconnect_interval_secs": 3,
   "udp_socket_recv_buffer_size": 8192,
   "udp_socket_send_buffer_size": 8192,
+  "allow_packet_forward": true,
+  "allow_packet_not_in_rules_send_to_kernel": false,
   "groups": [
     {
       "node_name": "t1",
@@ -42,8 +44,6 @@
           "192.168.201.0/24"
         ]
       },
-      "allow_packet_forward": true,
-      "allow_packet_not_in_rules_send_to_kernel": false,
       "socket_bind_device": "eth0"
     }
   ],
@@ -67,6 +67,8 @@
 - reconnect_interval_secs(可选): TCP 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
+- allow_packet_forward(可选): 允许转发目标地址不是自己的数据包, 默认为true
+- allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
 - groups: 配置多组网段
     - node_name(可选): 节点名称, 默认主机名
     - server_addr: 该网段发现服务器与中转服务器地址
@@ -82,8 +84,6 @@
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
     - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
-    - allow_packet_forward(可选): 允许转发目标地址不是自己的数据包, 默认为true
-    - allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
     - socket_bind_device(可选): 监听的socket从指定网卡发送数据包, 在Windows上是`WLAN`、`Ethernet`类似的网卡名称, Linux上则是`eth0`类似网卡名称
 - features: 功能开关（可选）
     - disable\_api\_server: 禁用api server，默认为false

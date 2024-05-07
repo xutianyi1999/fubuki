@@ -1,17 +1,16 @@
 use std::borrow::Cow;
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 use std::mem::{transmute, MaybeUninit};
 use std::net::Ipv4Addr;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use anyhow::Result;
 use ipnet::Ipv4Net;
 use libloading::{Library, Symbol};
 
-use crate::ffi_export::generic_interfaces_info;
-use crate::node::Interface;
 use crate::routing_table::{Item, ItemKind, RoutingTable};
+use crate::{node, Context, ExternalContext};
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -128,24 +127,16 @@ impl From<Item> for ItemC {
     }
 }
 
-pub struct Context<K> {
-    interfaces: Arc<OnceLock<Vec<Arc<Interface<K>>>>>,
-}
-
-pub extern "C" fn interfaces_info<K>(ctx: &Context<K>, info_json: *mut c_char) {
-    generic_interfaces_info(&ctx.interfaces, info_json)
-}
-
 type AddFn = extern "C" fn(handle: *mut c_void, item_c: ItemC);
 type RemoveFn = extern "C" fn(handle: *mut c_void, cidr: *const CidrC) -> OptionC<ItemC>;
 type FindFn = extern "C" fn(handle: *mut c_void, src: u32, to: u32) -> OptionC<ItemC>;
-type CreateFn = extern "C" fn(ctx: *const c_void, interfaces_info_fn: *const c_void) -> *mut c_void;
+type CreateFn = extern "C" fn(ctx: ExternalContext) -> *mut c_void;
 type DropFn = extern "C" fn(*mut c_void);
 
 // self reference
 pub struct ExternalRoutingTable<K> {
     handle: *mut c_void,
-    _ctx: Box<Context<K>>,
+    _ctx: Arc<Context<K>>,
     _lib: Library,
     add_fn: Symbol<'static, AddFn>,
     remove_fn: Symbol<'static, RemoveFn>,
@@ -181,13 +172,13 @@ impl<K> Drop for ExternalRoutingTable<K> {
 
 pub fn create<K>(
     lib_path: &Path,
-    interfaces_hook: Arc<OnceLock<Vec<Arc<Interface<K>>>>>
+    ctx: Arc<Context<K>>
 ) -> Result<ExternalRoutingTable<K>> {
-    let ctx = Context::<K> {
-        interfaces: interfaces_hook,
+    let extern_ctx = ExternalContext {
+        ctx: Arc::as_ptr(&ctx) as *const c_void,
+        interfaces_info_fn: node::interfaces_info_query::<K> as *const c_void,
+        packet_send_fn: node::packet_send::<K> as *const c_void
     };
-
-    let ctx = Box::new(ctx);
 
     unsafe {
         let lib = Library::new(lib_path)?;
@@ -198,10 +189,7 @@ pub fn create<K>(
         let find_fn = transmute(lib.get::<FindFn>(b"find_route")?);
         let drop_fn = transmute(lib.get::<DropFn>(b"drop_routing_table")?);
 
-        let handle = create_fn(
-            ctx.as_ref() as *const Context<K> as *const c_void,
-            interfaces_info::<K> as *const c_void,
-        );
+        let handle = create_fn(extern_ctx);
 
         let rt = ExternalRoutingTable {
             handle,

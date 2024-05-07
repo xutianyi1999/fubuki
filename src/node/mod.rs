@@ -1,19 +1,21 @@
 use std::borrow::Cow;
 use std::cell::SyncUnsafeCell;
+use std::ffi::c_char;
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::{Deref, Range};
+use std::slice;
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use std::path::Path;
-
+use std::ffi::CString;
 use ahash::HashMap;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use ahash::{HashSet, HashSetExt};
 
-use anyhow::{anyhow, Context as AnyhowContext};
+use anyhow::{anyhow, Context as AnyhowContext, Error};
 use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
 use chrono::Utc;
@@ -39,7 +41,8 @@ use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::{Cipher, NodeConfigFinalize, NodeInfoType, ProtocolMode, routing_table, TargetGroupFinalize};
+use crate::common::hook::{Hooks, PacketRecvOutput};
+use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::CipherContext;
@@ -359,11 +362,13 @@ struct PacketSender<'a, InterRT, ExternRT, Tun, K> {
     rt_ref: RoutingTableRefEnum<'a, InterRT, ExternRT>,
     interfaces: &'a [&'a Interface<K>],
     nodes_cache: Vec<Cache<&'a ArcSwap<NodeList>, Arc<NodeList>>>,
-    tun: &'a Tun
+    tun: &'a Tun,
+    hooks: Option<&'a Hooks<K>>
 }
 
+#[repr(C)]
 #[derive(Copy, Clone, Eq, PartialEq)]
-enum Direction {
+pub enum Direction {
     Output,
     Input
 }
@@ -378,13 +383,15 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
     fn new(
         rt: &'a RoutingTableEnum<InterRT, ExternRT>,
         interfaces: &'a [&'a Interface<K>],
-        tun: &'a Tun
+        tun: &'a Tun,
+        hooks: Option<&'a Hooks<K>>
     ) -> Self {
         PacketSender {
             rt_ref: RoutingTableRefEnum::from(rt),
             interfaces,
             nodes_cache: interfaces.iter().map(|v| Cache::new(&v.node_list)).collect::<Vec<_>>(),
-            tun
+            tun,
+            hooks
         }
     }
 
@@ -398,12 +405,20 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
     ) -> Result<()> {
         let interfaces = self.interfaces;
 
-        let packet = &buff[packet_range.clone()];
+        let packet = &mut buff[packet_range.clone()];
 
         let (Ok(src_addr), Ok(dst_addr)) = (get_ip_src_addr(packet), get_ip_dst_addr(packet)) else {
             error!("Illegal ipv4 packet");
             return Ok(());
         };
+
+        if let Some(hooks) = self.hooks {
+            let output = hooks.packet_recv(direction, packet);
+
+            if output == PacketRecvOutput::Drop {
+                return Ok(());
+            }
+        }
 
         let opt = match &mut self.rt_ref {
             RoutingTableRefEnum::Cache(v) => find_route(&**v.load(), src_addr, dst_addr),
@@ -500,6 +515,7 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
     tun: T,
     routing_table: Arc<RoutingTableEnum<InterRT, ExternRT>>,
     interfaces: Vec<Arc<Interface<K>>>,
+    hooks: Option<Arc<Hooks<K>>>
 ) -> Result<()>
     where
         T: TunDevice + Clone + Send + Sync + 'static,
@@ -514,6 +530,7 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
             let tun = tun.clone();
             let routing_table = routing_table.clone();
             let interfaces = interfaces.clone();
+            let hooks = hooks.clone();
 
             let join: JoinHandle<Result<()>> = tokio::spawn(async move {
                 let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
@@ -522,6 +539,7 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
                     &*routing_table,
                     &interfaces,
                     &tun,
+                    hooks.as_deref()
                 );
 
                 let mut buff = vec![0u8; UDP_BUFF_SIZE];
@@ -572,6 +590,7 @@ async fn udp_handler<T, K, InterRT, ExternRT>(
     table: Arc<RoutingTableEnum<InterRT, ExternRT>>,
     interface: Arc<Interface<K>>,
     tun: T,
+    hooks: Option<Arc<Hooks<K>>>
 ) -> Result<()>
 where
     T: TunDevice + Clone + Send + Sync + 'static,
@@ -718,6 +737,7 @@ where
             let interface = interface.clone();
             let table = table.clone();
             let tun = tun.clone();
+            let hooks = hooks.clone();
 
             let join = tokio::spawn(async move {
                 let socket = interface.udp_socket.as_ref().expect("must need udp socket");
@@ -725,7 +745,7 @@ where
                 let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
                 let arr = [interface.as_ref()];
-                let mut sender = PacketSender::new(&*table, &arr, &tun);
+                let mut sender = PacketSender::new(&*table, &arr, &tun, hooks.as_deref());
                 let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
                 loop {
@@ -857,8 +877,8 @@ where
                                     Direction::Input,
                                     START_DATA..START_DATA + len,
                                     &mut buff,
-                                    group.allow_packet_forward,
-                                    group.allow_packet_not_in_rules_send_to_kernel
+                                    config.allow_packet_forward,
+                                    config.allow_packet_not_in_rules_send_to_kernel
                                 ).await?;
                             }
                             UdpMsg::Relay(_, _) => {
@@ -867,8 +887,8 @@ where
                                     Direction::Input,
                                     START_DATA..START_DATA + len,
                                     &mut buff,
-                                    group.allow_packet_forward,
-                                    group.allow_packet_not_in_rules_send_to_kernel
+                                    config.allow_packet_forward,
+                                    config.allow_packet_not_in_rules_send_to_kernel
                                 ).await?;
                             }
                         }
@@ -1087,7 +1107,8 @@ async fn tcp_handler<T, K, InterRT, ExternRt>(
     tun: T,
     channel_rx: Option<Receiver<Bytes>>,
     sys_routing: Option<Arc<tokio::sync::Mutex<SystemRouteHandle>>>,
-    routes: Vec<Route>
+    routes: Vec<Route>,
+    hooks: Option<Arc<Hooks<K>>>
 ) -> Result<()>
 where
     T: TunDevice + Clone + Send + Sync + 'static,
@@ -1221,7 +1242,7 @@ where
                                     is_add_nat.store(true, Ordering::Relaxed);
                                 }
                             }
-                            Result::<_, anyhow::Error>::Ok(())
+                            Result::<_, Error>::Ok(())
                         };
 
                         if let Err(e) = f() {
@@ -1272,11 +1293,12 @@ where
 
                     let tun = tun.clone();
                     let routing_table = routing_table.clone();
+                    let hooks = hooks.clone();
 
                     let join = tokio::spawn(async move {
                         let fut = async {
                             let arr = [interface.as_ref()];
-                            let mut sender = PacketSender::new(&*routing_table, &arr, &tun);
+                            let mut sender = PacketSender::new(&*routing_table, &arr, &tun, hooks.as_deref());
 
                             const START: usize = UDP_MSG_HEADER_LEN;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -1342,8 +1364,8 @@ where
                                             Direction::Input,
                                             DATA_START..DATA_START + data.len(),
                                             &mut buff,
-                                            group.allow_packet_forward,
-                                            group.allow_packet_not_in_rules_send_to_kernel
+                                            config.allow_packet_forward,
+                                            config.allow_packet_not_in_rules_send_to_kernel
                                         ).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
@@ -1450,7 +1472,7 @@ where
                 };
 
                 tokio::try_join!(recv_handler, send_handler, heartbeat_schedule)?;
-                Result::<_, anyhow::Error>::Ok(())
+                Result::<_, Error>::Ok(())
             };
 
             if let Err(e) = process.await {
@@ -1476,6 +1498,106 @@ where
     join.await?.with_context(|| format!("node {} tcp handler error", group.node_name))
 }
 
+pub extern "C" fn generic_interfaces_info<K>(
+    interfaces: &OnceLock<Vec<Arc<Interface<K>>>>,
+    info_json: *mut c_char
+) {
+    let empty_interfaces = Vec::new();
+    let interfaces = interfaces.get().unwrap_or(&empty_interfaces);
+    let mut list = Vec::with_capacity(interfaces.len());
+
+    for inter in interfaces {
+        list.push(InterfaceInfo::from(&**inter));
+    }
+
+    let out = CString::new(serde_json::to_string(&list).unwrap()).unwrap();
+    let out = out.as_bytes_with_nul();
+    unsafe { std::ptr::copy(out.as_ptr(), info_json as *mut u8, out.len()) };
+}
+
+pub extern "C" fn interfaces_info_query<K>(ctx: &Context<K>, info_json: *mut c_char) {
+    if let Some(ifs) = ctx.interfaces.as_deref() {
+        generic_interfaces_info(ifs, info_json)
+    }
+}
+
+pub extern "C" fn packet_send<K>(
+    ctx: &Context<K>,
+    direction: Direction,
+    packet: *const u8,
+    len: usize
+) {
+    if let Some(tx) = ctx.send_packet_chan.as_ref() {
+        let packet = unsafe { slice::from_raw_parts(packet, len) };
+        let mut buff = allocator::alloc(packet.len());
+        buff.copy_from_slice(packet);
+    
+        let _ = tx.try_send((direction, buff));
+    }
+}
+
+async fn send_packet_hook_handler<T, K, InterRT, ExternRT>(
+    config: &'static NodeConfigFinalize<K>,
+    send_packet_chan_rx: flume::Receiver<(Direction, Bytes)>,
+    tun: T,
+    routing_table: Arc<RoutingTableEnum<InterRT, ExternRT>>,
+    interfaces: Vec<Arc<Interface<K>>>,
+    hooks: Option<Arc<Hooks<K>>>
+) -> Result<()>
+    where
+        T: TunDevice + Clone + Send + Sync + 'static,
+        K: Cipher + Clone + Send + Sync + 'static,
+        InterRT: RoutingTable + Send + Sync + 'static,
+        ExternRT: RoutingTable + Send + Sync + 'static
+{
+    let join: JoinHandle<Result<()>> = tokio::spawn(async move {
+        let interfaces = interfaces.iter().map(|v| &**v).collect::<Vec<_>>();
+
+        let mut sender = PacketSender::new(
+            &*routing_table,
+            &interfaces,
+            &tun,
+            hooks.as_deref()
+        );
+
+        let mut buff = vec![0u8; UDP_BUFF_SIZE];
+
+        loop {
+            const START: usize = UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
+            let (direction, packet) = send_packet_chan_rx.recv_async().await?;
+
+            if packet.len() == 0 {
+                continue;
+            }
+
+            let packet_range = START..START + packet.len();
+            buff[packet_range.clone()].copy_from_slice(&packet);
+
+            match direction {
+                Direction::Input => {
+                    sender.send_packet(
+                        Direction::Input,
+                        packet_range,
+                        &mut buff,
+                        config.allow_packet_forward,
+                        config.allow_packet_not_in_rules_send_to_kernel
+                    ).await?;
+                }
+                Direction::Output => {
+                    sender.send_packet(
+                        Direction::Output,
+                        packet_range,
+                        &mut buff,
+                        true,
+                        false
+                    ).await?;
+                }
+            }
+        }
+    });
+    join.await?
+}
+
 pub async fn start<K, T>(
     config: NodeConfigFinalize<K>, 
     tun: T,
@@ -1488,6 +1610,30 @@ pub async fn start<K, T>(
     let config = &*Box::leak(Box::new(config));
     let tun = Arc::new(tun);
     tun.set_mtu(config.mtu)?;
+
+    let (send_packet_chan_tx, send_packet_chan_rx) = flume::bounded(1024);
+
+    let ctx = Context {
+        interfaces: Some(interfaces_hook.clone()),
+        send_packet_chan: Some(send_packet_chan_tx)
+    };
+
+    let curr = std::env::current_exe().ok();
+    let parent = curr.as_deref().and_then(|v| v.parent()).unwrap_or(Path::new(""));
+
+    let ctx = Arc::new(ctx);
+
+    let hooks = if config.enable_hook {
+        #[cfg(windows)]
+        const DLL_NAME: &str = "fubukihook";
+        #[cfg(unix)]
+        const DLL_NAME: &str = "libfubukhook";
+
+        let hooks = common::hook::open_hooks_dll(&parent.join(Path::new(DLL_NAME)), ctx.clone())?;
+        Some(Arc::new(hooks))
+    } else {
+        None
+    };
 
     let init_routing_table = |rt: &mut dyn RoutingTable| {
         for (index, group) in config.groups.iter().enumerate() {
@@ -1509,9 +1655,6 @@ pub async fn start<K, T>(
     };
 
     let rt = if config.external_routing_table {
-        let curr = std::env::current_exe().ok();
-        let parent = curr.as_deref().and_then(|v| v.parent()).unwrap_or(Path::new(""));
-
         #[cfg(windows)]
         const EXTRT_DLL_NAME: &str = "fubukiextrt";
         #[cfg(unix)]
@@ -1519,7 +1662,7 @@ pub async fn start<K, T>(
 
         let mut rt = routing_table::external::create::<K>(
             &parent.join(Path::new(EXTRT_DLL_NAME)),
-            interfaces_hook.clone()
+            ctx.clone()
         )?;
         init_routing_table(&mut rt);
         RoutingTableEnum::External(SyncUnsafeCell::new(rt))
@@ -1624,7 +1767,8 @@ pub async fn start<K, T>(
             tun.clone(),
             channel_rx,
             sys_routing.clone(),
-            routes
+            routes,
+            hooks.clone()
         );
         future_list.push(Box::pin(fut));
 
@@ -1635,6 +1779,7 @@ pub async fn start<K, T>(
                 rt.clone(),
                 interface,
                 tun.clone(),
+                hooks.clone()
             );
             future_list.push(Box::pin(fut));
         }
@@ -1642,10 +1787,17 @@ pub async fn start<K, T>(
 
     let _ = interfaces_hook.set(interfaces.clone());
    
-    let tun_handler_fut = tun_handler(tun, rt, interfaces.clone());
+    let tun_handler_fut = tun_handler(tun.clone(), rt.clone(), interfaces.clone(), hooks.clone());
     future_list.push(Box::pin(tun_handler_fut));
     if !config.features.disable_api_server {
-        future_list.push(Box::pin(api_start(config.api_addr, interfaces)));
+        future_list.push(Box::pin(api_start(config.api_addr, interfaces.clone())));
+    }
+
+    if Arc::strong_count(&ctx) > 1 {
+        future_list.push(Box::pin(send_packet_hook_handler(config, send_packet_chan_rx, tun, rt, interfaces, hooks)));
+    } else {
+        drop(ctx);
+        drop(send_packet_chan_rx);
     }
 
     let serve = futures_util::future::try_join_all(future_list);

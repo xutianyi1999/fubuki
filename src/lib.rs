@@ -9,17 +9,21 @@
 #[macro_use]
 extern crate log;
 
+use std::ffi::c_void;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use ahash::HashMap;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context as AnhyowContext, Result};
 use clap::{Parser, Subcommand};
+use common::allocator::Bytes;
 use gethostname::gethostname;
 use ipnet::Ipv4Net;
 use log::LevelFilter;
+use node::{Direction, Interface};
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
 
@@ -47,8 +51,20 @@ mod ffi_export;
 
 type Key = CipherEnum;
 
+pub struct Context<K> {
+    interfaces: Option<Arc<OnceLock<Vec<Arc<Interface<K>>>>>>,
+    send_packet_chan: Option<flume::Sender<(Direction, Bytes)>>
+}
+
+#[repr(C)]
+pub struct ExternalContext {
+    ctx: *const c_void,
+    interfaces_info_fn: *const c_void,
+    packet_send_fn: *const c_void,
+}
+
 #[derive(Deserialize, Clone)]
-struct Group {
+struct Group { 
     name: String,
     listen_addr: SocketAddr,
     key: Option<String>,
@@ -172,8 +188,6 @@ struct TargetGroup {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
-    allow_packet_forward: Option<bool>,
-    allow_packet_not_in_rules_send_to_kernel: Option<bool>,
     socket_bind_device: Option<String>
 }
 
@@ -191,6 +205,9 @@ struct NodeConfig {
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
     external_routing_table: Option<bool>,
+    allow_packet_forward: Option<bool>,
+    allow_packet_not_in_rules_send_to_kernel: Option<bool>,
+    enable_hook: Option<bool>,
     groups: Vec<TargetGroup>,
     features: Option<NodeConfigFeature>,
 }
@@ -214,8 +231,6 @@ struct TargetGroupFinalize<K> {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
-    allow_packet_forward: bool,
-    allow_packet_not_in_rules_send_to_kernel: bool,
     socket_bind_device: Option<String>
 }
 
@@ -233,6 +248,9 @@ struct NodeConfigFinalize<K> {
     udp_socket_recv_buffer_size: Option<usize>,
     udp_socket_send_buffer_size: Option<usize>,
     external_routing_table: bool,
+    allow_packet_forward: bool,
+    allow_packet_not_in_rules_send_to_kernel: bool,
+    enable_hook: bool,
     groups: Vec<TargetGroupFinalize<K>>,
     features: NodeConfigFeatureFinalize,
 }
@@ -322,8 +340,6 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 lan_ip_addr: ternary!(group_use_udp, Some(lan_ip_addr), None),
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
-                allow_packet_forward: group.allow_packet_forward.unwrap_or(true),
-                allow_packet_not_in_rules_send_to_kernel: group.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false),
                 socket_bind_device: {
                     #[allow(unused_mut)]
                     let mut bind = group.socket_bind_device;
@@ -373,6 +389,9 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             udp_socket_send_buffer_size: config.udp_socket_send_buffer_size,
             groups: list,
             external_routing_table: config.external_routing_table.unwrap_or(false),
+            allow_packet_forward: config.allow_packet_forward.unwrap_or(true),
+            allow_packet_not_in_rules_send_to_kernel: config.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false),
+            enable_hook: config.enable_hook.unwrap_or(false),
             features: {
                 let features = config.features.as_ref();
 
@@ -558,8 +577,6 @@ pub fn launch(args: Args) -> Result<()> {
             match cmd {
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 NodeCmd::Daemon { config_path } => {
-                    use std::sync::{Arc, OnceLock};
-
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
                     let rt = Runtime::new()?;

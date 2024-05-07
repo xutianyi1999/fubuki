@@ -4,6 +4,7 @@ use chrono::{DateTime, Local, Utc};
 pub mod cipher;
 pub mod net;
 pub mod allocator;
+pub mod hook;
 
 macro_rules! ternary {
     ($condition: expr, $_true: expr, $_false: expr) => {

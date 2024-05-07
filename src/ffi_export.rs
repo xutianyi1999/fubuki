@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
 
-use crate::node::{Interface, InterfaceInfo};
+use crate::node::{generic_interfaces_info, Interface};
 use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
@@ -241,23 +241,6 @@ pub extern "C" fn fubuki_stop(handle: *mut Handle) {
 pub extern "C" fn fubuki_version() -> *const c_char {
     const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), '\0');
     VERSION.as_ptr() as *const c_char
-}
-
-pub extern "C" fn generic_interfaces_info<K>(
-    interfaces: &OnceLock<Vec<Arc<Interface<K>>>>,
-    info_json: *mut c_char
-) {
-    let empty_interfaces = Vec::new();
-    let interfaces = interfaces.get().unwrap_or(&empty_interfaces);
-    let mut list = Vec::with_capacity(interfaces.len());
-
-    for inter in interfaces {
-        list.push(InterfaceInfo::from(&**inter));
-    }
-
-    let out = CString::new(serde_json::to_string(&list).unwrap()).unwrap();
-    let out = out.as_bytes_with_nul();
-    unsafe { std::ptr::copy(out.as_ptr(), info_json as *mut u8, out.len()) };
 }
 
 #[no_mangle]
