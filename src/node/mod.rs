@@ -1787,14 +1787,14 @@ pub async fn start<K, T>(
 
     let _ = interfaces_hook.set(interfaces.clone());
    
-    let tun_handler_fut = tun_handler(tun.clone(), rt.clone(), interfaces.clone(), hooks.clone());
+    let tun_handler_fut = tun_handler(tun.clone(), rt.clone(), interfaces.clone(), hooks);
     future_list.push(Box::pin(tun_handler_fut));
     if !config.features.disable_api_server {
         future_list.push(Box::pin(api_start(config.api_addr, interfaces.clone())));
     }
 
     if Arc::strong_count(&ctx) > 1 {
-        future_list.push(Box::pin(send_packet_hook_handler(config, send_packet_chan_rx, tun, rt, interfaces, hooks)));
+        future_list.push(Box::pin(send_packet_hook_handler(config, send_packet_chan_rx, tun, rt, interfaces, None)));
     } else {
         drop(ctx);
         drop(send_packet_chan_rx);
