@@ -100,6 +100,7 @@ fn bind_device<T: std::os::windows::io::AsSocket>(
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub fn find_interface(ip: IpAddr) -> Result<String> {
+    #[allow(unused_imports)]
     use netconfig::sys::InterfaceExt;
     
     let ifs = netconfig::list_interfaces()
