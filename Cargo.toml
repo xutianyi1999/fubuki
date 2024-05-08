@@ -52,7 +52,7 @@ mimalloc = { version = "*", default-features = false, optional = true }
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }
 hostsfile = { git = "https://github.com/tonarino/innernet.git" }
-klask = { git = "https://github.com/xosxos/klask.git", optional = true }
+klask = { git = "https://github.com/xutianyi1999/klask.git", optional = true }
 log4rs = "1"
 
 [target.'cfg(target_os = "android")'.dependencies]
