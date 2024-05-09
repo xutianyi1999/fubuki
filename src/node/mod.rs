@@ -349,11 +349,19 @@ enum TransferType {
 
 fn find_route<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, mut dst_addr: Ipv4Addr) -> Option<(Ipv4Addr, Cow<Item>)> {
     let mut item = rt.find(src_addr, dst_addr)?;
+    let mut count = 1;
 
     // is route on link
     while item.gateway != Ipv4Addr::UNSPECIFIED {
+        // too many hops, possibly loop routing
+        if count > 5 {
+            return None;
+        }
+        
         dst_addr = item.gateway;
         item = rt.find(src_addr, dst_addr)?;
+
+        count += 1;
     }
     Some((dst_addr, item))
 }
