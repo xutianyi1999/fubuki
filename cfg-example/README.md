@@ -13,8 +13,10 @@
   "reconnect_interval_secs": 3,
   "udp_socket_recv_buffer_size": 8192,
   "udp_socket_send_buffer_size": 8192,
+  "external_routing_table": false,
   "allow_packet_forward": true,
   "allow_packet_not_in_rules_send_to_kernel": false,
+  "enable_hook": false,
   "groups": [
     {
       "node_name": "t1",
@@ -67,8 +69,10 @@
 - reconnect_interval_secs(可选): TCP 重连间隔，默认3秒
 - udp_socket_recv_buffer_size(可选): UDP socket 接收缓冲区，默认为系统默认值
 - udp_socket_send_buffer_size(可选): UDP socket 发送缓冲区，默认为系统默认值
+- external_routing_table(可选): 外部路由表, 路径为程序同目录`fubukiextrt`(Windows)的动态库, Unix平台为`libfubukiextrt`，[实现细节](https://github.com/xutianyi1999/fubuki/blob/master/src/routing_table/external.rs)
 - allow_packet_forward(可选): 允许转发目标地址不是自己的数据包, 默认为true
 - allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
+- enable_hook(可选): 外部钩子, 路径为程序同目录`fubukihook`(Windows)的动态库, Unix平台为`libfubukhook`，[实现细节](https://github.com/xutianyi1999/fubuki/blob/master/src/common/hook.rs)
 - groups: 配置多组网段
     - node_name(可选): 节点名称, 默认主机名
     - server_addr: 该网段发现服务器与中转服务器地址
