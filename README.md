@@ -43,19 +43,16 @@ Options:
 
 - 必须以管理员权限运行
 - 需要wintun.dll(https://www.wintun.net) 与程序同目录或System32下
-- 启用`allowed_ips`配置项时系统须支持`NetNat`命令
 
 ##### Linux
 
 - 必须以root权限运行
 - 内核需支持tun模块
-- 启用`allowed_ips`配置项时系统须支持`iptables`
 
 ##### macOS
 
 - 必须以root权限运行
 - 内核需支持tun模块
-- 启用`allowed_ips`配置项时系统须支持`pfctl`
 
 ### Fubuki server
 

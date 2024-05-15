@@ -17,6 +17,8 @@
   "allow_packet_forward": true,
   "allow_packet_not_in_rules_send_to_kernel": false,
   "enable_hook": false,
+  "socket_bind_device": "eth0",
+  "cross_nat": false,
   "groups": [
     {
       "node_name": "t1",
@@ -45,8 +47,7 @@
         "10.0.0.2": [
           "192.168.201.0/24"
         ]
-      },
-      "socket_bind_device": "eth0"
+      }
     }
   ],
   "features": {
@@ -73,6 +74,8 @@
 - allow_packet_forward(可选): 允许转发目标地址不是自己的数据包, 默认为true
 - allow_packet_not_in_rules_send_to_kernel(可选): 允许目标地址不符合规则的包写入内核, 默认为false
 - enable_hook(可选): 外部钩子, 路径为程序同目录`fubukihook`(Windows)的动态库, Unix平台为`libfubukhook`，[实现细节](https://github.com/xutianyi1999/fubuki/blob/master/src/common/hook.rs)
+- socket_bind_device(可选): 监听的socket从指定网卡发送数据包, 在Windows上是`WLAN`、`Ethernet`类似的网卡名称, Linux上则是`eth0`类似网卡名称
+- cross_nat(可选): 用于替换当前平台系统nat组件, 推荐在系统nat不可用时启用, 仅在配置`allowed_ips`时生效, 默认为false
 - groups: 配置多组网段
     - node_name(可选): 节点名称, 默认主机名
     - server_addr: 该网段发现服务器与中转服务器地址
@@ -88,7 +91,6 @@
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
     - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
-    - socket_bind_device(可选): 监听的socket从指定网卡发送数据包, 在Windows上是`WLAN`、`Ethernet`类似的网卡名称, Linux上则是`eth0`类似网卡名称
 - features: 功能开关（可选）
     - disable\_api\_server: 禁用api server，默认为false
     - disable\_hosts\_operation: 禁用hosts文件操作，默认为false

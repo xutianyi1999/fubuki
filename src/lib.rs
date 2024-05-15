@@ -188,7 +188,6 @@ struct TargetGroup {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
-    socket_bind_device: Option<String>
 }
 
 #[derive(Deserialize, Clone)]
@@ -208,6 +207,9 @@ struct NodeConfig {
     allow_packet_forward: Option<bool>,
     allow_packet_not_in_rules_send_to_kernel: Option<bool>,
     enable_hook: Option<bool>,
+    socket_bind_device: Option<String>,
+    #[cfg(feature = "cross-nat")]
+    cross_nat: Option<bool>,
     groups: Vec<TargetGroup>,
     features: Option<NodeConfigFeature>,
 }
@@ -231,7 +233,6 @@ struct TargetGroupFinalize<K> {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
-    socket_bind_device: Option<String>
 }
 
 #[derive(Clone)]
@@ -251,6 +252,9 @@ struct NodeConfigFinalize<K> {
     allow_packet_forward: bool,
     allow_packet_not_in_rules_send_to_kernel: bool,
     enable_hook: bool,
+    socket_bind_device: Option<String>,
+    #[cfg(feature = "cross-nat")]
+    cross_nat: bool,
     groups: Vec<TargetGroupFinalize<K>>,
     features: NodeConfigFeatureFinalize,
 }
@@ -340,17 +344,6 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 lan_ip_addr: ternary!(group_use_udp, Some(lan_ip_addr), None),
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
-                socket_bind_device: {
-                    #[allow(unused_mut)]
-                    let mut bind = group.socket_bind_device;
-
-                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-                    if bind.is_none() {
-                        let if_name = crate::common::net::find_interface(lan_ip_addr)?;
-                        bind = Some(if_name);
-                    }
-                    bind
-                }
             };
             list.push(group_finalize)
         }
@@ -392,6 +385,20 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             allow_packet_forward: config.allow_packet_forward.unwrap_or(true),
             allow_packet_not_in_rules_send_to_kernel: config.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false),
             enable_hook: config.enable_hook.unwrap_or(false),
+            #[cfg(feature = "cross-nat")]
+            cross_nat: config.cross_nat.unwrap_or(false),
+            socket_bind_device: {
+                #[allow(unused_mut)]
+                let mut bind = config.socket_bind_device;
+
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                if bind.is_none() {
+                    let lan = get_interface_addr(SocketAddr::new([1, 1, 1, 1].into(), 53))?;
+                    let if_name = crate::common::net::find_interface(lan)?;
+                    bind = Some(if_name);
+                }
+                bind
+            },
             features: {
                 let features = config.features.as_ref();
 
