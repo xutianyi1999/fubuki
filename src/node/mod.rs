@@ -1181,10 +1181,16 @@ where
         // todo requires Arc + Mutex to pass compile
         let channel_rx = channel_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
 
-        #[cfg(feature = "cross-nat")]
-        let native_nat = snat.none();
+        #[cfg(all(
+            feature = "cross-nat",
+            any(target_os = "windows", target_os = "linux", target_os = "macos")
+        ))]
+        let native_nat = snat.is_none();
 
-        #[cfg(not(feature = "cross-nat"))]
+        #[cfg(all(
+            not(feature = "cross-nat"),
+            any(target_os = "windows", target_os = "linux", target_os = "macos")
+        ))]
         let native_nat = true;
 
         defer! {

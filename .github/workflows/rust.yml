@@ -23,49 +23,49 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             build_tool: cargo
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           - target: aarch64-apple-darwin
             os: macos-latest
             build_tool: cargo
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           # windows
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           - target: i686-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           # linux
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           - target: i686-unknown-linux-musl
             os: ubuntu-latest
-            build_tool: cargo
-            features: web
+            build_tool: cargo-zigbuild
+            features: web, mimalloc, cross-nat
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
           - target: armv7-unknown-linux-musleabihf
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, mimalloc
+            features: web, mimalloc, cross-nat
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -112,7 +112,7 @@ jobs:
           cargo install cross --git https://github.com/cross-rs/cross
           
           echo "build ${{ matrix.target }}"
-          cross +nightly build --lib --release --no-default-features --target ${{ matrix.target }}
+          cross +nightly build --lib --release --no-default-features --features "cross-nat" --target ${{ matrix.target }}
           
           cd target/${{ matrix.target }}/release
           tar -czf libfubuki-${{ matrix.target }}.tar.gz libfubukil.so
