@@ -162,6 +162,8 @@ async fn tcp_inbound_handler(
                     TcpSocket::new_v6()?
                 };
 
+                crate::common::net::SocketExt::set_keepalive(&socket)?;
+
                 if let Some(device) = bind_device.as_deref() {
                     SocketExt::bind_device(&socket, device, remote_addr.is_ipv6())?;
                 }
