@@ -23,10 +23,7 @@ use crate::{
     common::{
         cipher::Cipher,
         hook::Hooks,
-        net::{
-            protocol::{VirtualAddr, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN},
-            SocketExt,
-        },
+        net::protocol::{VirtualAddr, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN},
     },
     routing_table::RoutingTable,
     tun::TunDevice,
@@ -40,7 +37,6 @@ pub struct SNat {
 
 async fn udp_inbound_handler(
     udp_inbound: Box<netstack_lwip::UdpSocket>,
-    bind_device: Option<Arc<String>>,
 ) -> Result<()> {
     let mapping: Arc<ArcSwap<Vec<Arc<(SocketAddr, UdpSocket, AtomicI64)>>>> =
         Arc::new(ArcSwap::from_pointee(Vec::new()));
@@ -67,10 +63,6 @@ async fn udp_inbound_handler(
                 };
 
                 let to_socket = UdpSocket::bind(bind_addr).await?;
-
-                if let Some(device) = bind_device.as_deref() {
-                    SocketExt::bind_device(&to_socket, device, to.is_ipv6())?;
-                }
 
                 insert_item = Arc::new((from, to_socket, AtomicI64::new(Utc::now().timestamp())));
 
@@ -149,11 +141,8 @@ async fn udp_inbound_handler(
 
 async fn tcp_inbound_handler(
     mut listener: netstack_lwip::TcpListener,
-    bind_device: Option<Arc<String>>,
 ) -> Result<()> {
     while let Some((mut inbound_stream, _local_addr, remote_addr)) = listener.next().await {
-        let bind_device = bind_device.clone();
-
         tokio::spawn(async move {
             let fut = async {
                 let socket = if remote_addr.is_ipv4() {
@@ -163,10 +152,6 @@ async fn tcp_inbound_handler(
                 };
 
                 crate::common::net::SocketExt::set_keepalive(&socket)?;
-
-                if let Some(device) = bind_device.as_deref() {
-                    SocketExt::bind_device(&socket, device, remote_addr.is_ipv6())?;
-                }
 
                 let mut outbound_stream = socket
                     .connect(remote_addr)
@@ -241,7 +226,6 @@ impl SNat {
         interfaces: Arc<OnceLock<Vec<Arc<Interface<K>>>>>,
         tun: T,
         hooks: Option<Arc<Hooks<K>>>,
-        bind_device: Option<String>,
     ) -> Result<Self>
     where
         T: TunDevice + Clone + Send + Sync + 'static,
@@ -249,14 +233,12 @@ impl SNat {
         InterRT: RoutingTable + Send + Sync + 'static,
         ExternRT: RoutingTable + Send + Sync + 'static,
     {
-        let bind_device = bind_device.map(Arc::new);
         let (stack, tcp_listener, udp_socket) = netstack_lwip::NetStack::new()?;
         let (stack_sink, stack_stream) = stack.split();
 
         tokio::spawn({
-            let bind_device = bind_device.clone();
             async move {
-                if let Err(e) = tcp_inbound_handler(tcp_listener, bind_device).await {
+                if let Err(e) = tcp_inbound_handler(tcp_listener).await {
                     error!("tcp_inbound_handler error: {:?}", e);
                 }
                 error!("tcp_inbound_handler exited");
@@ -264,7 +246,7 @@ impl SNat {
         });
 
         tokio::spawn(async move {
-            if let Err(e) = udp_inbound_handler(udp_socket, bind_device).await {
+            if let Err(e) = udp_inbound_handler(udp_socket).await {
                 error!("udp_inbound_handler error: {:?}", e);
             }
             error!("udp_inbound_handler exited");

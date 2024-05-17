@@ -275,6 +275,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
         let mut list = Vec::with_capacity(config.groups.len());
         let mut use_ipv6 = false;
         let mut use_udp = false;
+        let mut use_gateway = false;
 
         for group in config.groups {
             let mode = group.mode.unwrap_or_default();
@@ -304,6 +305,14 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                     addr
                 }
             };
+
+            if let Some(map) = group.ips.as_ref() {
+                for items in map.values() {
+                    for x in items {
+                        use_gateway |= *x == Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).unwrap();
+                    }
+                }
+            }
 
             let group_use_udp = mode.is_use_udp();
 
@@ -392,7 +401,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 let mut bind = config.socket_bind_device;
 
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-                if bind.is_none() {
+                if bind.is_none() && use_gateway {
                     let lan = get_interface_addr(SocketAddr::new([1, 1, 1, 1].into(), 53))?;
                     let if_name = crate::common::net::find_interface(lan)?;
                     bind = Some(if_name);

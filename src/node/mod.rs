@@ -1772,7 +1772,6 @@ pub async fn start<K, T>(
             interfaces_hook.clone(), 
             tun.clone(), 
             hooks.clone(), 
-            config.socket_bind_device.clone()
         )?;
         Some(Arc::new(snat))
     } else {
