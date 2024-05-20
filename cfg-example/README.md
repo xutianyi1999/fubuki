@@ -28,7 +28,6 @@
         "netmask": "255.255.255.0"
       },
       "key": "123",
-      "enable_key_rotation": false,
       "mode": {
         "p2p": ["UDP"],
         "relay": ["UDP", "TCP"]
@@ -83,7 +82,6 @@
         - ip: 节点IP地址
         - netmask: 子网掩码
     - key(可选): 预共享密钥, 不设置则不开启加密
-    - enable_key_rotation(可选): 基于时间的密钥轮换，要求节点之间的系统时间尽可能的同步, 默认为false
     - mode(可选): 数据传输方式，默认直连为UDP，中转优先使用UDP，备选TCP
         - p2p: 直连的协议，目前仅支持UDP
         - relay: 中转的协议，支持UDP与TCP
@@ -113,7 +111,6 @@
       "name": "group1",
       "listen_addr": "0.0.0.0:12345",
       "key": "123",
-      "enable_key_rotation": false,
       "address_range": "10.0.0.0/24",
       "flow_control_rules": [
         ["10.0.0.0/24", "10Mib"]
@@ -136,7 +133,6 @@
     - name: 组名称
     - listen_addr: 监听地址
     - key(可选): 预共享密钥, 不设置则不开启加密
-    - enable_key_rotation(可选): 基于时间的密钥轮换，要求节点之间的系统时间尽可能的同步, 默认为false
     - address_range: 网段
     - flow_control_rules(可选): 目标网段中转流量规则, 只限制目标下行
       - ["目标网段", "单个节点每秒流量"]

@@ -25,7 +25,6 @@
         "netmask": "255.255.255.0"
       },
       "key": "123",
-      "enable_key_rotation": false,
       "mode": {
         "p2p": ["UDP"],
         "relay": ["UDP", "TCP"]

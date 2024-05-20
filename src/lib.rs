@@ -27,7 +27,7 @@ use node::{Direction, Interface};
 use serde::{de, Deserialize};
 use tokio::runtime::Runtime;
 
-use crate::common::cipher::{Cipher, CipherEnum, NoOpCipher, RotationCipher, XorCipher};
+use crate::common::cipher::{Cipher, CipherEnum, NoOpCipher, XorCipher};
 use crate::common::net::get_interface_addr;
 use crate::common::net::protocol::{NetProtocol, ProtocolMode, SERVER_VIRTUAL_ADDR, VirtualAddr};
 
@@ -68,7 +68,6 @@ struct Group {
     name: String,
     listen_addr: SocketAddr,
     key: Option<String>,
-    enable_key_rotation: Option<bool>,
     address_range: Ipv4Net,
     flow_control_rules: Option<Vec<(Ipv4Net, byte_unit::Byte)>>,
     allow_udp_relay: Option<bool>,
@@ -150,7 +149,6 @@ impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
                             let key = group.key.as_ref().map(|v| v.as_bytes());
                             match key {
                                 None => CipherEnum::NoOpCipher(NoOpCipher{}),
-                                Some(k) if group.enable_key_rotation == Some(true) => CipherEnum::RotationCipher(RotationCipher::from(k)),
                                 Some(k) => CipherEnum::XorCipher(XorCipher::from(k))
                             }
                         },
@@ -182,7 +180,6 @@ struct TargetGroup {
     server_addr: String,
     tun_addr: Option<TunAddr>,
     key: Option<String>,
-    enable_key_rotation: Option<bool>,
     mode: Option<ProtocolMode>,
     specify_mode: Option<HashMap<VirtualAddr, ProtocolMode>>,
     lan_ip_addr: Option<IpAddr>,
@@ -344,7 +341,6 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                     let key = group.key.as_ref().map(|v| v.as_bytes());
                     match key {
                         None => CipherEnum::NoOpCipher(NoOpCipher{}),
-                        Some(k) if group.enable_key_rotation == Some(true) => CipherEnum::RotationCipher(RotationCipher::from(k)),
                         Some(k) => CipherEnum::XorCipher(XorCipher::from(k))
                     }
                 },

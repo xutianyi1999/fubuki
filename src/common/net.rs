@@ -732,8 +732,6 @@ pub mod protocol {
 
             let mut ctx = cipher::CipherContext {
                 offset: 0,
-                expect_prefix: Some(&[MAGIC_NUM]),
-                key_timestamp: None,
             };
             key.decrypt(&mut buff[..4], &mut ctx);
 
@@ -750,7 +748,6 @@ pub mod protocol {
             rx.read_exact(buff).await?;
 
             ctx.offset = 4;
-            ctx.expect_prefix = None;
             key.decrypt(buff, &mut ctx);
             TcpMsg::decode(mode, buff).map(Some)
         }
