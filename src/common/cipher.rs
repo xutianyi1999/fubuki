@@ -1,34 +1,39 @@
 use std::cmp::min;
 use std::simd::u8x32;
 
-use digest::Digest;
-use sha2::Sha256;
-
 pub struct CipherContext {
     pub offset: usize,
+    pub nonce: u16
 }
 
 impl Default for CipherContext {
     fn default() -> Self {
         CipherContext {
             offset: 0,
+            nonce: 0
         }
     }
 }
 
 pub trait Cipher {
-    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &mut CipherContext);
+    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &CipherContext);
 
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext);
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &CipherContext);
 }
 
 #[derive(Clone, Copy)]
 pub struct XorCipher {
-    key: u8x32,
+    basekey: [u8; 32],
 }
 
 impl Cipher for XorCipher {
-    fn encrypt(&self, mut data: &mut [u8], context: &mut CipherContext) {
+    fn encrypt(&self, mut data: &mut [u8], context: &CipherContext) {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.basekey);
+        hasher.update(&context.nonce.to_be_bytes());
+        let out = hasher.finalize();
+        let key = u8x32::from_array(*out.as_bytes());
+
         let offset = context.offset;
         let v = offset % 32;
 
@@ -37,36 +42,34 @@ impl Cipher for XorCipher {
             data = r;
 
             l.iter_mut()
-                .zip(&self.key.as_array()[v..])
+                .zip(&key.as_array()[v..])
                 .for_each(|(a, b)| *a ^= b);
         }
 
         while data.len() >= 32 {
             let (l, r) = data.split_first_chunk_mut::<32>().unwrap();
             data = r;
-            let new = u8x32::from_array(*l) ^ self.key;
+            let new = u8x32::from_array(*l) ^ key;
             *l = *new.as_array();
         }
 
         data.iter_mut()
-            .zip(self.key.as_array())
+            .zip(key.as_array())
             .for_each(|(a, b)| *a ^= b);
     }
 
     #[inline]
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext) {
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &CipherContext) {
         self.encrypt(ciphertext_to_plaintext, context)
     }
 }
 
 impl From<&[u8]> for XorCipher {
     fn from(value: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(value);
-        let out = hasher.finalize();
+        let out = blake3::hash(value);
 
         XorCipher {
-            key: u8x32::from_slice(out.as_slice())
+            basekey: *out.as_bytes()
         }
     }
 }
@@ -81,9 +84,9 @@ impl From<&[u8]> for NoOpCipher {
 }
 
 impl Cipher for NoOpCipher {
-    fn encrypt(&self, _plaintext_to_ciphertext: &mut [u8], _context: &mut CipherContext) {}
+    fn encrypt(&self, _plaintext_to_ciphertext: &mut [u8], _context: &CipherContext) {}
 
-    fn decrypt(&self, _ciphertext_to_plaintext: &mut [u8], _context: &mut CipherContext) {}
+    fn decrypt(&self, _ciphertext_to_plaintext: &mut [u8], _context: &CipherContext) {}
 }
 
 #[derive(Clone)]
@@ -93,14 +96,14 @@ pub enum CipherEnum {
 }
 
 impl Cipher for CipherEnum {
-    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &mut CipherContext) {
+    fn encrypt(&self, plaintext_to_ciphertext: &mut [u8], context: &CipherContext) {
         match self {
             CipherEnum::XorCipher(k) => k.encrypt(plaintext_to_ciphertext, context),
             CipherEnum::NoOpCipher(k) => k.encrypt(plaintext_to_ciphertext, context),
         }
     }
 
-    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &mut CipherContext) {
+    fn decrypt(&self, ciphertext_to_plaintext: &mut [u8], context: &CipherContext) {
         match self {
             CipherEnum::XorCipher(k) => k.decrypt(ciphertext_to_plaintext, context),
             CipherEnum::NoOpCipher(k) => k.decrypt(ciphertext_to_plaintext, context),
@@ -113,10 +116,11 @@ fn test() {
     let k = XorCipher::try_from(b"abc".as_ref()).unwrap();
     let mut text = *b"abcdef";
 
-    k.encrypt(&mut text, &mut CipherContext::default());
-    k.decrypt(&mut text[..2], &mut CipherContext::default());
-    k.decrypt(&mut text[2..], &mut CipherContext {
+    k.encrypt(&mut text, &CipherContext::default());
+    k.decrypt(&mut text[..2], &CipherContext::default());
+    k.decrypt(&mut text[2..], &CipherContext {
         offset: 2,
+        nonce: 0
     });
 
     assert_eq!(&text, b"abcdef");

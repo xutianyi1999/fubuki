@@ -272,6 +272,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
         let mut list = Vec::with_capacity(config.groups.len());
         let mut use_ipv6 = false;
         let mut use_udp = false;
+        #[allow(unused)]
         let mut use_gateway = false;
 
         for group in config.groups {
@@ -357,11 +358,11 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             mtu: config.mtu.unwrap_or({
                 if use_udp {
                     if use_ipv6 {
-                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 40byte IPV6 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
-                        1426
+                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 40byte IPV6 HEADER - 8byte UDP HEADER - 4byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
+                        1424
                     } else {
-                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 2byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
-                        1446
+                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 4byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
+                        1444
                     }
                 } else {
                     1500

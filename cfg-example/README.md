@@ -2,7 +2,7 @@
 
 ```json
 {
-  "mtu": 1446,
+  "mtu": 1444,
   "channel_limit": 100,
   "api_addr": "127.0.0.1:3030",
   "tcp_heartbeat_interval_secs": 5,
@@ -58,7 +58,7 @@
 }
 ```
 
-- mtu(可选): MTU，IPV4默认1446，IPV6默认1426
+- mtu(可选): MTU，IPV4默认1444，IPV6默认1424
 - channel_limit(可选): 从TUN转发至server的队列大小，超过limit丢包，默认100
 - api_addr(可选): API监听地址，默认`127.0.0.1:3030`
 - tcp_heartbeat_interval_secs(可选): TCP 心跳包发送间隔，默认5秒

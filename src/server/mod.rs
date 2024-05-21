@@ -15,6 +15,7 @@ use hyper_util::rt::TokioIo;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::{sync, time};
 use tokio::io::BufReader;
@@ -25,7 +26,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use crate::{GroupFinalize, ServerInfoType};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
-use crate::common::cipher::{Cipher, CipherContext};
+use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, HeartbeatCache, HeartbeatInfo, PushResult, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::server::api::api_start;
@@ -163,22 +164,23 @@ impl From<&GroupHandle> for GroupInfo {
 async fn udp_handler<K: Cipher + Clone + Send + Sync>(
     group: &'static GroupFinalize<K>,
     socket: Arc<UdpSocket>,
-    key: K,
     group_handle: Arc<GroupHandle>,
     heartbeat_interval: Duration,
     packet_loss_limit: u64,
     packet_continuous_recv: u64,
     notified: watch::Receiver<()>
 ) -> Result<()> {
+    let key = &group.key;
+
     let heartbeat_schedule = async {
         let group_handle = group_handle.clone();
-        let key = key.clone();
         let socket = socket.clone();
         let mut notified = notified.clone();
 
         tokio::spawn(async move {
             let fut = async {
                 let mut buff = [0u8; UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
+                let mut rng = rand::rngs::SmallRng::from_entropy();
 
                 loop {
                     let mut list = Vec::new();
@@ -209,9 +211,8 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     };
 
                     for (sock_addr, seq) in list {
-                        let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
+                        let len = UdpMsg::heartbeat_encode(key, rng.gen(), SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
                         let packet = &mut buff[..len];
-                        key.encrypt(packet, &mut CipherContext::default());
                         let res = socket.send_to(packet, sock_addr).await;
 
                         if let Err(e) = res {
@@ -232,13 +233,13 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
     let recv_handler = async {
         let group_handle = group_handle.clone();
-        let key = key.clone();
         let socket = socket.clone();
         let mut notified = notified.clone();
 
         tokio::spawn(async move {
             let fut = async {
                 let mut buff = vec![0u8; UDP_BUFF_SIZE];
+                let mut rng = rand::rngs::SmallRng::from_entropy();
 
                 loop {
                     let (len, peer_addr) = match socket.recv_from(&mut buff).await {
@@ -250,11 +251,8 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     };
 
                     let packet = &mut buff[..len];
-                    key.decrypt(packet, &mut CipherContext {
-                        offset: 0,
-                    });
 
-                    let msg = match UdpMsg::decode(packet) {
+                    let msg = match UdpMsg::decode(key, packet) {
                         Ok(msg) => msg,
                         Err(e) => {
                             error!("group {} receive udp message error: {:?}", group.name, e);
@@ -285,9 +283,8 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             };
 
                             if is_known {
-                                let len = UdpMsg::heartbeat_encode(SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
+                                let len = UdpMsg::heartbeat_encode(key, rng.gen(), SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
                                 let packet = &mut buff[..len];
-                                key.encrypt(packet, &mut CipherContext::default());
                                 socket.send_to(packet, peer_addr).await?;
                             }
                         }
@@ -331,15 +328,15 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                         match np {
                                             NetProtocol::TCP => {
                                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + data.len());
-                                                TcpMsg::relay_encode(dst_virt_addr, data.len(), &mut buff);
                                                 buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(data);
+                                                TcpMsg::relay_encode(key, rng.gen(), dst_virt_addr, data.len(), &mut buff);
 
                                                 match handle.tx.try_send(buff) {
                                                     Ok(_) => {
                                                         if log::max_level() >= log::Level::Debug {
                                                             let f = || {
-                                                                let src = get_ip_src_addr(packet)?;
-                                                                let dst = get_ip_dst_addr(packet)?;
+                                                                let src = get_ip_src_addr(data)?;
+                                                                let dst = get_ip_dst_addr(data)?;
                                                                 Result::<_, anyhow::Error>::Ok((src, dst))
                                                             };
 
@@ -364,17 +361,17 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
                                                 if log::max_level() >= log::Level::Debug {
                                                     let f = || {
-                                                        let src = get_ip_src_addr(packet)?;
-                                                        let dst = get_ip_dst_addr(packet)?;
+                                                        let src = get_ip_src_addr(data)?;
+                                                        let dst = get_ip_dst_addr(data)?;
                                                         Result::<_, anyhow::Error>::Ok((src, dst))
                                                     };
 
                                                     if let Ok((src, dst)) = f() {
-                                                        debug!("group {} udp handler: tcp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
+                                                        debug!("group {} udp handler: udp message relay to {}; packet {}->{}", group.name, dst_virt_addr, src, dst);
                                                     }
                                                 }
 
-                                                key.encrypt(packet, &mut CipherContext::default());
+                                                UdpMsg::relay_encode(key, rng.gen(), dst_virt_addr, data.len(), packet);
                                                 fut = Some(socket.send_to(packet, dst_addr));
                                                 break;
                                             }
@@ -493,6 +490,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
         let buff = &mut allocator::alloc(1024);
         let stream = self.stream.as_mut().unwrap();
         let key = &self.group.key;
+        let mut rng = rand::rngs::SmallRng::from_entropy();
 
         loop {
             let nonce_pool = &self.nonce_pool;
@@ -503,16 +501,16 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                 TcpMsg::GetIdleVirtualAddr => {
                     let addr = self.address_pool.get_idle_addr()
                         .map(|v| (v, self.group.address_range));
-                    let len = TcpMsg::get_idle_virtual_addr_res_encode(addr, buff)?;
-                    TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+                    let len = TcpMsg::get_idle_virtual_addr_res_encode(key, rng.gen(), addr, buff)?;
+                    TcpMsg::write_msg(stream, &buff[..len]).await?;
                 }
                 TcpMsg::Register(msg) => {
                     let now = Utc::now().timestamp();
                     let remain = now - msg.register_time;
 
                     if !(-300..=300).contains(&remain) {
-                        let len = TcpMsg::register_res_encode(&Err(RegisterError::Timeout), buff)?;
-                        TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+                        let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::Timeout), buff)?;
+                        TcpMsg::write_msg(stream, &buff[..len]).await?;
                         return Err(anyhow!("register message timeout"));
                     }
 
@@ -528,8 +526,8 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     };
 
                     if !res {
-                        let len = TcpMsg::register_res_encode(&Err(RegisterError::NonceRepeat), buff)?;
-                        TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+                        let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::NonceRepeat), buff)?;
+                        TcpMsg::write_msg(stream, &buff[..len]).await?;
                         return Err(anyhow!("nonce repeat"));
                     }
 
@@ -541,8 +539,8 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     });
 
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
-                        let len = TcpMsg::register_res_encode(&Err(RegisterError::InvalidVirtualAddress(e)), buff)?;
-                        TcpMsg::write_msg(stream, key, &mut buff[..len]).await?;
+                        let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::InvalidVirtualAddress(e)), buff)?;
+                        TcpMsg::write_msg(stream, &buff[..len]).await?;
                         return Err(anyhow!(e))
                     };
 
@@ -568,8 +566,8 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                         allow_tcp_relay: self.group.allow_tcp_relay
                     };
 
-                    let len = TcpMsg::register_res_encode(&Ok(gc), buff)?;
-                    return TcpMsg::write_msg(stream, key, &mut buff[..len]).await;
+                    let len = TcpMsg::register_res_encode(key, rng.gen(), &Ok(gc), buff)?;
+                    return TcpMsg::write_msg(stream,  &buff[..len]).await;
                 }
                 _ => return Err(anyhow!("init message error")),
             }
@@ -598,15 +596,18 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
         let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
         let (_notify, notified) = sync::watch::channel(());
+        let key = &self.group.key;
 
         let heartbeat_schedule = async {
             let mut notified = notified.clone();
             let group_handle = self.group_handle.clone();
             let config = self.config;
             let local_channel_tx = local_channel_tx.clone();
-
+            
             tokio::spawn(async move {
                 let fut = async {
+                    let mut rng = rand::rngs::SmallRng::from_entropy();
+
                     loop {
                         let seq = {
                             let guard = group_handle.mapping.read();
@@ -628,7 +629,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                         };
 
                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
+                        TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Req, &mut buff);
 
                         local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
                         tokio::time::sleep(config.tcp_heartbeat_interval).await;
@@ -648,15 +649,15 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
             let udp_socket = self.udp_socket.clone();
             let group = self.group;
             let local_channel_tx = local_channel_tx.clone();
-            let key = self.group.key.clone();
 
             tokio::spawn(async move {
                 let fut = async {
                     let mut buff = vec![0u8; TCP_BUFF_SIZE];
+                    let mut rng = rand::rngs::SmallRng::from_entropy();
 
                     loop {
                         let sub_buff = &mut buff[UDP_MSG_HEADER_LEN..];
-                        let msg = TcpMsg::read_msg(&mut rx, &key, sub_buff).await?;
+                        let msg = TcpMsg::read_msg(&mut rx, key, sub_buff).await?;
 
                         let msg = match msg {
                             None => return Ok(()),
@@ -686,8 +687,8 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                             match np {
                                                 NetProtocol::TCP => {
                                                     let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet.len());
-                                                    TcpMsg::relay_encode(dst_virt_addr, packet.len(), &mut buff);
                                                     buff[TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()..].copy_from_slice(packet);
+                                                    TcpMsg::relay_encode(key, rng.gen(), dst_virt_addr, packet.len(), &mut buff);
 
                                                     match handle.tx.try_send(buff) {
                                                         Ok(_) => {
@@ -711,8 +712,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                                     drop(guard);
 
                                                     let packet_len = packet.len();
-                                                    let len = UdpMsg::relay_encode(dst_virt_addr, packet_len, &mut buff);
-                                                    key.encrypt(&mut buff[..len], &mut CipherContext::default());
+                                                    let len = UdpMsg::relay_encode(key, rng.gen(), dst_virt_addr, packet_len, &mut buff);
 
                                                     fut = Some(udp_socket.send_to(&buff[..len], addr));
                                                     break;
@@ -728,7 +728,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                             }
                             TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                                TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
+                                TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Resp, &mut buff);
 
                                 local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
                             }
@@ -752,10 +752,10 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
         let send_handler = async {
             let mut notified = notified.clone();
-            let key = self.group.key.clone();
 
             tokio::spawn(async move {
                 let mut buff = vec![0u8; TCP_BUFF_SIZE];
+                let mut rng = rand::rngs::SmallRng::from_entropy();
 
                 loop {
                     tokio::select! {
@@ -765,16 +765,16 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                             }
 
                             let node_list: Arc<NodeMap> = bridge.watch_rx.borrow().clone();
-                            let len = TcpMsg::node_map_encode(&node_list, &mut buff)?;
-                            TcpMsg::write_msg(&mut tx, &key, &mut buff[..len]).await?;
+                            let len = TcpMsg::node_map_encode(key, rng.gen(), &node_list, &mut buff)?;
+                            TcpMsg::write_msg(&mut tx, &buff[..len]).await?;
                         }
                         res = bridge.channel_rx.recv() => {
-                            let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
-                            TcpMsg::write_msg(&mut tx, &key, &mut buff).await?;
+                            let buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                            TcpMsg::write_msg(&mut tx, &buff).await?;
                         }
                         res = local_channel_rx.recv() => {
-                            let mut buff = res.ok_or_else(|| anyhow!("channel closed"))?;
-                            TcpMsg::write_msg(&mut tx, &key, &mut buff).await?;
+                            let buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                            TcpMsg::write_msg(&mut tx, &buff).await?;
                         }
                         _ = notified.changed() => return Err(anyhow!("abort task"))
                     }
@@ -899,7 +899,6 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
         group_handles.push(gh.clone());
 
         let fut = async {
-            let key = group.key.clone();
             let listen_addr = group.listen_addr;
 
             let udp_socket = UdpSocket::bind(listen_addr)
@@ -923,7 +922,6 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                 let fut = udp_handler(
                     group,
                     udp_socket.clone(),
-                    key,
                     gh1,
                     config.udp_heartbeat_interval,
                     config.udp_heartbeat_continuous_loss,

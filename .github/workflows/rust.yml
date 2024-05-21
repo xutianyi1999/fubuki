@@ -62,10 +62,11 @@ jobs:
             build_tool: cargo-zigbuild
             features: web, mimalloc, cross-nat
 
+          # todo libatomic not found when using mimalloc
           - target: armv7-unknown-linux-musleabihf
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, mimalloc, cross-nat
+            features: web, cross-nat
 
     runs-on: ${{ matrix.os }}
     steps:

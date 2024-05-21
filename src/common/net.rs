@@ -408,7 +408,7 @@ pub mod protocol {
     use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-    use crate::common::cipher;
+    use crate::common::cipher::{self, CipherContext};
     use crate::common::cipher::Cipher;
 
     pub type VirtualAddr = Ipv4Addr;
@@ -552,6 +552,8 @@ pub mod protocol {
         }
     }
 
+    // |  2  |    1    |     1     |    2   | dyn |
+    // |NONCE|MAGIC NUM|PACKET TYPE|DATA LEN|DATA|
     pub enum TcpMsg<'a> {
         GetIdleVirtualAddr,
         // ip address, cidr
@@ -565,23 +567,37 @@ pub mod protocol {
         Heartbeat(Seq, HeartbeatType),
     }
 
-    pub const TCP_MSG_HEADER_LEN: usize = 4;
+    pub const TCP_MSG_HEADER_LEN: usize = 6;
 
-    // |MAGIC NUM|PACKET TYPE|DATA LEN|DATA|
     impl TcpMsg<'_> {
-        pub fn get_idle_virtual_addr_encode(out: &mut [u8]) -> usize {
-            out[0] = MAGIC_NUM;
-            out[1] = GET_IDLE_VIRTUAL_ADDR;
-            out[2..4].copy_from_slice(&0u16.to_be_bytes());
+        pub fn get_idle_virtual_addr_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            out: &mut [u8]
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = GET_IDLE_VIRTUAL_ADDR;
+            out[4..6].copy_from_slice(&0u16.to_be_bytes());
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..TCP_MSG_HEADER_LEN], &ctx);
             TCP_MSG_HEADER_LEN
         }
 
-        pub fn get_idle_virtual_addr_res_encode(
+        pub fn get_idle_virtual_addr_res_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
             addr: Option<(VirtualAddr, Ipv4Net)>,
             out: &mut [u8],
         ) -> Result<usize> {
-            out[0] = MAGIC_NUM;
-            out[1] = GET_IDLE_VIRTUAL_ADDR_RES;
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = GET_IDLE_VIRTUAL_ADDR_RES;
 
             let size = bincode::encode_into_slice(
                 bincode::serde::Compat(addr),
@@ -589,82 +605,154 @@ pub mod protocol {
                 config::standard(),
             )?;
 
-            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
-            Ok(TCP_MSG_HEADER_LEN + size)
+            out[4..6].copy_from_slice(&(size as u16).to_be_bytes());
+            let ret = TCP_MSG_HEADER_LEN + size;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            Ok(ret)
         }
 
-        pub fn node_map_encode(
+        pub fn node_map_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
             node_map: &HashMap<VirtualAddr, Node>,
             out: &mut [u8],
         ) -> Result<usize> {
-            out[0] = MAGIC_NUM;
-            out[1] = NODE_MAP;
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = NODE_MAP;
 
             let size = bincode::encode_into_slice(
                 node_map,
                 &mut out[TCP_MSG_HEADER_LEN..],
                 config::standard(),
             )?;
-            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+            out[4..6].copy_from_slice(&(size as u16).to_be_bytes());
 
-            Ok(TCP_MSG_HEADER_LEN + size)
+            let ret = TCP_MSG_HEADER_LEN + size;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            Ok(ret)
         }
 
-        pub fn register_encode(register: &Register, out: &mut [u8]) -> Result<usize> {
-            out[0] = MAGIC_NUM;
-            out[1] = REGISTER;
+        pub fn register_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            register: &Register, 
+            out: &mut [u8]
+        ) -> Result<usize> {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = REGISTER;
 
             let size = bincode::encode_into_slice(
                 register,
                 &mut out[TCP_MSG_HEADER_LEN..],
                 config::standard(),
             )?;
-            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+            out[4..6].copy_from_slice(&(size as u16).to_be_bytes());
 
-            Ok(TCP_MSG_HEADER_LEN + size)
+            let ret = TCP_MSG_HEADER_LEN + size;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            Ok(ret)
         }
 
-        pub fn register_res_encode(
+        pub fn register_res_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
             register_res: &Result<GroupContent, RegisterError>,
             out: &mut [u8],
         ) -> Result<usize> {
-            out[0] = MAGIC_NUM;
-            out[1] = REGISTER_RESULT;
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = REGISTER_RESULT;
 
             let size = bincode::encode_into_slice(
                 register_res,
                 &mut out[TCP_MSG_HEADER_LEN..],
                 config::standard(),
             )?;
-            out[2..4].copy_from_slice(&(size as u16).to_be_bytes());
+            out[4..6].copy_from_slice(&(size as u16).to_be_bytes());
 
-            Ok(TCP_MSG_HEADER_LEN + size)
+            let ret = TCP_MSG_HEADER_LEN + size;
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            Ok(ret)
         }
 
-        pub fn relay_encode(to: VirtualAddr, packet_size: usize, out: &mut [u8]) -> usize {
-            out[0] = MAGIC_NUM;
-            out[1] = RELAY;
+        pub fn relay_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            to: VirtualAddr, 
+            packet_size: usize, 
+            out: &mut [u8]
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = RELAY;
 
             let data_size = size_of::<VirtualAddr>() + packet_size;
-            out[2..4].copy_from_slice(&(data_size as u16).to_be_bytes());
+            out[4..6].copy_from_slice(&(data_size as u16).to_be_bytes());
             out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<VirtualAddr>()]
                 .copy_from_slice(&to.octets());
 
-            TCP_MSG_HEADER_LEN + data_size
+            let ret = TCP_MSG_HEADER_LEN + data_size;
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            ret
         }
 
-        pub fn heartbeat_encode(seq: Seq, heartbeat_type: HeartbeatType, out: &mut [u8]) -> usize {
-            out[0] = MAGIC_NUM;
-            out[1] = HEARTBEAT;
+        pub fn heartbeat_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            seq: Seq, 
+            heartbeat_type: HeartbeatType, 
+            out: &mut [u8]
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = HEARTBEAT;
 
             const DATA_SIZE: usize = size_of::<Seq>() + size_of::<HeartbeatType>();
 
-            out[2..4].copy_from_slice(&(DATA_SIZE as u16).to_be_bytes());
+            out[4..6].copy_from_slice(&(DATA_SIZE as u16).to_be_bytes());
             out[TCP_MSG_HEADER_LEN..TCP_MSG_HEADER_LEN + size_of::<Seq>()]
                 .copy_from_slice(&seq.to_be_bytes());
             out[TCP_MSG_HEADER_LEN + size_of::<Seq>()] = heartbeat_type as u8;
 
-            TCP_MSG_HEADER_LEN + DATA_SIZE
+            const RET: usize = TCP_MSG_HEADER_LEN + DATA_SIZE;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..RET], &ctx);
+            RET
         }
 
         fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
@@ -726,14 +814,20 @@ pub mod protocol {
             key: &K,
             buff: &'a mut [u8],
         ) -> Result<Option<TcpMsg<'a>>> {
-            if rx.read_exact(&mut buff[..4]).await.is_err() {
-                return Ok(None);
-            }
+            let nonce_res = rx.read_u16().await;
+
+            let nonce = match nonce_res {
+                Ok(nonce) => nonce,
+                Err(_) => return Ok(None)
+            };
+
+            rx.read_exact(&mut buff[..4]).await?;
 
             let mut ctx = cipher::CipherContext {
                 offset: 0,
+                nonce
             };
-            key.decrypt(&mut buff[..4], &mut ctx);
+            key.decrypt(&mut buff[..4], &ctx);
 
             if buff[0] != MAGIC_NUM {
                 return Err(anyhow!("magic number miss match"));
@@ -748,68 +842,126 @@ pub mod protocol {
             rx.read_exact(buff).await?;
 
             ctx.offset = 4;
-            key.decrypt(buff, &mut ctx);
+            key.decrypt(buff, &ctx);
             TcpMsg::decode(mode, buff).map(Some)
         }
 
-        pub async fn write_msg<Tx: AsyncWrite + Unpin, K: Cipher>(
+        pub async fn write_msg<Tx: AsyncWrite + Unpin>(
             tx: &mut Tx,
-            key: &K,
-            input: &mut [u8],
+            input: &[u8],
         ) -> Result<()> {
-            key.encrypt(input, &mut cipher::CipherContext::default());
             tx.write_all(input).await?;
             Ok(())
         }
     }
 
+    // |  2  |    1    | 1  | dyn |
+    // |NONCE|MAGIC NUM|MODE|DATA |
     pub enum UdpMsg<'a> {
         // todo Heartbeat(from, to, seq, type)
         Heartbeat(VirtualAddr, Seq, HeartbeatType),
         #[allow(unused)]
-        Data(&'a [u8]),
+        Data(&'a mut [u8]),
         // todo remove relay
-        Relay(VirtualAddr, &'a [u8]),
+        Relay(VirtualAddr, &'a mut [u8]),
     }
 
-    pub const UDP_MSG_HEADER_LEN: usize = 2;
+    pub const UDP_MSG_HEADER_LEN: usize = 4;
 
     impl UdpMsg<'_> {
-        pub fn heartbeat_encode(
+        pub fn heartbeat_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
             addr: VirtualAddr,
             seq: Seq,
             heartbeat_type: HeartbeatType,
             out: &mut [u8],
         ) -> usize {
-            out[0] = MAGIC_NUM;
-            out[1] = HEARTBEAT;
-            out[2..6].copy_from_slice(&addr.octets());
-            out[6..10].copy_from_slice(&seq.to_be_bytes());
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = HEARTBEAT;
+            out[4..8].copy_from_slice(&addr.octets());
+            out[8..12].copy_from_slice(&seq.to_be_bytes());
 
-            out[10] = heartbeat_type as u8;
-            UDP_MSG_HEADER_LEN
-                + size_of::<VirtualAddr>()
-                + size_of::<Seq>()
-                + size_of::<HeartbeatType>()
+            out[12] = heartbeat_type as u8;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            const RET: usize = UDP_MSG_HEADER_LEN
+            + size_of::<VirtualAddr>()
+            + size_of::<Seq>()
+            + size_of::<HeartbeatType>();
+
+            key.encrypt(&mut out[2..RET], &ctx);
+
+            RET
         }
 
-        pub fn data_encode(packet_len: usize, out: &mut [u8]) -> usize {
-            out[0] = MAGIC_NUM;
-            out[1] = DATA;
-            UDP_MSG_HEADER_LEN + packet_len
+        pub fn data_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            packet_len: usize, 
+            out: &mut [u8]
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = DATA;
+
+            let ret = UDP_MSG_HEADER_LEN + packet_len;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+            key.encrypt(&mut out[2..ret], &ctx);
+
+            ret
         }
 
-        pub fn relay_encode(to: VirtualAddr, packet_len: usize, out: &mut [u8]) -> usize {
-            out[0] = MAGIC_NUM;
-            out[1] = RELAY;
-            out[2..6].copy_from_slice(&to.octets());
-            UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet_len
+        pub fn relay_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            to: VirtualAddr, 
+            packet_len: usize, 
+            out: &mut [u8]
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = RELAY;
+            out[4..8].copy_from_slice(&to.octets());
+
+            let ret = UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + packet_len;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+            key.encrypt(&mut out[2..ret], &ctx);
+
+            ret
         }
 
-        pub fn decode(packet: &[u8]) -> Result<UdpMsg> {
-            let magic_num = packet[0];
-            let mode = packet[1];
-            let data = &packet[2..];
+        pub fn decode<'a, K: Cipher>(
+            key: &K,
+            packet: &'a mut [u8]
+        ) -> Result<UdpMsg<'a>> {
+            let nonce_buf: &[u8; 2] = get!(packet, 0..2).try_into().unwrap();
+            let nonce = u16::from_be_bytes(*nonce_buf);
+
+            let packet = &mut packet[2..];
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+            key.decrypt(packet, &ctx);
+
+            let magic_num = *get!(packet, 0);
+            let mode = *get!(packet, 1);
+            let data = &mut packet[2..];
 
             if magic_num != MAGIC_NUM {
                 return Err(anyhow!("magic number miss match"));
@@ -822,7 +974,7 @@ pub mod protocol {
                     virtual_addr.copy_from_slice(get!(data, ..4));
                     let virtual_addr = VirtualAddr::from(virtual_addr);
 
-                    Ok(UdpMsg::Relay(virtual_addr, &data[4..]))
+                    Ok(UdpMsg::Relay(virtual_addr, &mut data[4..]))
                 }
                 HEARTBEAT => {
                     let mut virtual_addr = [0u8; 4];

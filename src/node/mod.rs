@@ -30,7 +30,7 @@ use linear_map::LinearMap;
 use sys_route::Route;
 use parking_lot::RwLock;
 use prettytable::{row, Table};
-use rand::random;
+use rand::{random, Rng, SeedableRng};
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -45,7 +45,6 @@ use crate::common::hook::{Hooks, PacketRecvOutput};
 use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
-use crate::common::cipher::CipherContext;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
 use crate::node::api::api_start;
@@ -264,6 +263,7 @@ async fn lookup_host(dst: &str) -> Option<SocketAddr> {
 }
 
 async fn send<K: Cipher>(
+    nonce: u16,
     inter: &Interface<K>,
     dst_node: &ExtendedNode,
     buff: &mut [u8],
@@ -283,8 +283,7 @@ async fn send<K: Cipher>(
             };
 
             let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
-            UdpMsg::data_encode(packet_range.len(), packet);
-            inter.key.encrypt(packet, &mut CipherContext::default());
+            UdpMsg::data_encode(&inter.key, nonce, packet_range.len(), packet);
             socket.send_to(packet, dst_addr).await?;
             return Ok(());
         }
@@ -303,8 +302,7 @@ async fn send<K: Cipher>(
                     let mut packet = allocator::alloc(DATA_START + packet_range.len());
                     packet[DATA_START..].copy_from_slice(&buff[packet_range.start..packet_range.end]);
 
-                    TcpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), &mut packet);
-                    inter.key.encrypt(&mut packet, &mut CipherContext::default());
+                    TcpMsg::relay_encode(&inter.key, nonce, dst_node.node.virtual_addr, packet_range.len(), &mut packet);
 
                     match tx.try_send(packet) {
                         Ok(_) => {
@@ -329,8 +327,7 @@ async fn send<K: Cipher>(
 
                     let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSG_HEADER_LEN..packet_range.end];
 
-                    UdpMsg::relay_encode(dst_node.node.virtual_addr, packet_range.len(), packet);
-                    inter.key.encrypt(packet, &mut CipherContext::default());
+                    UdpMsg::relay_encode(&inter.key, nonce, dst_node.node.virtual_addr, packet_range.len(), packet);
                     socket.send_to(packet, dst_addr).await?;
                     return Ok(())
                 }
@@ -379,7 +376,8 @@ struct PacketSender<'a, InterRT, ExternRT, Tun, K> {
     tun: &'a Tun,
     hooks: Option<&'a Hooks<K>>,
     #[cfg(feature = "cross-nat")]
-    snat: Option<Arc<cross_nat::SNat>>
+    snat: Option<&'a cross_nat::SNat>,
+    rng: rand::rngs::SmallRng
 }
 
 #[repr(C)]
@@ -402,7 +400,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
         tun: &'a Tun,
         hooks: Option<&'a Hooks<K>>,
         #[cfg(feature = "cross-nat")]
-        snat: Option<Arc<cross_nat::SNat>>
+        snat: Option<&'a cross_nat::SNat>
     ) -> Self {
         PacketSender {
             rt_ref: RoutingTableRefEnum::from(rt),
@@ -411,7 +409,8 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
             tun,
             hooks,
             #[cfg(feature = "cross-nat")]
-            snat
+            snat,
+            rng: rand::rngs::SmallRng::from_entropy()
         }
     }
 
@@ -441,7 +440,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
         }
 
         #[cfg(feature = "cross-nat")]
-        if let Some(snat) = self.snat.as_deref() {
+        if let Some(snat) = self.snat {
             let item = match &mut self.rt_ref {
                 RoutingTableRefEnum::Cache(v) => find_once(&**v.load(), src_addr, dst_addr),
                 RoutingTableRefEnum::Ref(v) => unsafe { find_once(&*v.get(), src_addr, dst_addr) }
@@ -516,7 +515,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                 if f {
                     match node_list.get_node(&addr) {
                         None => warn!("cannot find node {}", addr),
-                        Some(node) => send(interface, node, buff, packet_range).await?
+                        Some(node) => send(self.rng.gen(), interface, node, buff, packet_range).await?
                     };
                 }
             }
@@ -530,7 +529,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                                 continue;
                             }
 
-                            send(interface, node, buff, packet_range.clone()).await?;
+                            send(self.rng.gen(), interface, node, buff, packet_range.clone()).await?;
                         }
                     }
                     Direction::Input => {
@@ -577,7 +576,7 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
                     &tun,
                     hooks.as_deref(),
                     #[cfg(feature = "cross-nat")]
-                    snat
+                    snat.as_deref()
                 );
 
                 let mut buff = vec![0u8; UDP_BUFF_SIZE];
@@ -645,6 +644,7 @@ where
         let table = table.clone();
 
         let join = tokio::spawn(async move {
+            let mut rng = rand::rngs::SmallRng::from_entropy();
             let socket = interface.udp_socket.as_ref().expect("must need udp socket");
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
@@ -670,13 +670,14 @@ where
                     };
 
                     UdpMsg::heartbeat_encode(
+                        key,
+                        rng.gen(),
                         interface_addr,
                         seq,
                         HeartbeatType::Req,
                         &mut packet,
                     );
 
-                    key.encrypt(&mut packet, &mut CipherContext::default());
                     socket.send_to(&packet, &interface.server_addr).await?;
 
                     if is_p2p {
@@ -709,8 +710,14 @@ where
                                 hc.seq
                             };
 
-                            UdpMsg::heartbeat_encode(interface_addr, seq, HeartbeatType::Req, &mut packet);
-                            key.encrypt(&mut packet, &mut CipherContext::default());
+                            UdpMsg::heartbeat_encode(
+                                key,
+                                rng.gen(),
+                                interface_addr, 
+                                seq, 
+                                HeartbeatType::Req, 
+                                &mut packet
+                            );
 
                             match udp_status {
                                 UdpStatus::Available { dst_addr } if !is_over => {
@@ -782,6 +789,7 @@ where
             let snat = snat.clone();
 
             let join = tokio::spawn(async move {
+                let mut rng = rand::rngs::SmallRng::from_entropy();
                 let socket = interface.udp_socket.as_ref().expect("must need udp socket");
                 let key = &interface.key;
                 let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
@@ -793,7 +801,7 @@ where
                     &tun, 
                     hooks.as_deref(), 
                     #[cfg(feature = "cross-nat")]
-                    snat
+                    snat.as_deref()
                 );
                 let mut buff = vec![0u8; UDP_BUFF_SIZE];
 
@@ -822,11 +830,8 @@ where
                     };
 
                     let packet = &mut buff[START..START + len];
-                    key.decrypt(packet, &mut CipherContext {
-                        offset: 0,
-                    });
 
-                    if let Ok(packet) = UdpMsg::decode(packet) {
+                    if let Ok(packet) = UdpMsg::decode(key, packet) {
                         match packet {
                             UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Req) => {
                                 let mut is_known = false;
@@ -848,6 +853,8 @@ where
                                     let interface_addr = interface.addr.load();
 
                                     let len = UdpMsg::heartbeat_encode(
+                                        key,
+                                        rng.gen(),
                                         interface_addr,
                                         seq,
                                         HeartbeatType::Resp,
@@ -855,7 +862,6 @@ where
                                     );
 
                                     let packet = &mut buff[..len];
-                                    key.encrypt(packet, &mut CipherContext::default());
                                     socket.send_to(packet, peer_addr).await?;
                                 }
                             }
@@ -996,8 +1002,8 @@ where
         RegisterVirtualAddr::Manual(addr) => *addr,
         RegisterVirtualAddr::Auto(Some(addr)) => *addr,
         RegisterVirtualAddr::Auto(None) => {
-            let len = TcpMsg::get_idle_virtual_addr_encode(&mut buff);
-            TcpMsg::write_msg(&mut stream, key, &mut buff[..len]).await?;
+            let len = TcpMsg::get_idle_virtual_addr_encode(key, rand::random(), &mut buff);
+            TcpMsg::write_msg(&mut stream, &buff[..len]).await?;
 
             let msg = TcpMsg::read_msg(&mut stream, key, &mut buff).await?
                 .ok_or_else(|| anyhow!("server connection closed"))?;
@@ -1022,8 +1028,8 @@ where
         allowed_ips: group.allowed_ips.clone()
     };
 
-    let len = TcpMsg::register_encode(&reg, &mut buff)?;
-    TcpMsg::write_msg(&mut stream, key, &mut buff[..len]).await?;
+    let len = TcpMsg::register_encode(key, rand::random(), &reg, &mut buff)?;
+    TcpMsg::write_msg(&mut stream, &buff[..len]).await?;
 
     let ret = TcpMsg::read_msg(&mut stream, key, &mut buff).await?
         .ok_or_else(|| anyhow!("server connection closed"))?;
@@ -1369,8 +1375,10 @@ where
                                 &tun, 
                                 hooks.as_deref(), 
                                 #[cfg(feature = "cross-nat")]
-                                snat
+                                snat.as_deref()
                             );
+
+                            let mut rng = rand::rngs::SmallRng::from_entropy();
 
                             const START: usize = UDP_MSG_HEADER_LEN;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -1442,8 +1450,7 @@ where
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                                        TcpMsg::heartbeat_encode(seq, HeartbeatType::Resp, &mut buff);
-                                        key.encrypt(&mut buff, &mut CipherContext::default());
+                                        TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Resp, &mut buff);
 
                                         let res = inner_channel_tx
                                             .send(buff)
@@ -1512,6 +1519,8 @@ where
 
                     let join = tokio::spawn(async move {
                         let fut = async {
+                            let mut rng = rand::rngs::SmallRng::from_entropy();
+                            
                             loop {
                                 let seq = {
                                     let mut guard = interface.server_tcp_hc.write();
@@ -1526,8 +1535,7 @@ where
                                 };
 
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                                TcpMsg::heartbeat_encode(seq, HeartbeatType::Req, &mut buff);
-                                key.encrypt(&mut buff, &mut CipherContext::default());
+                                TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Req, &mut buff);
                                 inner_channel_tx.send(buff).map_err(|e| anyhow!(e.to_string()))?;
 
                                 tokio::time::sleep(config.tcp_heartbeat_interval).await;
@@ -1633,7 +1641,7 @@ async fn send_packet_hook_handler<T, K, InterRT, ExternRT>(
             &tun,
             hooks.as_deref(),
             #[cfg(feature = "cross-nat")]
-            snat
+            snat.as_deref()
         );
 
         let mut buff = vec![0u8; UDP_BUFF_SIZE];
