@@ -1,6 +1,6 @@
 [package]
 name = "fubuki"
-version = "0.5.8"
+version = "0.5.9"
 authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
