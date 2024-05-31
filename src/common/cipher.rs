@@ -26,13 +26,18 @@ pub struct XorCipher {
     basekey: [u8; 32],
 }
 
+fn key_mix(base_key: &mut [u8; 32], nonce: u8) {
+    for x in base_key {
+        *x ^= nonce;
+    }
+}
+
 impl Cipher for XorCipher {
     fn encrypt(&self, mut data: &mut [u8], context: &CipherContext) {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&self.basekey);
-        hasher.update(&context.nonce.to_be_bytes());
-        let out = hasher.finalize();
-        let key = u8x32::from_array(*out.as_bytes());
+        let mut key = self.basekey;
+        let nonce: [u8; 2] = context.nonce.to_be_bytes();
+        key_mix(&mut key, nonce[0] ^ nonce[1]);
+        let key = u8x32::from_array(key);
 
         let offset = context.offset;
         let v = offset % 32;
