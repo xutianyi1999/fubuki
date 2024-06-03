@@ -3,7 +3,6 @@
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(lazy_cell)]
 #![feature(sync_unsafe_cell)]
 
 #[macro_use]

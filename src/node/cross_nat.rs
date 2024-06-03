@@ -8,6 +8,7 @@ use std::{
     },
     time::Duration,
 };
+use std::pin::Pin;
 
 use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Cache};
@@ -36,7 +37,7 @@ pub struct SNat {
 }
 
 async fn udp_inbound_handler(
-    udp_inbound: Box<netstack_lwip::UdpSocket>,
+    udp_inbound: Pin<Box<netstack_lwip::UdpSocket>>,
 ) -> Result<()> {
     let mapping: Arc<ArcSwap<Vec<Arc<(SocketAddr, UdpSocket, AtomicI64)>>>> =
         Arc::new(ArcSwap::from_pointee(Vec::new()));
