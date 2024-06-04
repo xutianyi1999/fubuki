@@ -63,12 +63,12 @@ tempfile = "3"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))'.dependencies]
 tun = { git = "https://github.com/xutianyi1999/rust-tun.git", features = ["async"] }
-self_update = { version = "0.40", features = ["archive-tar", "compression-flate2"] }
+self_update = { version = "0.40", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
 windows = { version = "0.56", features = ["Win32_Networking_WinSock"] }
-self_update = { version = "0.40", features = ["archive-zip", "compression-zip-deflate"] }
+self_update = { version = "0.40", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"
