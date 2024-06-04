@@ -504,6 +504,14 @@ pub enum Args {
         #[command(subcommand)]
         cmd: NodeCmd
     },
+    /// update fubuki
+    Update {
+        #[arg(long, default_value = "xutianyi1999")]
+        repo_owner: String,
+
+        #[arg(long, default_value = "fubuki")]
+        repo_name: String
+    }
 }
 
 fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
@@ -611,6 +619,19 @@ pub fn launch(args: Args) -> Result<()> {
                     return Err(anyhow!("fubuki does not support the current platform"))
                 }
             }
+        }
+        Args::Update { repo_owner, repo_name } => {
+            let status = self_update::backends::github::Update::configure()
+                .repo_owner(&repo_owner)
+                .repo_name(&repo_name)
+                .bin_name("fubuki")
+                .show_download_progress(true)
+                .show_output(true)
+                .current_version(self_update::cargo_crate_version!())
+                .build()?
+                .update()?;
+
+            println!("{}", status);
         }
     }
     Ok(())

@@ -4,7 +4,7 @@ use std::ffi::c_char;
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::{Deref, Range};
-use std::slice;
+use std::{env, slice};
 use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
@@ -1708,12 +1708,8 @@ pub async fn start<K, T>(
     let ctx = Arc::new(ctx);
 
     let hooks = if config.enable_hook {
-        #[cfg(windows)]
-        const DLL_NAME: &str = "fubukihook";
-        #[cfg(unix)]
-        const DLL_NAME: &str = "libfubukhook";
-
-        let hooks = common::hook::open_hooks_dll(&parent.join(Path::new(DLL_NAME)), ctx.clone())?;
+        let dll_name = format!("{}fubukihook{}", env::consts::DLL_PREFIX, env::consts::DLL_SUFFIX);
+        let hooks = common::hook::open_hooks_dll(&parent.join(Path::new(&dll_name)), ctx.clone())?;
         Some(Arc::new(hooks))
     } else {
         None
@@ -1739,13 +1735,10 @@ pub async fn start<K, T>(
     };
 
     let rt = if config.external_routing_table {
-        #[cfg(windows)]
-        const EXTRT_DLL_NAME: &str = "fubukiextrt";
-        #[cfg(unix)]
-        const EXTRT_DLL_NAME: &str = "libfubukiextrt";
-
+        let dll_name = format!("{}fubukiextrt{}", env::consts::DLL_PREFIX, env::consts::DLL_SUFFIX);
+    
         let mut rt = routing_table::external::create::<K>(
-            &parent.join(Path::new(EXTRT_DLL_NAME)),
+            &parent.join(Path::new(&dll_name)),
             ctx.clone()
         )?;
         init_routing_table(&mut rt);
