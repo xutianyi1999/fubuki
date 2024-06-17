@@ -33,7 +33,7 @@ use crate::{
 use super::{Direction, Interface, PacketSender, RoutingTableEnum};
 
 pub struct SNat {
-    netstack_sink: tokio::sync::Mutex<SplitSink<NetStack, Vec<u8>>>,
+    netstack_sink: tokio::sync::Mutex<SplitSink<Pin<Box<NetStack>>, Vec<u8>>>,
 }
 
 async fn udp_inbound_handler(
@@ -141,7 +141,7 @@ async fn udp_inbound_handler(
 }
 
 async fn tcp_inbound_handler(
-    mut listener: netstack_lwip::TcpListener,
+    mut listener: Pin<Box<netstack_lwip::TcpListener>>,
 ) -> Result<()> {
     while let Some((mut inbound_stream, _local_addr, remote_addr)) = listener.next().await {
         tokio::spawn(async move {
@@ -172,7 +172,7 @@ async fn tcp_inbound_handler(
 }
 
 async fn netstatck_handler<T, K, InterRT, ExternRT>(
-    mut stack_stream: SplitStream<NetStack>,
+    mut stack_stream: SplitStream<Pin<Box<NetStack>>>,
     routing_table: Arc<RoutingTableEnum<InterRT, ExternRT>>,
     interfaces: Arc<OnceLock<Vec<Arc<Interface<K>>>>>,
     hooks: Option<Arc<Hooks<K>>>,
