@@ -540,7 +540,11 @@ fn logger_init() -> Result<()> {
         use log4rs::config::{Appender, Root};
         use log4rs::encode::pattern::PatternEncoder;
 
-        let pattern = if cfg!(debug_assertions) {
+        let log_level = LevelFilter::from_str(
+            std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+        )?;
+
+        let pattern = if log_level >= LevelFilter::Debug {
             "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {f}:{L} - {m}{n}"
         } else {
             "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}"
@@ -555,9 +559,7 @@ fn logger_init() -> Result<()> {
             .build(
                 Root::builder()
                     .appender("stdout")
-                    .build(LevelFilter::from_str(
-                        std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
-                    )?),
+                    .build(log_level),
             )?;
 
         log4rs::init_config(config)?;
