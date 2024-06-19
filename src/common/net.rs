@@ -79,7 +79,7 @@ fn bind_device<T: std::os::windows::io::AsSocket>(
                 windows::Win32::Networking::WinSock::SOCKET(raw as usize),
                 windows::Win32::Networking::WinSock::IPPROTO_IPV6.0,
                 windows::Win32::Networking::WinSock::IPV6_UNICAST_IF,
-                Some(&index.to_be_bytes()),
+                Some(&index.to_ne_bytes()),
             )
         } else {
             windows::Win32::Networking::WinSock::setsockopt(
