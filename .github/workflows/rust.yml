@@ -122,3 +122,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUSTUP_TOOLCHAIN: nightly
           CARGO_TERM_COLOR: always
+
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rustup target add aarch64-apple-ios
+          cargo +nightly build --lib --release --no-default-features --features "cross-nat" --target aarch64-apple-ios
+          
+          cd target/aarch64-apple-ios/release
+          tar -czf libfubuki-aarch64-apple-ios.tar.gz libfubukil.dylib
+          gh release upload ${{ github.ref_name }} libfubuki-aarch64-apple-ios.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUSTUP_TOOLCHAIN: nightly
+          CARGO_TERM_COLOR: always

@@ -15,8 +15,7 @@ use crate::tun::TunDevice;
 
 const FUBUKI_START_OPTIONS_VERSION1: u32 = 1;
 
-// Android platform
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 const FUBUKI_START_OPTIONS_VERSION2: u32 = 2;
 
 type FubukiToIfFn = extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void);
@@ -139,7 +138,7 @@ fn fubuki_init_inner(
     Ok(h)
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn fubuki_init_with_tun(
     node_config_json: *const c_char,
     tun_fd: std::os::fd::RawFd
@@ -206,7 +205,7 @@ pub extern "C" fn fubuki_start(
                 options.device_index,
             )
         }
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_os = "ios"))]
         FUBUKI_START_OPTIONS_VERSION2 => {
             fubuki_init_with_tun(
                 options.node_config_json,
