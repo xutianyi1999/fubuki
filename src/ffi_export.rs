@@ -309,7 +309,7 @@ fn fubuki_block_on_inner(handle: &mut Handle) -> Result<()> {
 
     rt.block_on(async {
         let stop_fut = async {
-            while is_stop.load(Ordering::Relaxed) {
+            while !is_stop.load(Ordering::Relaxed) {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         };
