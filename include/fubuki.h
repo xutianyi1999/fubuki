@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <inttypes.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,14 +34,20 @@ struct FubukiStartOptions {
   // tun device file descriptor
   // V2 required
   int32_t tun_fd;
+  // delay starting node
+  // V3 required
+  bool delayed_start;
 };
 
 #define FUBUKI_START_OPTIONS_VERSION (1)
 #define FUBUKI_START_OPTIONS_VERSION2 (2)
+#define FUBUKI_START_OPTIONS_VERSION3 (3)
 
 struct FubukiHandle *fubuki_start(struct FubukiStartOptions *opts,
                                   uint32_t version,
                                   char *error);
+
+int32_t fubuki_block_on(struct FubukiHandle *handle, char *error);
 
 void fubuki_stop(struct FubukiHandle *handle);
 

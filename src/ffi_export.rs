@@ -1,9 +1,12 @@
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::future::Future;
 use std::net::Ipv4Addr;
+use std::pin::Pin;
 use std::ptr::null_mut;
 use std::slice;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
@@ -14,9 +17,8 @@ use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
 
 const FUBUKI_START_OPTIONS_VERSION1: u32 = 1;
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
 const FUBUKI_START_OPTIONS_VERSION2: u32 = 2;
+const FUBUKI_START_OPTIONS_VERSION3: u32 = 3;
 
 type FubukiToIfFn = extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void);
 type AddAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
@@ -83,9 +85,11 @@ pub extern "C" fn if_to_fubuki(handle: *const Handle, packet: *const u8, len: us
 }
 
 pub struct Handle {
-    _rt: Runtime,
+    _rt: Option<Runtime>,
     if_to_fubuki_tx: Option<flume::Sender<Bytes>>,
-    interfaces: Arc<OnceLock<Vec<Arc<Interface<Key>>>>>
+    interfaces: Arc<OnceLock<Vec<Arc<Interface<Key>>>>>,
+    node_start_fut: Option<Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>>,
+    stop_flag: Option<Arc<AtomicBool>>
 }
 
 fn parse_config(node_config_json: *const c_char) -> Result<NodeConfigFinalize<Key>> {
@@ -102,9 +106,9 @@ fn fubuki_init_inner(
     add_addr_fn: AddAddrFn,
     delete_addr_fn: DeleteAddrFn,
     device_index: u32,
+    delayed_start: bool
 ) -> Result<Handle> {
     let c = parse_config(node_config_json)?;
-    let rt = Runtime::new()?;
     logger_init()?;
 
     let (tx, rx) = flume::bounded(1024);
@@ -119,59 +123,85 @@ fn fubuki_init_inner(
     };
 
     let interfaces_hook = Arc::new(OnceLock::new());
-    
-    rt.spawn({
-        let ih = interfaces_hook.clone();
+    let start_fut = node::start(c, bridge, interfaces_hook.clone());
 
-        async move {
-            if let Err(e) = node::start(c, bridge, ih).await {
+    let h = if delayed_start {
+        Handle {
+            _rt: None,
+            if_to_fubuki_tx: Some(tx),
+            interfaces: interfaces_hook,
+            node_start_fut: Some(Box::pin(start_fut)),
+            stop_flag: Some(Arc::new(AtomicBool::new(false)))
+        }
+    } else {
+        let rt = Runtime::new()?;
+
+        rt.spawn(async move {
+            if let Err(e) = start_fut.await {
                 error!("{:?}", e);
             }
-        }
-    });
+        });
 
-    let h = Handle {
-        _rt: rt,
-        if_to_fubuki_tx: Some(tx),
-        interfaces: interfaces_hook
+        Handle {
+            _rt: Some(rt),
+            if_to_fubuki_tx: Some(tx),
+            interfaces: interfaces_hook,
+            node_start_fut: None,
+            stop_flag: None
+        }
     };
+
     Ok(h)
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn fubuki_init_with_tun(
     node_config_json: *const c_char,
-    tun_fd: std::os::fd::RawFd
+    tun_fd: std::os::fd::RawFd,
+    delayed_start: bool
 ) -> Result<Handle> {
     use anyhow::Context;
 
     let c = parse_config(node_config_json)?;
-    let rt = Runtime::new()?;
     logger_init()?;
 
     let interfaces_hook = Arc::new(OnceLock::new());
 
-    rt.spawn({
+    let start_fut = {
         let ih = interfaces_hook.clone();
 
         async move {
-            let fut = async {
-                // creating AsyncTun must be in the tokio runtime
-                let tun = crate::tun::create(tun_fd).context("failed to create tun")?;
-                node::start(c, tun, ih).await
-            };
-    
-            if let Err(e) = fut.await {
+            // creating AsyncTun must be in the tokio runtime
+            let tun = crate::tun::create(tun_fd).context("failed to create tun")?;
+            node::start(c, tun, ih).await
+        }
+    };
+    let h = if delayed_start {
+        Handle {
+            _rt: None,
+            if_to_fubuki_tx: None,
+            interfaces: interfaces_hook,
+            node_start_fut: Some(Box::pin(start_fut)),
+            stop_flag: Some(Arc::new(AtomicBool::new(false)))
+        }
+    } else {
+        let rt = Runtime::new()?;
+
+        rt.spawn(async move {
+            if let Err(e) = start_fut.await {
                 error!("{:?}", e);
             }
-        }
-    });
+        });
 
-    let h = Handle {
-        _rt: rt,
-        if_to_fubuki_tx: None,
-        interfaces: interfaces_hook
+        Handle {
+            _rt: Some(rt),
+            if_to_fubuki_tx: None,
+            interfaces: interfaces_hook,
+            node_start_fut: None,
+            stop_flag: None
+        }
     };
+
     Ok(h)
 }
 
@@ -183,7 +213,8 @@ pub struct FubukiStartOptions {
     fubuki_to_if_fn: FubukiToIfFn,
     add_addr_fn: AddAddrFn,
     delete_addr_fn: DeleteAddrFn,
-    tun_fd: i32
+    tun_fd: i32,
+    delayed_start: bool
 }
 
 #[no_mangle]
@@ -203,15 +234,48 @@ pub extern "C" fn fubuki_start(
                 options.add_addr_fn,
                 options.delete_addr_fn,
                 options.device_index,
+                false
             )
-        }
+        } 
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        FUBUKI_START_OPTIONS_VERSION2 => {
+        FUBUKI_START_OPTIONS_VERSION2 if options.tun_fd != 0 => {
             fubuki_init_with_tun(
                 options.node_config_json,
-                options.tun_fd as std::os::fd::RawFd
+                options.tun_fd as std::os::fd::RawFd,
+                false
             )
         }
+        FUBUKI_START_OPTIONS_VERSION2 => {
+            fubuki_init_inner(
+                options.node_config_json,
+                options.ctx,
+                options.fubuki_to_if_fn,
+                options.add_addr_fn,
+                options.delete_addr_fn,
+                options.device_index,
+                false
+            )
+        } 
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        FUBUKI_START_OPTIONS_VERSION3 if options.tun_fd != 0 => {
+            fubuki_init_with_tun(
+                options.node_config_json,
+                options.tun_fd as std::os::fd::RawFd,
+                options.delayed_start
+            )
+        }
+        FUBUKI_START_OPTIONS_VERSION3 => {
+            fubuki_init_inner(
+                options.node_config_json,
+                options.ctx,
+                options.fubuki_to_if_fn,
+                options.add_addr_fn,
+                options.delete_addr_fn,
+                options.device_index,
+                options.delayed_start
+            )
+        }
+       
         _ => {
             Err(anyhow!(
                 "unknown version {}",
@@ -231,9 +295,52 @@ pub extern "C" fn fubuki_start(
     }
 }
 
+fn fubuki_block_on_inner(handle: &mut Handle) -> Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    let fut = match handle.node_start_fut.take() {
+        Some(fut) => fut,
+        None => return Err(anyhow!("delayed start is not enabled or node has already been started"))
+    };
+
+    let is_stop = handle.stop_flag.clone().unwrap();
+
+    rt.block_on(async {
+        let stop_fut = async {
+            while is_stop.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+
+        tokio::select! {
+            _ = stop_fut => Ok(()),
+            res = fut => res
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn fubuki_block_on(handle: *mut Handle,  error: *mut c_char) -> i32 {
+    match fubuki_block_on_inner(unsafe {&mut *handle}) {
+        Ok(_) => 0,
+        Err(e) => {
+            let e = CString::new(e.to_string()).unwrap();
+            let src = e.as_bytes_with_nul();
+            unsafe { std::ptr::copy(src.as_ptr(), error as *mut u8, src.len()) };
+            1
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn fubuki_stop(handle: *mut Handle) {
-    let _ = unsafe { Box::from_raw(handle) };
+    let handle = unsafe { Box::from_raw(handle) };
+
+    if let Some(stop_flag) = handle.stop_flag {
+        stop_flag.store(true, Ordering::Relaxed);
+    }
 }
 
 #[no_mangle]
