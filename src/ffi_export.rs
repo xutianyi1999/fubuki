@@ -18,6 +18,8 @@ const FUBUKI_START_OPTIONS_VERSION1: u32 = 1;
 const FUBUKI_START_OPTIONS_VERSION2: u32 = 2;
 const FUBUKI_START_OPTIONS_VERSION3: u32 = 3;
 
+const FUBUKI_FLAG_NO_AUTO_SPAWN: u64 = 0x0001;
+
 type FubukiToIfFn = extern "C" fn(packet: *const u8, len: usize, ctx: *mut c_void);
 type AddAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
 type DeleteAddrFn = extern "C" fn(addr: u32, netmask: u32, ctx: *mut c_void);
@@ -104,7 +106,7 @@ fn fubuki_init_inner(
     add_addr_fn: AddAddrFn,
     delete_addr_fn: DeleteAddrFn,
     device_index: u32,
-    delayed_start: bool
+    no_auto_spawn: bool
 ) -> Result<Handle> {
     let c = parse_config(node_config_json)?;
     logger_init()?;
@@ -123,7 +125,7 @@ fn fubuki_init_inner(
     let interfaces_hook = Arc::new(OnceLock::new());
     let start_fut = node::start(c, bridge, interfaces_hook.clone());
 
-    let h = if delayed_start {
+    let h = if no_auto_spawn {
         Handle {
             _rt: None,
             if_to_fubuki_tx: Some(tx),
@@ -159,7 +161,7 @@ fn fubuki_init_inner(
 fn fubuki_init_with_tun(
     node_config_json: *const c_char,
     tun_fd: std::os::fd::RawFd,
-    delayed_start: bool
+    no_auto_spawn: bool
 ) -> Result<Handle> {
     use anyhow::Context;
 
@@ -177,7 +179,7 @@ fn fubuki_init_with_tun(
             node::start(c, tun, ih).await
         }
     };
-    let h = if delayed_start {
+    let h = if no_auto_spawn {
         Handle {
             _rt: None,
             if_to_fubuki_tx: None,
@@ -218,7 +220,7 @@ pub struct FubukiStartOptions {
     add_addr_fn: AddAddrFn,
     delete_addr_fn: DeleteAddrFn,
     tun_fd: i32,
-    delayed_start: bool
+    flags: u64
 }
 
 #[no_mangle]
@@ -265,7 +267,7 @@ pub extern "C" fn fubuki_start(
             fubuki_init_with_tun(
                 options.node_config_json,
                 options.tun_fd as std::os::fd::RawFd,
-                options.delayed_start
+                (options.flags & FUBUKI_FLAG_NO_AUTO_SPAWN) != 0
             )
         }
         FUBUKI_START_OPTIONS_VERSION3 => {
@@ -276,7 +278,7 @@ pub extern "C" fn fubuki_start(
                 options.add_addr_fn,
                 options.delete_addr_fn,
                 options.device_index,
-                options.delayed_start
+                (options.flags & FUBUKI_FLAG_NO_AUTO_SPAWN) != 0
             )
         }
        
