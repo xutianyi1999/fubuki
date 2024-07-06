@@ -287,7 +287,7 @@ pub extern "C" fn fubuki_start(
     match res {
         Ok(p) => Box::into_raw(Box::new(p)),
         Err(e) => {
-            let e = CString::new(e.to_string()).unwrap();
+            let e = CString::new(format!("{:?}", e)).unwrap();
             let src = e.as_bytes_with_nul();
             unsafe { std::ptr::copy(src.as_ptr(), error as *mut u8, src.len()) };
             null_mut()
@@ -326,7 +326,7 @@ pub extern "C" fn fubuki_block_on(handle: *mut Handle,  error: *mut c_char) -> i
     match fubuki_block_on_inner(unsafe {&mut *handle}) {
         Ok(_) => 0,
         Err(e) => {
-            let e = CString::new(e.to_string()).unwrap();
+            let e = CString::new(format!("{:?}", e)).unwrap();
             let src = e.as_bytes_with_nul();
             unsafe { std::ptr::copy(src.as_ptr(), error as *mut u8, src.len()) };
             1
