@@ -456,7 +456,7 @@ pub mod protocol {
     use ipnet::Ipv4Net;
     use serde::{Deserialize, Serialize};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-
+    use tokio::net::{ToSocketAddrs, UdpSocket};
     use crate::common::cipher::{self, CipherContext};
     use crate::common::cipher::Cipher;
 
@@ -917,6 +917,21 @@ pub mod protocol {
 
     pub const UDP_MSG_HEADER_LEN: usize = 4;
 
+    #[derive(Clone)]
+    pub enum UdpSocketErr<E> {
+        FatalError(E),
+        SuppressError(E)
+    }
+
+    impl <E> AsRef<E> for UdpSocketErr<E> {
+        fn as_ref(&self) -> &E {
+            match self {
+                UdpSocketErr::FatalError(e) => e,
+                UdpSocketErr::SuppressError(e) => e,
+            }
+        }
+    }
+
     impl UdpMsg<'_> {
         pub fn heartbeat_encode<K: Cipher>(
             key: &K,
@@ -1045,6 +1060,54 @@ pub mod protocol {
                 }
                 _ => Err(anyhow!("invalid udp message")),
             }
+        }
+
+        pub async fn recv_msg(
+            socket: &UdpSocket,
+            out: &mut [u8]
+        ) -> std::result::Result<(usize, SocketAddr), UdpSocketErr<io::Error>> {
+            socket.recv_from(out).await
+                .map_err(|e| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        const WSAECONNRESET: i32 = 10054;
+                        const WSAENETRESET: i32 = 10052;
+
+                        let err = e.raw_os_error();
+
+                        if err == Some(WSAECONNRESET) ||
+                            err == Some(WSAENETRESET)
+                        {
+                            return UdpSocketErr::SuppressError(e);
+                        }
+                    }
+
+                    UdpSocketErr::FatalError(e)
+                })
+        }
+
+        pub async fn send_msg<A: ToSocketAddrs>(
+            socket: &UdpSocket,
+            buff: &[u8],
+            to: A
+        ) -> std::result::Result<(), UdpSocketErr<io::Error>> {
+            socket.send_to(buff, to).await
+                .map_err(|e| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Network is unreachable
+                        const ENETUNREACH: i32 = 51;
+
+                        let err = e.raw_os_error();
+
+                        if err == Some(ENETUNREACH) {
+                            return UdpSocketErr::SuppressError(e);
+                        }
+                    }
+
+                    UdpSocketErr::FatalError(e)
+                })
+                .map(|_| ())
         }
     }
 }

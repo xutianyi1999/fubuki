@@ -28,7 +28,7 @@ use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, HeartbeatCache, HeartbeatInfo, PushResult, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, TcpMsg, UdpMsg, UdpSocketErr, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN};
 use crate::server::api::api_start;
 use crate::ServerConfigFinalize;
 
@@ -213,11 +213,14 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     for (sock_addr, seq) in list {
                         let len = UdpMsg::heartbeat_encode(key, rng.gen(), SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Req, &mut buff);
                         let packet = &mut buff[..len];
-                        let res = socket.send_to(packet, sock_addr).await;
 
-                        if let Err(e) = res {
-                            return Result::<(), _>::Err(anyhow!(e));
-                        }
+                        match UdpMsg::send_msg(&socket, packet, sock_addr).await {
+                            Ok(_) => (),
+                            Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
+                            Err(UdpSocketErr::SuppressError(e)) => {
+                                error!("group {} send udp packet error {}", group.name, e);
+                            }
+                        };
                     }
 
                     tokio::time::sleep(heartbeat_interval).await;
@@ -242,10 +245,10 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                 let mut rng = rand::rngs::SmallRng::from_entropy();
 
                 loop {
-                    let (len, peer_addr) = match socket.recv_from(&mut buff).await {
+                    let (len, peer_addr) = match UdpMsg::recv_msg(socket.deref(), &mut buff).await {
                         Ok(v) => v,
                         Err(e) => {
-                            error!("group {} receive udp message error: {:?}", group.name, e);
+                            error!("group {} receive udp message error: {:?}", group.name, e.as_ref());
                             continue;
                         }
                     };
@@ -285,7 +288,14 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             if is_known {
                                 let len = UdpMsg::heartbeat_encode(key, rng.gen(), SERVER_VIRTUAL_ADDR, seq, HeartbeatType::Resp, &mut buff);
                                 let packet = &mut buff[..len];
-                                socket.send_to(packet, peer_addr).await?;
+                                
+                                match UdpMsg::send_msg(&socket, packet, peer_addr).await {
+                                    Ok(_) => (),
+                                    Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                    Err(UdpSocketErr::SuppressError(e)) => {
+                                        error!("group {} send udp packet error {}", group.name, e);
+                                    }
+                                };
                             }
                         }
                         UdpMsg::Heartbeat(dst_virt_addr, seq, HeartbeatType::Resp) => {
@@ -372,7 +382,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                 }
 
                                                 UdpMsg::relay_encode(key, rng.gen(), dst_virt_addr, data.len(), packet);
-                                                fut = Some(socket.send_to(packet, dst_addr));
+                                                fut = Some(UdpMsg::send_msg(&socket, packet, dst_addr));
                                                 break;
                                             }
                                         }
@@ -381,8 +391,12 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             };
 
                             if let Some(fut) = fut {
-                                if let Err(e) = fut.await {
-                                    return Result::<(), _>::Err(anyhow!(e));
+                                match fut.await {
+                                    Ok(_) => (),
+                                    Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
+                                    Err(UdpSocketErr::SuppressError(e)) => {
+                                        error!("group {} send udp packet error {}", group.name, e);
+                                    }
                                 }
                             }
                         }
@@ -714,7 +728,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                                     let packet_len = packet.len();
                                                     let len = UdpMsg::relay_encode(key, rng.gen(), dst_virt_addr, packet_len, &mut buff);
 
-                                                    fut = Some(udp_socket.send_to(&buff[..len], addr));
+                                                    fut = Some(UdpMsg::send_msg(&udp_socket, &buff[..len], addr));
                                                     break;
                                                 }
                                             }
@@ -723,7 +737,13 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                 }
 
                                 if let Some(fut) = fut {
-                                    fut.await?;
+                                    match fut.await {
+                                        Ok(_) => (),
+                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                        Err(UdpSocketErr::SuppressError(e)) => {
+                                            error!("group {} send udp packet error {}", group.name, e);
+                                        }
+                                    }
                                 }
                             }
                             TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {

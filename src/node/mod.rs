@@ -33,7 +33,7 @@ use prettytable::{row, Table};
 use rand::{random, Rng, SeedableRng};
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::BufReader;
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::net::UdpSocket;
 use tokio::signal;
@@ -46,7 +46,7 @@ use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, NodeInfo
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, TcpMsg, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpMsg, VirtualAddr};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, TcpMsg, UdpMsg, UdpSocketErr, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN};
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
 use crate::routing_table::{Item, ItemKind, RoutingTable};
@@ -284,8 +284,14 @@ async fn send<K: Cipher>(
 
             let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
             UdpMsg::data_encode(&inter.key, nonce, packet_range.len(), packet);
-            socket.send_to(packet, dst_addr).await?;
-            return Ok(());
+
+            match UdpMsg::send_msg(socket, packet, dst_addr).await {
+                Ok(_) => return Ok(()),
+                Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                Err(UdpSocketErr::SuppressError(e)) => {
+                    error!("node {} send udp packet error {}", inter.node_name, e);
+                }
+            };
         }
     }
 
@@ -328,8 +334,14 @@ async fn send<K: Cipher>(
                     let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSG_HEADER_LEN..packet_range.end];
 
                     UdpMsg::relay_encode(&inter.key, nonce, dst_node.node.virtual_addr, packet_range.len(), packet);
-                    socket.send_to(packet, dst_addr).await?;
-                    return Ok(())
+
+                    match UdpMsg::send_msg(socket, packet, dst_addr).await {
+                        Ok(_) => return Ok(()),
+                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                        Err(UdpSocketErr::SuppressError(e)) => {
+                            error!("node {} send udp packet error {}", inter.node_name, e);
+                        }
+                    };
                 }
                 _ => ()
             };
@@ -678,7 +690,13 @@ where
                         &mut packet,
                     );
 
-                    socket.send_to(&packet, &interface.server_addr).await?;
+                    match UdpMsg::send_msg(socket, &packet, &interface.server_addr).await {
+                        Ok(_) => (),
+                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                        Err(UdpSocketErr::SuppressError(e)) => {
+                            error!("node {} send udp packet error {}", group.node_name, e);
+                        }
+                    }
 
                     if is_p2p {
                         let node_list = interface.node_list.load_full();
@@ -721,9 +739,13 @@ where
 
                             match udp_status {
                                 UdpStatus::Available { dst_addr } if !is_over => {
-                                    if let Err(e) = socket.send_to(&packet, dst_addr).await {
-                                        return Result::<(), _>::Err(anyhow!(e))
-                                    }
+                                    match UdpMsg::send_msg(socket, &packet, dst_addr).await {
+                                        Ok(_) => (),
+                                        Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
+                                        Err(UdpSocketErr::SuppressError(e)) => {
+                                            error!("node {} send udp packet error {}", group.node_name, e);
+                                        }
+                                    };
                                 }
                                 _ => {
                                     if let (Some(lan), Some(wan)) = (ext_node.node.lan_udp_addr, ext_node.node.wan_udp_addr) {
@@ -745,7 +767,13 @@ where
                                                 if config.socket_bind_device.is_some() ||
                                                 !through_virtual_gateway(rt, SocketAddr::new(lan_ip_addr, 0), $peer_addr) 
                                                 {
-                                                    socket.send_to(&packet, $peer_addr).await?;
+                                                    match UdpMsg::send_msg(socket, &packet, $peer_addr).await {
+                                                        Ok(_) => (),
+                                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                                        Err(UdpSocketErr::SuppressError(e)) => {
+                                                            error!("node {} send udp packet error {}", group.node_name, e);
+                                                        }
+                                                    };
                                                 }
                                             };
                                         }
@@ -808,25 +836,13 @@ where
                 loop {
                     const START: usize = size_of::<VirtualAddr>();
 
-                    let (len, peer_addr) = match socket.recv_from(&mut buff[START..]).await {
+                    let (len, peer_addr) = match UdpMsg::recv_msg(socket, &mut buff[START..]).await {
                         Ok(v) => v,
-                        Err(e) => {
-                            #[cfg(target_os = "windows")]
-                            {
-                                const WSAECONNRESET: i32 = 10054;
-                                const WSAENETRESET: i32 = 10052;
-
-                                let err = e.raw_os_error();
-
-                                if err == Some(WSAECONNRESET) ||
-                                    err == Some(WSAENETRESET)
-                                {
-                                    error!("node {} receive udp packet error {}", group.node_name, e);
-                                    continue;
-                                }
-                            }
-                            return Result::<(), _>::Err(anyhow!(e))
+                        Err(UdpSocketErr::SuppressError(e)) => {
+                            error!("node {} receive udp packet error {}", group.node_name, e);
+                            continue;
                         }
+                        Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e))
                     };
 
                     let packet = &mut buff[START..START + len];
@@ -862,7 +878,14 @@ where
                                     );
 
                                     let packet = &mut buff[..len];
-                                    socket.send_to(packet, peer_addr).await?;
+                                    
+                                    match UdpMsg::send_msg(socket, packet, peer_addr).await {
+                                        Ok(_) => (),
+                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                        Err(UdpSocketErr::SuppressError(e)) => {
+                                            error!("node {} send udp packet error {}", group.node_name, e);
+                                        }
+                                    };
                                 }
                             }
                             UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
@@ -1491,7 +1514,7 @@ where
                             tokio::select! {
                                 opt = inner_channel_rx.recv() => {
                                     match opt {
-                                        Some(buff) => tx.write_all(&buff).await?,
+                                        Some(buff) => TcpMsg::write_msg(&mut tx, &buff).await?,
                                         None => return Ok(())
                                     };
                                 }
@@ -1500,7 +1523,7 @@ where
                                     None => std::future::pending().left_future()
                                 } => {
                                     match opt {
-                                        Some(buff) => tx.write_all(&buff).await?,
+                                        Some(buff) => TcpMsg::write_msg(&mut tx, &buff).await?,
                                         None => return Ok(())
                                     };
                                 }
