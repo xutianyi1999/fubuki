@@ -38,7 +38,7 @@ prettytable-rs = "0.10"
 scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
-gethostname = "0.4"
+gethostname = "0.5"
 flume = { version = "0.11", default-features = false, features = ["async", "spin"] }
 blake3 = { version = "1", features = ["pure"] }
 crossbeam-utils = "0.8"
