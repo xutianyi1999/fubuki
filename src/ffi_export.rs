@@ -4,13 +4,11 @@ use std::net::Ipv4Addr;
 use std::pin::Pin;
 use std::ptr::null_mut;
 use std::slice;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use tokio::runtime::Runtime;
-
+use tokio::sync::oneshot;
 use crate::node::{generic_interfaces_info, Interface};
 use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
@@ -89,7 +87,7 @@ pub struct Handle {
     if_to_fubuki_tx: Option<flume::Sender<Bytes>>,
     interfaces: Arc<OnceLock<Vec<Arc<Interface<Key>>>>>,
     node_start_fut: Option<Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>>,
-    stop_flag: Option<Arc<AtomicBool>>
+    stop_flag: (Option<oneshot::Sender<()>>, Option<oneshot::Receiver<()>>)
 }
 
 fn parse_config(node_config_json: *const c_char) -> Result<NodeConfigFinalize<Key>> {
@@ -131,7 +129,10 @@ fn fubuki_init_inner(
             if_to_fubuki_tx: Some(tx),
             interfaces: interfaces_hook,
             node_start_fut: Some(Box::pin(start_fut)),
-            stop_flag: Some(Arc::new(AtomicBool::new(false)))
+            stop_flag: {
+                let (tx, rx) = oneshot::channel::<()>();
+                (Some(tx), Some(rx))
+            }
         }
     } else {
         let rt = Runtime::new()?;
@@ -147,7 +148,7 @@ fn fubuki_init_inner(
             if_to_fubuki_tx: Some(tx),
             interfaces: interfaces_hook,
             node_start_fut: None,
-            stop_flag: None
+            stop_flag: (None, None)
         }
     };
 
@@ -300,22 +301,14 @@ fn fubuki_block_on_inner(handle: &mut Handle) -> Result<()> {
         .enable_all()
         .build()?;
 
-    let fut = match handle.node_start_fut.take() {
-        Some(fut) => fut,
-        None => return Err(anyhow!("delayed start is not enabled or node has already been started"))
+    let (fut, stop_flag) = match (handle.node_start_fut.take(), handle.stop_flag.1.take()) {
+        (Some(fut), Some(f)) => (fut, f),
+        _ => return Err(anyhow!("delayed start is not enabled or node has already been started"))
     };
 
-    let is_stop = handle.stop_flag.clone().unwrap();
-
     rt.block_on(async {
-        let stop_fut = async {
-            while !is_stop.load(Ordering::Relaxed) {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        };
-
         tokio::select! {
-            _ = stop_fut => Ok(()),
+            _ = stop_flag => Ok(()),
             res = fut => res
         }
     })
@@ -336,11 +329,7 @@ pub extern "C" fn fubuki_block_on(handle: *mut Handle,  error: *mut c_char) -> i
 
 #[no_mangle]
 pub extern "C" fn fubuki_stop(handle: *mut Handle) {
-    let handle = unsafe { Box::from_raw(handle) };
-
-    if let Some(stop_flag) = handle.stop_flag {
-        stop_flag.store(true, Ordering::Relaxed);
-    }
+    let _ = unsafe { Box::from_raw(handle) };
 }
 
 #[no_mangle]
