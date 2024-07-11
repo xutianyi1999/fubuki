@@ -183,7 +183,10 @@ fn fubuki_init_with_tun(
             if_to_fubuki_tx: None,
             interfaces: interfaces_hook,
             node_start_fut: Some(Box::pin(start_fut)),
-            stop_flag: Some(Arc::new(AtomicBool::new(false)))
+            stop_flag: {
+                let (tx, rx) = oneshot::channel::<()>();
+                (Some(tx), Some(rx))
+            }
         }
     } else {
         let rt = Runtime::new()?;
@@ -199,7 +202,7 @@ fn fubuki_init_with_tun(
             if_to_fubuki_tx: None,
             interfaces: interfaces_hook,
             node_start_fut: None,
-            stop_flag: None
+            stop_flag: (None, None)
         }
     };
 

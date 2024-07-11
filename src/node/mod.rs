@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use std::path::Path;
 use std::ffi::CString;
-use ahash::HashMap;
+use ahash::{HashMap, HashMapExt};
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use ahash::{HashSet, HashSetExt};
@@ -39,14 +39,14 @@ use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
 use tokio::task::JoinHandle;
-use tokio::time;
+use tokio::time::{self, Instant};
 
 use crate::common::hook::{Hooks, PacketRecvOutput};
 use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, Register, RegisterError, Seq, TcpMsg, UdpMsg, UdpSocketErr, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, PeerStatus, Register, RegisterError, Seq, TcpMsg, UdpMsg, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpSocketErr};
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
 use crate::routing_table::{Item, ItemKind, RoutingTable};
@@ -173,6 +173,7 @@ pub struct Interface<K> {
     tcp_handler_channel: Option<Sender<Bytes>>,
     udp_socket: Option<UdpSocket>,
     key: K,
+    peers_map: Option<RwLock<HashMap<VirtualAddr, Vec<PeerStatus>>>>
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -251,7 +252,7 @@ struct ExtendedNodeInfo {
 impl From<&ExtendedNode> for ExtendedNodeInfo {
     fn from(value: &ExtendedNode) -> Self {
         ExtendedNodeInfo {
-            node: value.node.clone(),
+            node: value.node.clone(),  
             udp_status: value.udp_status.load(),
             hc: HeartbeatInfo::from(&*value.hc.read())
         }
@@ -262,12 +263,82 @@ async fn lookup_host(dst: &str) -> Option<SocketAddr> {
     tokio::net::lookup_host(dst).await.ok()?.next()
 }
 
+fn find_next_hop(
+    curr: VirtualAddr,
+    dst: VirtualAddr,
+    cache: &mut Vec<(VirtualAddr, NextHop, Instant)>,
+    peers: &RwLock<HashMap<VirtualAddr, Vec<PeerStatus>>>
+) -> NextHop {
+    fn find(
+        curr: VirtualAddr,
+        dst: VirtualAddr,
+        peers: &HashMap<VirtualAddr, Vec<PeerStatus>>
+    ) -> NextHop {
+        use pathfinding::prelude::dijkstra;
+        const EMPTY: &'static Vec<PeerStatus> = &Vec::new();
+
+        let route = dijkstra(
+            &curr, 
+            |ip| {
+                let peers_status_list = peers.get(ip).unwrap_or(EMPTY);
+                let mut peers = Vec::with_capacity(peers_status_list.len());
+                
+                for peer_status in peers_status_list {
+                    if let (Some(latency), Some(packet_loss)) = (peer_status.latency, peer_status.packet_loss) {
+                        // normalization
+                        // 100 ms
+                        let latency_quality = latency.as_secs() / 100;
+                        // 5% packet loss
+                        let packet_loss_quality = packet_loss as u64 / 5;
+                        peers.push((peer_status.addr, latency_quality + packet_loss_quality));
+                    }
+                }
+                peers
+            }, 
+            |&ip| ip == dst
+        );
+
+        match route {
+            // routing sequence starts from the current address, index 1 is the next hop.
+            Some((route, cost)) if cost < 2 => {
+                info!("select route {:?} for dest addr {}, cost: {}", route, dst, cost);
+                NextHop::NodeRelay(route[1])
+            },
+            _ => NextHop::ServerRelay
+        }
+    }
+
+    match cache.binary_search_by_key(&dst, |(addr, _, _)| *addr) {
+        Ok(i) => {
+            let (_, next_hop, update_time) = &cache[i];
+
+            if update_time.elapsed() < Duration::from_secs(60) {
+                return *next_hop;
+            }
+
+            let new = find(curr, dst, &peers.read());
+            let (_, old, t) = &mut cache[i];
+            *old = new;
+            *t = Instant::now();
+            new
+        }
+        Err(i) => {
+            let next = find(curr, dst, &peers.read());
+            cache.insert(i, (dst, next, Instant::now()));
+            next
+        }
+    }
+}
+
 async fn send<K: Cipher>(
     nonce: u16,
     inter: &Interface<K>,
     dst_node: &ExtendedNode,
     buff: &mut [u8],
-    packet_range: Range<usize>
+    packet_range: Range<usize>,
+    node_relay: bool,
+    next_route_cache: &mut Vec<(VirtualAddr, NextHop, Instant)>,
+    node_list: &NodeList
 ) -> Result<()> {
     let mode = inter.specify_mode.get(&dst_node.node.virtual_addr).unwrap_or(&inter.mode);
 
@@ -292,6 +363,34 @@ async fn send<K: Cipher>(
                     error!("node {} send udp packet error {}", inter.node_name, e);
                 }
             };
+        }
+
+        if node_relay {
+            if let Some(peers_map) = &inter.peers_map {
+                let next = find_next_hop(inter.addr.load(), dst_node.node.virtual_addr, next_route_cache, peers_map);
+    
+                if let NextHop::NodeRelay(relay_node) = next {
+                    if let Some(node) = node_list.get_node(&relay_node) {
+                        if let UdpStatus::Available { dst_addr } = node.udp_status.load() {
+                            let socket = match &inter.udp_socket {
+                                None => unreachable!(),
+                                Some(socket) => socket,
+                            };
+                
+                            let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
+                            UdpMsg::data_encode(&inter.key, nonce, packet_range.len(), packet);
+                
+                            match UdpMsg::send_msg(socket, packet, dst_addr).await {
+                                Ok(_) => return Ok(()),
+                                Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                Err(UdpSocketErr::SuppressError(e)) => {
+                                    error!("node {} send udp packet error {}", inter.node_name, e);
+                                }
+                            };
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -381,6 +480,12 @@ fn find_route<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, mut dst_addr: Ipv4A
     Some((dst_addr, item))
 }
 
+#[derive(Clone, Copy, Debug)]
+enum NextHop {
+    NodeRelay(VirtualAddr),
+    ServerRelay
+}
+
 struct PacketSender<'a, InterRT, ExternRT, Tun, K> {
     rt_ref: RoutingTableRefEnum<'a, InterRT, ExternRT>,
     interfaces: &'a [&'a Interface<K>],
@@ -389,7 +494,9 @@ struct PacketSender<'a, InterRT, ExternRT, Tun, K> {
     hooks: Option<&'a Hooks<K>>,
     #[cfg(feature = "cross-nat")]
     snat: Option<&'a cross_nat::SNat>,
-    rng: rand::rngs::SmallRng
+    rng: rand::rngs::SmallRng,
+    // if_index -> (dst addr, next hop, update time)
+    next_route: Vec<Vec<(VirtualAddr, NextHop, Instant)>>
 }
 
 #[repr(C)]
@@ -422,7 +529,8 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
             hooks,
             #[cfg(feature = "cross-nat")]
             snat,
-            rng: rand::rngs::SmallRng::from_entropy()
+            rng: rand::rngs::SmallRng::from_entropy(),
+            next_route: vec![Vec::new(); interfaces.len()]
         }
     }
 
@@ -482,8 +590,8 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
 
         let if_index = item.interface_index;
 
-        let (interface, node_list) = match interfaces.iter().position(|i| i.index == if_index) {
-            Some(i) => (interfaces[i], &**self.nodes_cache[i].load()),
+        let (interface, node_list, next_route_cache) = match interfaces.iter().position(|i| i.index == if_index) {
+            Some(i) => (interfaces[i], &**self.nodes_cache[i].load(), &mut self.next_route[i]),
             None => return Ok(())
         };
 
@@ -527,7 +635,15 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                 if f {
                     match node_list.get_node(&addr) {
                         None => warn!("cannot find node {}", addr),
-                        Some(node) => send(self.rng.gen(), interface, node, buff, packet_range).await?
+                        Some(node) => send(
+                            self.rng.gen(), 
+                            interface, 
+                            node, buff,
+                            packet_range,
+                            true,
+                            next_route_cache,
+                            node_list
+                        ).await?
                     };
                 }
             }
@@ -541,7 +657,16 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                                 continue;
                             }
 
-                            send(self.rng.gen(), interface, node, buff, packet_range.clone()).await?;
+                            send(
+                                self.rng.gen(), 
+                                interface, 
+                                node, 
+                                buff, 
+                                packet_range.clone(),
+                                false,
+                                next_route_cache,
+                                node_list
+                            ).await?;
                         }
                     }
                     Direction::Input => {
@@ -878,7 +1003,7 @@ where
                                     );
 
                                     let packet = &mut buff[..len];
-                                    
+
                                     match UdpMsg::send_msg(socket, packet, peer_addr).await {
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
@@ -1477,7 +1602,7 @@ where
 
                                         let res = inner_channel_tx
                                             .send(buff)
-                                            .map_err(|e| anyhow!(e.to_string()));
+                                            .map_err(|e| anyhow!(e));
 
                                         if res.is_err() {
                                             return res;
@@ -1485,6 +1610,11 @@ where
                                     }
                                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
                                         interface.server_tcp_hc.write().reply(recv_seq);
+                                    }
+                                    TcpMsg::FetchPeersRes(peers) => {
+                                        if let Some(peers_map) = &interface.peers_map {
+                                            *peers_map.write() = peers;
+                                        }
                                     }
                                     _ => continue,
                                 }
@@ -1503,11 +1633,18 @@ where
                 let send_handler = async {
                     let mut notified = notified.clone();
                     let channel_rx = channel_rx.clone();
+                    let interface = interface.clone();
 
                     let join = tokio::spawn(async move {
                         let mut channel_rx = match &channel_rx {
                             None => None,
                             Some(lock) => Some(lock.lock().await)
+                        };
+
+                        let mut interval = if interface.peers_map.is_some() {
+                            Some(tokio::time::interval(Duration::from_secs(30)))
+                        } else {
+                            None
                         };
 
                         loop {
@@ -1526,6 +1663,14 @@ where
                                         Some(buff) => TcpMsg::write_msg(&mut tx, &buff).await?,
                                         None => return Ok(())
                                     };
+                                }
+                                _ = match interval {
+                                    Some(ref mut interval) => interval.tick().right_future(),
+                                    None => std::future::pending().left_future()
+                                } => {
+                                    let mut buff = [0u8; TCP_MSG_HEADER_LEN];
+                                    TcpMsg::fetch_peers_encode(key, rand::random(), &mut buff);
+                                    TcpMsg::write_msg(&mut tx, &buff).await?;
                                 }
                                 _ = notified.changed() => return Err(anyhow!("abort task"))
                             }
@@ -1559,7 +1704,7 @@ where
 
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                                 TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Req, &mut buff);
-                                inner_channel_tx.send(buff).map_err(|e| anyhow!(e.to_string()))?;
+                                inner_channel_tx.send(buff).map_err(|e| anyhow!(e))?;
 
                                 tokio::time::sleep(config.tcp_heartbeat_interval).await;
                             }
@@ -1574,7 +1719,82 @@ where
                     join.await?
                 };
 
-                tokio::try_join!(recv_handler, send_handler, heartbeat_schedule)?;
+                let update_peers_schedule = async {
+                    let mut notified = notified.clone();
+                    let interface = interface.clone();
+                    let inner_channel_tx = inner_channel_tx.clone();
+
+                    let join: JoinHandle<Result<()>> = tokio::spawn(async move {
+                        let fut = async {
+                            let mut rng = rand::rngs::SmallRng::from_entropy();
+                            let node_list = &interface.node_list;
+                            let specify_mode = &interface.specify_mode;
+                            let mut buff = vec![0u8; TCP_BUFF_SIZE];
+
+                            loop {
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+
+                                let peers_status = {
+                                    let node_list = node_list.load_full();
+                                    let mut peers_status = Vec::with_capacity(node_list.len());
+
+                                    for node in  &*node_list {
+                                        let p2p_available = node.udp_status.load() != UdpStatus::Unavailable &&
+                                        specify_mode
+                                            .get(&node.node.virtual_addr)
+                                            .map(|mode| !mode.p2p.is_empty())
+                                            .unwrap_or(true);
+
+                                        let (latency, packet_loss) = if p2p_available {
+                                            let guard = node.hc.read();
+                                            let latency = guard.last_elapsed;
+                                            let loss_rate = guard.packet_loss_count * 100 / guard.send_count;
+
+                                            (latency, Some(loss_rate as u8))
+                                        } else {
+                                            (None, None)
+                                        };
+
+                                        let peer = PeerStatus {
+                                            addr: node.node.virtual_addr,
+                                            latency,
+                                            packet_loss
+                                        };
+
+                                        peers_status.push(peer);
+                                    }
+
+                                    peers_status
+                                };
+
+                                let len = TcpMsg::upload_peers_encode(key, rng.gen(), &peers_status, &mut buff)?;
+                                let mut packet = allocator::alloc(len);
+                                packet.copy_from_slice(&buff[..len]);
+                                inner_channel_tx.send(packet).map_err(|e| anyhow!(e))?;
+                            }
+                        };
+
+                        tokio::select! {
+                            res = fut => res,
+                            _ = notified.changed() => Err(anyhow!("abort task"))
+                        }
+                    });
+
+                    join.await?
+                };
+
+                let update_peers_schedule = if config.allow_packet_forward && !group.mode.p2p.is_empty() {
+                    update_peers_schedule.left_future()
+                } else {
+                    std::future::pending().right_future()
+                };
+
+                tokio::try_join!(
+                    recv_handler, 
+                    send_handler, 
+                    heartbeat_schedule, 
+                    update_peers_schedule
+                )?;
                 Result::<_, Error>::Ok(())
             };
 
@@ -1862,7 +2082,14 @@ pub async fn start<K, T>(
             server_allow_tcp_relay: AtomicBool::new(false),
             tcp_handler_channel: channel_tx,
             udp_socket: udp_opt,
-            key: group.key.clone()
+            key: group.key.clone(),
+            peers_map: {
+                if group.auto_route_selection {
+                    Some(RwLock::new(HashMap::new()))
+                } else {
+                    None
+                }
+            }
         };
 
         let interface = Arc::new(interface);

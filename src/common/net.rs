@@ -448,7 +448,7 @@ pub mod protocol {
     use std::io;
     use std::mem::size_of;
     use std::net::{Ipv4Addr, SocketAddr};
-
+    use std::time::Duration;
     use ahash::HashMap;
     use anyhow::{anyhow, Result};
     use arrayvec::ArrayVec;
@@ -476,6 +476,9 @@ pub mod protocol {
     pub const GET_IDLE_VIRTUAL_ADDR: u8 = 0x06;
     pub const GET_IDLE_VIRTUAL_ADDR_RES: u8 = 0x07;
     pub const RELAY: u8 = 0x08;
+    pub const UPLOAD_PEERS: u8 = 0x09;
+    pub const FETCH_PEERS: u8 = 0x0A;
+    pub const FETCH_PEERS_RES: u8 = 0x0B;
     pub const REQ: u8 = 0x00;
     pub const RESP: u8 = 0x01;
 
@@ -601,6 +604,13 @@ pub mod protocol {
         }
     }
 
+    #[derive(Copy, Clone, Encode, Decode)]
+    pub struct PeerStatus {
+        pub addr: VirtualAddr,
+        pub latency: Option<Duration>,
+        pub packet_loss: Option<u8>
+    }
+
     // |  2  |    1    |     1     |    2   | dyn |
     // |NONCE|MAGIC NUM|PACKET TYPE|DATA LEN|DATA|
     pub enum TcpMsg<'a> {
@@ -614,6 +624,9 @@ pub mod protocol {
         // todo convert to data
         Relay(VirtualAddr, &'a [u8]),
         Heartbeat(Seq, HeartbeatType),
+        UploadPeers(Vec<PeerStatus>),
+        FetchPeers,
+        FetchPeersRes(HashMap<VirtualAddr, Vec<PeerStatus>>)
     }
 
     pub const TCP_MSG_HEADER_LEN: usize = 6;
@@ -804,6 +817,81 @@ pub mod protocol {
             RET
         }
 
+        pub fn upload_peers_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            peers: &[PeerStatus],
+            out: &mut [u8],
+        ) -> Result<usize> {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = UPLOAD_PEERS;
+
+            let size = bincode::encode_into_slice(
+                peers,
+                &mut out[TCP_MSG_HEADER_LEN..],
+                config::standard(),
+            )?;
+            out[4..6].copy_from_slice(&(size as u16).to_be_bytes());
+
+            let ret = TCP_MSG_HEADER_LEN + size;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            Ok(ret)
+        }
+
+        pub fn fetch_peers_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            out: &mut [u8],
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = FETCH_PEERS;
+            out[4..6].copy_from_slice(&0u16.to_be_bytes());
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..TCP_MSG_HEADER_LEN], &ctx);
+            TCP_MSG_HEADER_LEN
+        }
+
+        pub fn fetch_peers_res_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            peers: &HashMap<VirtualAddr, Vec<PeerStatus>>,
+            out: &mut [u8],
+        ) -> Result<usize> {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = FETCH_PEERS_RES;
+
+            let size = bincode::encode_into_slice(
+                peers,
+                &mut out[TCP_MSG_HEADER_LEN..],
+                config::standard(),
+            )?;
+            out[4..6].copy_from_slice(&(size as u16).to_be_bytes());
+
+            let ret = TCP_MSG_HEADER_LEN + size;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+
+            key.encrypt(&mut out[2..ret], &ctx);
+            Ok(ret)
+        }
+
         fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
             let msg = match mode {
                 REGISTER => {
@@ -852,6 +940,21 @@ pub mod protocol {
                         _,
                     >(data, config::standard())?;
                     TcpMsg::GetIdleVirtualAddrRes(opt.0)
+                }
+                UPLOAD_PEERS => {
+                    let (peers, _) = bincode::decode_from_slice::<
+                        Vec<PeerStatus>,
+                        _,
+                    >(data, config::standard())?;
+                    TcpMsg::UploadPeers(peers)
+                }
+                FETCH_PEERS => TcpMsg::FetchPeers,
+                FETCH_PEERS_RES => {
+                    let (peers_map, _) = bincode::decode_from_slice::<
+                        HashMap<VirtualAddr, Vec<PeerStatus>>,
+                        _,
+                    >(data, config::standard())?;
+                    TcpMsg::FetchPeersRes(peers_map)
                 }
                 _ => return Err(anyhow!("invalid tcp msg")),
             };
@@ -917,6 +1020,7 @@ pub mod protocol {
 
     pub const UDP_MSG_HEADER_LEN: usize = 4;
 
+    #[allow(unused)]
     #[derive(Clone)]
     pub enum UdpSocketErr<E> {
         FatalError(E),

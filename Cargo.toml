@@ -47,6 +47,7 @@ byte-unit = { version = "5", features = ["serde"] }
 linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 mimalloc = { version = "*", default-features = false, optional = true }
 netstack-lwip = { git = "https://github.com/xutianyi1999/netstack-lwip.git", optional = true }
+pathfinding = "4"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 log4rs = { version = "1", default-features = false, features = ["console_appender"] }

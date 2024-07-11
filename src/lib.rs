@@ -184,6 +184,7 @@ struct TargetGroup {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
+    auto_route_selection: Option<bool>
 }
 
 #[derive(Deserialize, Clone)]
@@ -229,6 +230,7 @@ struct TargetGroupFinalize<K> {
     lan_ip_addr: Option<IpAddr>,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
+    auto_route_selection: bool
 }
 
 #[derive(Clone)]
@@ -349,6 +351,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 lan_ip_addr: ternary!(group_use_udp, Some(lan_ip_addr), None),
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
+                auto_route_selection: group.auto_route_selection.unwrap_or(false)
             };
             list.push(group_finalize)
         }
