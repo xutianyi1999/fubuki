@@ -46,7 +46,8 @@
         "10.0.0.2": [
           "192.168.201.0/24"
         ]
-      }
+      },
+      "auto_route_selection": false
     }
   ],
   "features": {
@@ -89,6 +90,7 @@
     - lan_ip_addr(可选): 默认通过本地路由表选择, 可以手动指定LAN地址
     - allowed_ips(可选): 允许其余节点通过本地节点转至发目的网段
     - ips(可选): 发送至目标网段的数据通过另一个节点去转发，例如通过'10.0.0.2'节点发送至目标'192.168.201.0/24'网段的机器
+    - auto_route_selection(可选): 与目标节点无法p2p时会自动寻找一个合适的中间节点去转发, 当可能途经多个中转节点时需要所有节点都开启此选项
 - features: 功能开关（可选）
     - disable\_api\_server: 禁用api server，默认为false
     - disable\_hosts\_operation: 禁用hosts文件操作，默认为false
