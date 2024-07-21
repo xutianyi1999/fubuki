@@ -34,14 +34,17 @@ struct FubukiStartOptions {
   // tun device file descriptor
   // V2 required
   int32_t tun_fd;
-  // delay starting node
+  // flags
   // V3 required
-  bool delayed_start;
+  uint64_t flags;
 };
 
 #define FUBUKI_START_OPTIONS_VERSION (1)
 #define FUBUKI_START_OPTIONS_VERSION2 (2)
 #define FUBUKI_START_OPTIONS_VERSION3 (3)
+
+// need to use fubuki_block_on to launch fubuki if this flag is set
+#define FUBUKI_FLAG_NO_AUTO_SPAWN (0x0001)
 
 struct FubukiHandle *fubuki_start(struct FubukiStartOptions *opts,
                                   uint32_t version,
