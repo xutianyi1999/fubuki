@@ -2044,7 +2044,7 @@ pub async fn start<K, T>(
                     IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
                 };
 
-                let udp_socket = UdpSocket::bind((bind_addr, 0))
+                let udp_socket = UdpSocket::bind((bind_addr, group.node_binding_port))
                     .await
                     .context("create udp socket failed")?;
 

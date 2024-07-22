@@ -182,6 +182,7 @@ struct TargetGroup {
     mode: Option<ProtocolMode>,
     specify_mode: Option<HashMap<VirtualAddr, ProtocolMode>>,
     lan_ip_addr: Option<IpAddr>,
+    node_binding_port: Option<u16>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
     auto_route_selection: Option<bool>
@@ -228,6 +229,7 @@ struct TargetGroupFinalize<K> {
     mode: ProtocolMode,
     specify_mode: HashMap<VirtualAddr, ProtocolMode>,
     lan_ip_addr: Option<IpAddr>,
+    node_binding_port: u16,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
     auto_route_selection: bool
@@ -349,6 +351,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 mode,
                 specify_mode: group.specify_mode.unwrap_or_default(),
                 lan_ip_addr: ternary!(group_use_udp, Some(lan_ip_addr), None),
+                node_binding_port: group.node_binding_port.unwrap_or(0),
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
                 auto_route_selection: group.auto_route_selection.unwrap_or(false)

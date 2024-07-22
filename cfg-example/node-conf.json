@@ -36,6 +36,7 @@
         }
       },
       "lan_ip_addr": "192.168.0.2",
+      "node_binding_port": 0,
       "allowed_ips": [
         "192.168.200.0/24"
       ],
