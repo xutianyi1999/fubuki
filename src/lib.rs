@@ -63,7 +63,8 @@ pub struct ExternalContext {
 }
 
 #[derive(Deserialize, Clone)]
-struct Group { 
+#[serde(deny_unknown_fields)]
+struct Group {
     name: String,
     listen_addr: SocketAddr,
     key: Option<String>,
@@ -74,6 +75,7 @@ struct Group {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct ServerConfig {
     channel_limit: Option<usize>,
     api_addr: Option<SocketAddr>,
@@ -168,12 +170,14 @@ impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct TunAddr {
     ip: VirtualAddr,
     netmask: Ipv4Addr,
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct TargetGroup {
     node_name: Option<String>,
     server_addr: String,
@@ -189,6 +193,7 @@ struct TargetGroup {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct NodeConfig {
     mtu: Option<usize>,
     channel_limit: Option<usize>,
