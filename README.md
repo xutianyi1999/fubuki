@@ -43,6 +43,7 @@ Options:
 
 - 必须以管理员权限运行
 - 需要wintun.dll(https://www.wintun.net) 与程序同目录或System32下
+- Windows7 需要安装 [KB3063858](https://www.microsoft.com/en-us/download/details.aspx?id=47409)、[KB4474419](https://www.catalog.update.microsoft.com/search.aspx?q=kb4474419) 这两个补丁
 
 ##### Linux
 
