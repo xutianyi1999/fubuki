@@ -85,6 +85,10 @@ static-files = { version = "0.2", optional = true }
 [patch.crates-io]
 advmac = { git = "https://github.com/xutianyi1999/advmac.git" }
 
+# todo fix link problem of windows.0.48.5.lib in win7-msvc toolchain
+winreg = { git = "https://github.com/kayabaNerve/winreg-rs.git" }
+self-replace = {git = "https://github.com/xutianyi1999/self-replace.git" }
+
 [features]
 default = ["mimalloc"]
 web = ["static-files"]

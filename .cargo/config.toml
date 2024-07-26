@@ -1,2 +1,8 @@
 [build]
 rustflags = "--print native-static-libs"
+
+[target.i686-win7-windows-msvc]
+rustflags = "--print native-static-libs -C target-feature=+crt-static"
+
+[target.x86_64-win7-windows-msvc]
+rustflags = "--print native-static-libs -C target-feature=+crt-static"
