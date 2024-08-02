@@ -346,7 +346,7 @@ async fn send<K: Cipher>(
         let udp_status = dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
-            debug!("tun handler: udp message p2p to node {}", dst_node.node.name);
+            debug!("PacketSender: udp message p2p to node {}", dst_node.node.name);
 
             let socket = match &inter.udp_socket {
                 None => unreachable!(),
@@ -411,10 +411,10 @@ async fn send<K: Cipher>(
 
                     match tx.try_send(packet) {
                         Ok(_) => {
-                            debug!("tun handler: tcp message relay to node {}", dst_node.node.name);
+                            debug!("PacketSender: tcp message relay to node {}", dst_node.node.name);
                             return Ok(());
                         },
-                        Err(e) => error!("tun handler: tunnel error: {}", e)
+                        Err(e) => error!("PacketSender: tunnel error: {}", e)
                     }
                 }
                 NetProtocol::UDP if inter.server_allow_udp_relay.load(Ordering::Relaxed) => {
@@ -428,7 +428,7 @@ async fn send<K: Cipher>(
                         UdpStatus::Unavailable => continue,
                     };
 
-                    debug!("tun handler: udp message relay to node {}", dst_node.node.name);
+                    debug!("PacketSender: udp message relay to node {}", dst_node.node.name);
 
                     let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSG_HEADER_LEN..packet_range.end];
 
@@ -582,7 +582,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                     self.tun.send_packet(&buff[packet_range]).await.context("error send packet to tun")?;
                 }
 
-                debug!("tun handler: cannot find route {}->{}", src_addr, dst_addr);
+                debug!("PacketSender: cannot find route {}->{}", src_addr, dst_addr);
                 return Ok(())
             },
             Some(v) => v,
@@ -620,7 +620,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
 
         match transfer_type {
             TransferType::Unicast(addr) => {
-                debug!("tun handler: packet {}->{}; gateway: {}", src_addr, dst_addr, addr);
+                debug!("PacketSender: packet {}->{}; gateway: {}", src_addr, dst_addr, addr);
 
                 if interface_addr == addr {
                     return self.tun.send_packet(&buff[packet_range]).await.context("error send packet to tun");
@@ -648,7 +648,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                 }
             }
             TransferType::Broadcast => {
-                debug!("tun handler: packet {}->{}; broadcast", src_addr, dst_addr);
+                debug!("PacketSender: packet {}->{}; broadcast", src_addr, dst_addr);
 
                 match direction {
                     Direction::Output => {
