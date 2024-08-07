@@ -263,17 +263,23 @@ async fn lookup_host(dst: &str) -> Option<SocketAddr> {
     tokio::net::lookup_host(dst).await.ok()?.next()
 }
 
+#[derive(Clone, Copy, Debug)]
+struct NextHop {
+    next: VirtualAddr,
+    cost: u64
+}
+
 fn find_next_hop(
     curr: VirtualAddr,
     dst: VirtualAddr,
-    cache: &mut Vec<(VirtualAddr, NextHop, Instant)>,
+    cache: &mut Vec<(VirtualAddr, Option<NextHop>, Instant)>,
     peers: &RwLock<HashMap<VirtualAddr, Vec<PeerStatus>>>
-) -> NextHop {
+) -> Option<NextHop> {
     fn find(
         curr: VirtualAddr,
         dst: VirtualAddr,
         peers: &HashMap<VirtualAddr, Vec<PeerStatus>>
-    ) -> NextHop {
+    ) -> Option<NextHop> {
         use pathfinding::prelude::dijkstra;
         const EMPTY: &'static Vec<PeerStatus> = &Vec::new();
 
@@ -299,12 +305,12 @@ fn find_next_hop(
         );
 
         match route {
-            // routing sequence starts from the current address, index 1 is the next hop.
-            Some((route, cost)) if cost < 2 => {
+            Some((route, cost)) => {
                 info!("select route {:?} for dest addr {}, cost: {}", route, dst, cost);
-                NextHop::NodeRelay(route[1])
+                // routing sequence starts from the current address, index 1 is the next hop.
+                Some(NextHop{next: route[1], cost })
             },
-            _ => NextHop::ServerRelay
+            None => None
         }
     }
 
@@ -337,12 +343,48 @@ async fn send<K: Cipher>(
     buff: &mut [u8],
     packet_range: Range<usize>,
     node_relay: bool,
-    next_route_cache: &mut Vec<(VirtualAddr, NextHop, Instant)>,
+    next_route_cache: &mut Vec<(VirtualAddr, Option<NextHop>, Instant)>,
     node_list: &NodeList
 ) -> Result<()> {
     let mode = inter.specify_mode.get(&dst_node.node.virtual_addr).unwrap_or(&inter.mode);
 
-    if (!mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty()) {
+    macro_rules! relay_packet_through_node {
+        ($max_cost: expr) => {
+            if node_relay {
+                if let Some(peers_map) = &inter.peers_map {
+                    let next = find_next_hop(inter.addr.load(), dst_node.node.virtual_addr, next_route_cache, peers_map);
+        
+                    if let Some(next) = next {
+                        if next.cost < $max_cost {
+                            if let Some(node) = node_list.get_node(&next.next) {
+                                if let UdpStatus::Available { dst_addr } = node.udp_status.load() {
+                                    let socket = match &inter.udp_socket {
+                                        None => unreachable!(),
+                                        Some(socket) => socket,
+                                    };
+                        
+                                    let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
+                                    UdpMsg::data_encode(&inter.key, nonce, packet_range.len(), packet);
+                        
+                                    match UdpMsg::send_msg(socket, packet, dst_addr).await {
+                                        Ok(_) => return Ok(()),
+                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                        Err(UdpSocketErr::SuppressError(e)) => {
+                                            error!("node {} send udp packet error {}", inter.node_name, e);
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    let support_p2p = (!mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty());
+
+    if support_p2p {
         let udp_status = dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
@@ -365,33 +407,7 @@ async fn send<K: Cipher>(
             };
         }
 
-        if node_relay {
-            if let Some(peers_map) = &inter.peers_map {
-                let next = find_next_hop(inter.addr.load(), dst_node.node.virtual_addr, next_route_cache, peers_map);
-    
-                if let NextHop::NodeRelay(relay_node) = next {
-                    if let Some(node) = node_list.get_node(&relay_node) {
-                        if let UdpStatus::Available { dst_addr } = node.udp_status.load() {
-                            let socket = match &inter.udp_socket {
-                                None => unreachable!(),
-                                Some(socket) => socket,
-                            };
-                
-                            let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
-                            UdpMsg::data_encode(&inter.key, nonce, packet_range.len(), packet);
-                
-                            match UdpMsg::send_msg(socket, packet, dst_addr).await {
-                                Ok(_) => return Ok(()),
-                                Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
-                                Err(UdpSocketErr::SuppressError(e)) => {
-                                    error!("node {} send udp packet error {}", inter.node_name, e);
-                                }
-                            };
-                        }
-                    }
-                }
-            }
-        }
+        relay_packet_through_node!(2);
     }
 
     if (!mode.relay.is_empty()) && (!dst_node.node.mode.relay.is_empty()) {
@@ -447,6 +463,10 @@ async fn send<K: Cipher>(
         }
     }
 
+    if support_p2p {
+        relay_packet_through_node!(5);
+    }
+
     warn!("no route to {}", dst_node.node.name);
     Ok(())
 }
@@ -480,12 +500,6 @@ fn find_route<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, mut dst_addr: Ipv4A
     Some((dst_addr, item))
 }
 
-#[derive(Clone, Copy, Debug)]
-enum NextHop {
-    NodeRelay(VirtualAddr),
-    ServerRelay
-}
-
 struct PacketSender<'a, InterRT, ExternRT, Tun, K> {
     rt_ref: RoutingTableRefEnum<'a, InterRT, ExternRT>,
     interfaces: &'a [&'a Interface<K>],
@@ -496,7 +510,7 @@ struct PacketSender<'a, InterRT, ExternRT, Tun, K> {
     snat: Option<&'a cross_nat::SNat>,
     rng: rand::rngs::SmallRng,
     // if_index -> (dst addr, next hop, update time)
-    next_route: Vec<Vec<(VirtualAddr, NextHop, Instant)>>
+    next_route: Vec<Vec<(VirtualAddr, Option<NextHop>, Instant)>>
 }
 
 #[repr(C)]
