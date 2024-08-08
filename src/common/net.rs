@@ -1209,6 +1209,21 @@ pub mod protocol {
                         }
                     }
 
+                    #[cfg(target_os = "linux")]
+                    {
+                        // Message too long
+                        const EMSGSIZE: i32 = 90;
+                        // No buffer space available
+                        const ENOBUFS: i32 = 105;
+
+                        let err = e.raw_os_error();
+
+                        if err == Some(EMSGSIZE) ||
+                            err == Some(ENOBUFS)
+                        {
+                            return UdpSocketErr::SuppressError(e);
+                        }
+                    }
                     UdpSocketErr::FatalError(e)
                 })
                 .map(|_| ())

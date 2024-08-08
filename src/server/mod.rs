@@ -225,7 +225,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             Ok(_) => (),
                             Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
                             Err(UdpSocketErr::SuppressError(e)) => {
-                                error!("group {} send udp packet error {}", group.name, e);
+                                warn!("group {} send udp packet warn {}", group.name, e);
                             }
                         };
                     }
@@ -300,7 +300,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                     Ok(_) => (),
                                     Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                     Err(UdpSocketErr::SuppressError(e)) => {
-                                        error!("group {} send udp packet error {}", group.name, e);
+                                        warn!("group {} send udp packet warn {}", group.name, e);
                                     }
                                 };
                             }
@@ -402,7 +402,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                     Ok(_) => (),
                                     Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
                                     Err(UdpSocketErr::SuppressError(e)) => {
-                                        error!("group {} send udp packet error {}", group.name, e);
+                                        warn!("group {} send udp packet warn {}", group.name, e);
                                     }
                                 }
                             }
@@ -747,7 +747,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            error!("group {} send udp packet error {}", group.name, e);
+                                            warn!("group {} send udp packet warn {}", group.name, e);
                                         }
                                     }
                                 }

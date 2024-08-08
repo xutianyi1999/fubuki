@@ -77,7 +77,7 @@ pub(super) async fn api_start(bind: SocketAddr, ghs: Vec<Arc<GroupHandle>>) -> R
                 .await;
 
             if let Err(e) = res {
-                error!("error serving connection: {:?}", e);
+                warn!("error serving connection: {:?}", e);
             }
         });
     }

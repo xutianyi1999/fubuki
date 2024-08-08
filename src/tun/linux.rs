@@ -61,12 +61,12 @@ impl TunDevice for Linuxtun {
                     let (src, dst) = match f() {
                         Ok(v) => v,
                         Err(e) => {
-                            error!("tun: {}", e);
+                            warn!("tun: {}", e);
                             return Ok(())
                         }
                     };
 
-                    error!("tun: send packet to tun error: {}; packet {}->{}", e, src, dst);
+                    warn!("tun: send packet to tun warn: {}; packet {}->{}", e, src, dst);
                     Ok(())
                 }
                 res => res.map(|_| ()).map_err(|e| anyhow!(e))

@@ -370,7 +370,7 @@ async fn send<K: Cipher>(
                                         Ok(_) => return Ok(()),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            error!("node {} send udp packet error {}", inter.node_name, e);
+                                            warn!("node {} send udp packet warn {}", inter.node_name, e);
                                         }
                                     };
                                 }
@@ -402,7 +402,7 @@ async fn send<K: Cipher>(
                 Ok(_) => return Ok(()),
                 Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                 Err(UdpSocketErr::SuppressError(e)) => {
-                    error!("node {} send udp packet error {}", inter.node_name, e);
+                    warn!("node {} send udp packet warn {}", inter.node_name, e);
                 }
             };
         }
@@ -454,7 +454,7 @@ async fn send<K: Cipher>(
                         Ok(_) => return Ok(()),
                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                         Err(UdpSocketErr::SuppressError(e)) => {
-                            error!("node {} send udp packet error {}", inter.node_name, e);
+                            warn!("node {} send udp packet warn {}", inter.node_name, e);
                         }
                     };
                 }
@@ -833,7 +833,7 @@ where
                         Ok(_) => (),
                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                         Err(UdpSocketErr::SuppressError(e)) => {
-                            error!("node {} send udp packet error {}", group.node_name, e);
+                            warn!("node {} send udp packet warn {}", group.node_name, e);
                         }
                     }
 
@@ -882,7 +882,7 @@ where
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            error!("node {} send udp packet error {}", group.node_name, e);
+                                            warn!("node {} send udp packet warn {}", group.node_name, e);
                                         }
                                     };
                                 }
@@ -910,7 +910,7 @@ where
                                                         Ok(_) => (),
                                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                                            error!("node {} send udp packet error {}", group.node_name, e);
+                                                            warn!("node {} send udp packet warn {}", group.node_name, e);
                                                         }
                                                     };
                                                 }
@@ -978,7 +978,7 @@ where
                     let (len, peer_addr) = match UdpMsg::recv_msg(socket, &mut buff[START..]).await {
                         Ok(v) => v,
                         Err(UdpSocketErr::SuppressError(e)) => {
-                            error!("node {} receive udp packet error {}", group.node_name, e);
+                            warn!("node {} receive udp packet warn {}", group.node_name, e);
                             continue;
                         }
                         Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e))
@@ -1022,7 +1022,7 @@ where
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            error!("node {} send udp packet error {}", group.node_name, e);
+                                            warn!("node {} send udp packet warn {}", group.node_name, e);
                                         }
                                     };
                                 }
