@@ -63,7 +63,7 @@ export class InfoItemComponent {
       }
     })
 
-    this.timer = setInterval(() => this.getNodeMap(), 10_000);
+    this.timer = setInterval(() => this.getNodeMap(), 3_000);
   }
 
   ngOnDestoy() {
