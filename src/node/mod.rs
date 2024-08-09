@@ -903,7 +903,8 @@ where
                                         
                                         macro_rules! send {
                                             ($peer_addr: expr) => {
-                                                if config.socket_bind_device.is_some() ||
+                                                // Android VPNService should add itself to addDisallowedApplication
+                                                if (config.socket_bind_device.is_some() || cfg!(target_os = "android"))||
                                                 !through_virtual_gateway(rt, SocketAddr::new(lan_ip_addr, 0), $peer_addr) 
                                                 {
                                                     match UdpMsg::send_msg(socket, &packet, $peer_addr).await {
@@ -1073,7 +1074,9 @@ where
 
                                             if node.udp_status.load() == UdpStatus::Unavailable &&
                                                 hc_guard.packet_continuous_recv_count >= config.udp_heartbeat_continuous_recv &&
-                                                (config.socket_bind_device.is_some() || !through_vgateway())
+                                                ((config.socket_bind_device.is_some() || cfg!(target_os = "android"))||
+                                                    !through_vgateway()
+                                                )
                                             {
                                                 drop(hc_guard);
 
