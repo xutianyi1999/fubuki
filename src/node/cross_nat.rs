@@ -215,8 +215,14 @@ where
         let packet_range = START..START + packet.len();
         buff[packet_range.clone()].copy_from_slice(&packet);
 
-        s.send_packet(Direction::Output, packet_range, &mut buff, true, false)
-            .await?;
+        s.send_packet(
+            Direction::Output,
+            packet_range,
+            &mut buff,
+            true,
+            false,
+            None,
+        ).await?;
     }
     Ok(())
 }

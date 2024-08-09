@@ -363,8 +363,8 @@ async fn send<K: Cipher>(
                                         Some(socket) => socket,
                                     };
                         
-                                    let packet = &mut buff[packet_range.start - UDP_MSG_HEADER_LEN..packet_range.end];
-                                    UdpMsg::data_encode(&inter.key, nonce, packet_range.len(), packet);
+                                    let packet = &mut buff[packet_range.start - size_of::<VirtualAddr>() - UDP_MSG_HEADER_LEN..packet_range.end];
+                                    UdpMsg::relay_encode(&inter.key, nonce, dst_node.node.virtual_addr, packet_range.len(), packet);
                         
                                     match UdpMsg::send_msg(socket, packet, dst_addr).await {
                                         Ok(_) => return Ok(()),
@@ -554,13 +554,14 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
         packet_range: Range<usize>,
         buff: &mut [u8],
         allow_packet_forward: bool,
-        allow_packet_not_in_rules_send_to_kernel: bool
+        allow_packet_not_in_rules_send_to_kernel: bool,
+        relay_dst_addr: Option<VirtualAddr>
     ) -> Result<()> {
         let interfaces = self.interfaces;
 
         let packet = &mut buff[packet_range.clone()];
 
-        let (Ok(src_addr), Ok(dst_addr)) = (get_ip_src_addr(packet), get_ip_dst_addr(packet)) else {
+        let (Ok(src_addr), Ok(mut dst_addr)) = (get_ip_src_addr(packet), get_ip_dst_addr(packet)) else {
             error!("Illegal ipv4 packet");
             return Ok(());
         };
@@ -585,10 +586,23 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
             }
         }
 
-        let opt = match &mut self.rt_ref {
-            RoutingTableRefEnum::Cache(v) => find_route(&**v.load(), src_addr, dst_addr),
-            RoutingTableRefEnum::Ref(v) => unsafe { find_route(&*v.get(), src_addr, dst_addr) }
-        };
+        macro_rules! find_route_with_dst {
+            ($dst_addr: expr) => {
+                match &mut self.rt_ref {
+                    RoutingTableRefEnum::Cache(v) => find_route(&**v.load(), src_addr, $dst_addr),
+                    RoutingTableRefEnum::Ref(v) => unsafe { find_route(&*v.get(), src_addr, $dst_addr) }
+                }
+            };
+        }
+
+        let mut opt = find_route_with_dst!(dst_addr);
+
+        if opt.is_none() {
+            if let Some(relay_dst_addr) = relay_dst_addr {
+                dst_addr = relay_dst_addr;
+                opt = find_route_with_dst!(dst_addr);
+            }
+        }
 
         let (dst_addr, item) = match opt {
             None => {
@@ -652,7 +666,8 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                         Some(node) => send(
                             self.rng.gen(), 
                             interface, 
-                            node, buff,
+                            node,
+                            buff,
                             packet_range,
                             true,
                             next_route_cache,
@@ -749,7 +764,8 @@ async fn tun_handler<T, K, InterRT, ExternRT>(
                         packet_range,
                         &mut buff,
                         true,
-                        false
+                        false,
+                        None
                     ).await?;
                 }
             });
@@ -1096,17 +1112,19 @@ where
                                     START_DATA..START_DATA + len,
                                     &mut buff,
                                     config.allow_packet_forward,
-                                    config.allow_packet_not_in_rules_send_to_kernel
+                                    config.allow_packet_not_in_rules_send_to_kernel,
+                                    None,
                                 ).await?;
                             }
-                            UdpMsg::Relay(_, _) => {
+                            UdpMsg::Relay(dst, _) => {
                                 const START_DATA: usize = START + UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>();
                                 sender.send_packet(
                                     Direction::Input,
                                     START_DATA..START_DATA + len,
                                     &mut buff,
                                     config.allow_packet_forward,
-                                    config.allow_packet_not_in_rules_send_to_kernel
+                                    config.allow_packet_not_in_rules_send_to_kernel,
+                                    Some(dst)
                                 ).await?;
                             }
                         }
@@ -1603,14 +1621,15 @@ where
 
                                         interface.node_list.store(Arc::new(new_list));
                                     }
-                                    TcpMsg::Relay(_, data) => {
+                                    TcpMsg::Relay(dst, data) => {
                                         const DATA_START: usize = START + size_of::<VirtualAddr>();
                                         sender.send_packet(
                                             Direction::Input,
                                             DATA_START..DATA_START + data.len(),
                                             &mut buff,
                                             config.allow_packet_forward,
-                                            config.allow_packet_not_in_rules_send_to_kernel
+                                            config.allow_packet_not_in_rules_send_to_kernel,
+                                            Some(dst)
                                         ).await?;
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
@@ -1924,7 +1943,8 @@ async fn send_packet_hook_handler<T, K, InterRT, ExternRT>(
                         packet_range,
                         &mut buff,
                         config.allow_packet_forward,
-                        config.allow_packet_not_in_rules_send_to_kernel
+                        config.allow_packet_not_in_rules_send_to_kernel,
+                        None,
                     ).await?;
                 }
                 Direction::Output => {
@@ -1933,7 +1953,8 @@ async fn send_packet_hook_handler<T, K, InterRT, ExternRT>(
                         packet_range,
                         &mut buff,
                         true,
-                        false
+                        false,
+                        None,
                     ).await?;
                 }
             }
