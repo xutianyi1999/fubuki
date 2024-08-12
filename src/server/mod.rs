@@ -1066,7 +1066,10 @@ pub async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()> {
 
             for group in groups {
                 if group.name == group_name {
-                    for node in group.node_map.values() {
+                    let mut nodes = group.node_map.values().collect::<Vec<_>>();
+                    nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
+
+                    for node in nodes {
                         let register_time = utc_to_str(node.node.register_time)?;
 
                         table.add_row(row![

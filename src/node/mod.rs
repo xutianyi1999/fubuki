@@ -2271,7 +2271,8 @@ pub async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> {
         return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
     }
 
-    let interfaces_info: Vec<InterfaceInfo> = serde_json::from_slice(bytes.deref())?;
+    let mut interfaces_info: Vec<InterfaceInfo> = serde_json::from_slice(bytes.deref())?;
+    interfaces_info.sort_unstable_by_key(|v| v.index);
 
     let mut table = Table::new();
 
@@ -2319,7 +2320,10 @@ pub async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> {
 
             for info in interfaces_info {
                 if info.index == interface_index {
-                    for node in info.node_map.values() {
+                    let mut nodes = info.node_map.values().collect::<Vec<_>>();
+                    nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
+
+                    for node in nodes {
                         let register_time = utc_to_str(node.node.register_time)?;
 
                         table.add_row(row![
