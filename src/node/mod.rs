@@ -292,10 +292,10 @@ fn find_next_hop(
                 for peer_status in peers_status_list {
                     if let (Some(latency), Some(packet_loss)) = (peer_status.latency, peer_status.packet_loss) {
                         // normalization
-                        // 100 ms
-                        let latency_quality = latency.as_secs() / 100;
-                        // 5% packet loss
-                        let packet_loss_quality = packet_loss as u64 / 5;
+                        // 200 ms
+                        let latency_quality = (latency.as_millis() as u64 * 100) / 200;
+                        // 3% packet loss
+                        let packet_loss_quality = (packet_loss as u64 * 100) / 3;
                         peers.push((peer_status.addr, latency_quality + packet_loss_quality));
                     }
                 }
@@ -355,7 +355,7 @@ async fn send<K: Cipher>(
                     let next = find_next_hop(inter.addr.load(), dst_node.node.virtual_addr, next_route_cache, peers_map);
         
                     if let Some(next) = next {
-                        if next.cost < $max_cost {
+                        if next.next != dst_node.node.virtual_addr && next.cost < $max_cost {
                             if let Some(node) = node_list.get_node(&next.next) {
                                 if let UdpStatus::Available { dst_addr } = node.udp_status.load() {
                                     let socket = match &inter.udp_socket {
@@ -385,6 +385,8 @@ async fn send<K: Cipher>(
     let support_p2p = (!mode.p2p.is_empty()) && (!dst_node.node.mode.p2p.is_empty());
 
     if support_p2p {
+        relay_packet_through_node!(200);
+
         let udp_status = dst_node.udp_status.load();
 
         if let UdpStatus::Available { dst_addr } = udp_status {
@@ -407,7 +409,7 @@ async fn send<K: Cipher>(
             };
         }
 
-        relay_packet_through_node!(2);
+        relay_packet_through_node!(300);
     }
 
     if (!mode.relay.is_empty()) && (!dst_node.node.mode.relay.is_empty()) {
@@ -464,7 +466,7 @@ async fn send<K: Cipher>(
     }
 
     if support_p2p {
-        relay_packet_through_node!(5);
+        relay_packet_through_node!(500);
     }
 
     warn!("no route to {}", dst_node.node.name);
