@@ -112,10 +112,6 @@ impl TunDevice for Macostun {
             return Ok(());
         }
 
-        self.inter
-            .remove_address(IpNet::V4(cidr))
-            .map_err(|e| anyhow!(e.to_string()))?;
-
         let status = Command::new("route")
             .args([
                 "-n",
@@ -132,6 +128,23 @@ impl TunDevice for Macostun {
 
         if !status.success() {
             return Err(anyhow!("failed to delete route"));
+        }
+
+        let if_name = self.inter.name().map_err(|e| anyhow!(e.to_string()))?;
+
+        let status = Command::new("ifconfig")
+            .args([
+                if_name.as_str(),
+                "inet",
+                addr.to_string().as_str(),
+                "-alias"
+            ])
+            .stderr(Stdio::inherit())
+            .output()?
+            .status;
+
+        if !status.success() {
+            return Err(anyhow!("failed to delete utun ip address"));
         }
 
         guard.remove(&addr);
