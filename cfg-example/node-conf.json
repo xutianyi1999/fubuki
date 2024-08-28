@@ -45,7 +45,8 @@
           "192.168.201.0/24"
         ]
       },
-      "auto_route_selection": false
+      "auto_route_selection": false,
+      "use_kcp_session": false
     }
   ],
   "features": {

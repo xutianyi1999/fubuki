@@ -479,6 +479,7 @@ pub mod protocol {
     pub const UPLOAD_PEERS: u8 = 0x09;
     pub const FETCH_PEERS: u8 = 0x0A;
     pub const FETCH_PEERS_RES: u8 = 0x0B;
+    pub const KCP_DATA: u8 = 0x0C;
     pub const REQ: u8 = 0x00;
     pub const RESP: u8 = 0x01;
 
@@ -1016,6 +1017,7 @@ pub mod protocol {
         Data(&'a mut [u8]),
         // todo remove relay
         Relay(VirtualAddr, &'a mut [u8]),
+        KcpData(&'a mut [u8])
     }
 
     pub const UDP_MSG_HEADER_LEN: usize = 4;
@@ -1112,6 +1114,27 @@ pub mod protocol {
             ret
         }
 
+        pub fn kcp_data_encode<K: Cipher>(
+            key: &K,
+            nonce: u16,
+            packet_len: usize, 
+            out: &mut [u8]
+        ) -> usize {
+            out[0..2].copy_from_slice(&nonce.to_be_bytes());
+            out[2] = MAGIC_NUM;
+            out[3] = KCP_DATA;
+
+            let ret = UDP_MSG_HEADER_LEN + packet_len;
+
+            let ctx = CipherContext {
+                offset: 0,
+                nonce
+            };
+            key.encrypt(&mut out[2..ret], &ctx);
+
+            ret
+        }
+
         pub fn decode<'a, K: Cipher>(
             key: &K,
             packet: &'a mut [u8]
@@ -1162,6 +1185,7 @@ pub mod protocol {
                     };
                     Ok(UdpMsg::Heartbeat(virtual_addr, seq, heartbeat_type))
                 }
+                KCP_DATA => Ok(UdpMsg::KcpData(data)),
                 _ => Err(anyhow!("invalid udp message")),
             }
         }
@@ -1196,6 +1220,45 @@ pub mod protocol {
             to: A
         ) -> std::result::Result<(), UdpSocketErr<io::Error>> {
             socket.send_to(buff, to).await
+                .map_err(|e| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // Network is unreachable
+                        const ENETUNREACH: i32 = 51;
+
+                        let err = e.raw_os_error();
+
+                        if err == Some(ENETUNREACH) {
+                            return UdpSocketErr::SuppressError(e);
+                        }
+                    }
+
+                    #[cfg(target_os = "linux")]
+                    {
+                        // Message too long
+                        const EMSGSIZE: i32 = 90;
+                        // No buffer space available
+                        const ENOBUFS: i32 = 105;
+
+                        let err = e.raw_os_error();
+
+                        if err == Some(EMSGSIZE) ||
+                            err == Some(ENOBUFS)
+                        {
+                            return UdpSocketErr::SuppressError(e);
+                        }
+                    }
+                    UdpSocketErr::FatalError(e)
+                })
+                .map(|_| ())
+        }
+
+        pub fn try_send_msg(
+            socket: &UdpSocket,
+            buff: &[u8],
+            to: SocketAddr
+        ) -> std::result::Result<(), UdpSocketErr<io::Error>> {
+            socket.try_send_to(buff, to)
                 .map_err(|e| {
                     #[cfg(target_os = "macos")]
                     {

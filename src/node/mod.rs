@@ -33,7 +33,7 @@ use prettytable::{row, Table};
 use rand::{random, Rng, SeedableRng};
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
-use tokio::io::BufReader;
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::net::UdpSocket;
 use tokio::signal;
@@ -42,6 +42,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 
 use crate::common::hook::{Hooks, PacketRecvOutput};
+use crate::kcp_bridge::KcpStack;
 use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
 use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
@@ -798,7 +799,8 @@ async fn udp_handler<T, K, InterRT, ExternRT>(
     tun: T,
     hooks: Option<Arc<Hooks<K>>>,
     #[cfg(feature = "cross-nat")]
-    snat: Option<Arc<cross_nat::SNat>>
+    snat: Option<Arc<cross_nat::SNat>>,
+    kcpstack_tx: Option<tokio::sync::mpsc::Sender<Bytes>>
 ) -> Result<()>
 where
     T: TunDevice + Clone + Send + Sync + 'static,
@@ -974,6 +976,8 @@ where
             #[cfg(feature = "cross-nat")]
             let snat = snat.clone();
 
+            let kcpstack_tx = kcpstack_tx.clone();
+
             let join = tokio::spawn(async move {
                 let mut rng = rand::rngs::SmallRng::from_entropy();
                 let socket = interface.udp_socket.as_ref().expect("must need udp socket");
@@ -1129,6 +1133,13 @@ where
                                     Some(dst)
                                 ).await?;
                             }
+                            UdpMsg::KcpData(data) => {
+                                if let Some(tx) = &kcpstack_tx {
+                                    let mut packet = allocator::alloc(data.len());
+                                    packet.copy_from_slice(data);
+                                    let _ = tx.try_send(packet);
+                                }
+                            }
                         }
                     }
                 }
@@ -1139,7 +1150,7 @@ where
 
         recv_futs.push(recv_handler);
     }
-    
+
     tokio::try_join!(heartbeat_schedule, futures_util::future::try_join_all(recv_futs)).with_context(|| format!("node {} udp handler error", group.node_name))?;
     Ok(())
 }
@@ -1152,34 +1163,70 @@ enum RegisterVirtualAddr {
 
 async fn register<K>(
     group: &'static TargetGroupFinalize<K>,
+    interface: Arc<Interface<K>>,
     key: &K,
     register_addr: &mut RegisterVirtualAddr,
     lan_udp_socket_addr: Option<SocketAddr>,
     refresh_route: &mut bool,
-    socket_bind_device: Option<&str>
-) -> Result<(TcpStream, GroupContent)>
+    socket_bind_device: Option<&str>,
+    kcp_stack_rx: Option<Arc<tokio::sync::Mutex<Receiver<Bytes>>>>,
+) -> Result<((Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>), GroupContent)>
 where
-    K: Cipher + Clone
+    K: Cipher + Clone + Send + Sync
 {
     let server_addr = lookup_host(&group.server_addr)
         .await
         .ok_or_else(|| anyhow!("failed to resolve server {}", group.server_addr))?;
 
-    let socket = if server_addr.is_ipv4() {
-        TcpSocket::new_v4()?
+    let (mut reader, mut writer): (Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>) = if group.use_kcp_session {
+        let (handler_kcp_channel_from_tcp, handler_kcp_channel_from_kcp) = tokio::io::duplex(8192);
+        let kcp_stack_rx = kcp_stack_rx.unwrap();
+
+        tokio::spawn(async move {
+            let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+            let mut kcp_stack_rx_guard = kcp_stack_rx.lock().await;
+            let kcp_stack_rx = &mut *kcp_stack_rx_guard;
+
+            let conv = rand::random();
+            let (mut rx, mut tx) = tokio::io::split(handler_kcp_channel_from_kcp);
+
+            let mut stack = KcpStack::new(
+                socket,
+                server_addr,
+                conv,
+                &mut tx,
+                &mut rx,
+                kcp_stack_rx,
+                &interface.key,
+            );
+
+            if let Err(e) = stack.block_on().await {
+                warn!("kcpstack err: {:?}", e);
+            }
+        });
+
+        let (r, w) = tokio::io::split(handler_kcp_channel_from_tcp);
+        (Box::new(r), Box::new(w))
     } else {
-        TcpSocket::new_v6()?
+        let socket = if server_addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+    
+        socket.set_nodelay(true)?;
+    
+        if let Some(device) = socket_bind_device {
+            SocketExt::bind_device(&socket, device, server_addr.is_ipv6())?;
+        }
+    
+        let stream = socket.connect(server_addr)
+            .await
+            .with_context(|| format!("connect to {} error", &group.server_addr))?;
+
+        let (reader, writer) = stream.into_split();
+        (Box::new(reader), Box::new(writer))
     };
-
-    socket.set_nodelay(true)?;
-
-    if let Some(device) = socket_bind_device {
-        SocketExt::bind_device(&socket, device, server_addr.is_ipv6())?;
-    }
-
-    let mut stream = socket.connect(server_addr)
-        .await
-        .with_context(|| format!("connect to {} error", &group.server_addr))?;
 
     let mut buff = allocator::alloc(1024);
 
@@ -1188,9 +1235,9 @@ where
         RegisterVirtualAddr::Auto(Some(addr)) => *addr,
         RegisterVirtualAddr::Auto(None) => {
             let len = TcpMsg::get_idle_virtual_addr_encode(key, rand::random(), &mut buff);
-            TcpMsg::write_msg(&mut stream, &buff[..len]).await?;
+            TcpMsg::write_msg(&mut writer, &buff[..len]).await?;
 
-            let msg = TcpMsg::read_msg(&mut stream, key, &mut buff).await?
+            let msg = TcpMsg::read_msg(&mut reader, key, &mut buff).await?
                 .ok_or_else(|| anyhow!("server connection closed"))?;
 
             match msg {
@@ -1214,9 +1261,9 @@ where
     };
 
     let len = TcpMsg::register_encode(key, rand::random(), &reg, &mut buff)?;
-    TcpMsg::write_msg(&mut stream, &buff[..len]).await?;
+    TcpMsg::write_msg(&mut writer, &buff[..len]).await?;
 
-    let ret = TcpMsg::read_msg(&mut stream, key, &mut buff).await?
+    let ret = TcpMsg::read_msg(&mut reader, key, &mut buff).await?
         .ok_or_else(|| anyhow!("server connection closed"))?;
 
     let group_info = match ret {
@@ -1244,7 +1291,7 @@ where
         *register_addr = RegisterVirtualAddr::Auto(Some((virtual_addr, cidr)));
         *refresh_route = true;
     }
-    Ok((stream, group_info))
+    Ok(((reader, writer), group_info))
 }
 
 fn update_tun_addr<T, K, InterRT, ExternRt>(
@@ -1349,7 +1396,8 @@ async fn tcp_handler<T, K, InterRT, ExternRt>(
     routes: Vec<Route>,
     hooks: Option<Arc<Hooks<K>>>,
     #[cfg(feature = "cross-nat")]
-    snat: Option<Arc<cross_nat::SNat>>
+    snat: Option<Arc<cross_nat::SNat>>,
+    kcp_stack_rx: Option<Receiver<Bytes>>,
 ) -> Result<()>
 where
     T: TunDevice + Clone + Send + Sync + 'static,
@@ -1358,6 +1406,7 @@ where
     ExternRt: RoutingTable + Send + Sync + 'static
 {
     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
+        let kcp_stack_rx = kcp_stack_rx.map(|v| Arc::new(tokio::sync::Mutex::new(v)));
         let mut sys_route_is_sync = false;
 
         // use defer must use atomic
@@ -1453,15 +1502,17 @@ where
             let process = async {
                 let mut refresh_route= false;
 
-                let (stream, group_info) = tokio::time::timeout(
+                let ((rx, mut tx), group_info) = tokio::time::timeout(
                     Duration::from_secs(10),
                     register(
                         group,
+                        interface.clone(),
                         key,
                         &mut tun_addr,
                         lan_udp_socket_addr,
                         &mut refresh_route,
-                        config.socket_bind_device.as_deref()
+                        config.socket_bind_device.as_deref(),
+                        kcp_stack_rx.clone(),
                     )
                 ).await.with_context(|| format!("register to {} timeout", group.server_addr))??;
 
@@ -1531,7 +1582,6 @@ where
                 info!("node {}({}) has joined group {}", group.node_name, interface.addr.load(), group_info.name);
                 info!("group {} address range {}", group_info.name, group_info.cidr);
 
-                let (rx, mut tx) = stream.into_split();
                 let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
 
                 let (inner_channel_tx, mut inner_channel_rx) = unbounded_channel::<Bytes>();
@@ -2078,7 +2128,7 @@ pub async fn start<K, T>(
         };
 
         let udp_opt = match group.lan_ip_addr {
-            Some(lan_ip_addr) if group.mode.is_use_udp() => {
+            Some(lan_ip_addr) if group.mode.is_use_udp() || group.use_kcp_session => {
                 let bind_addr = match lan_ip_addr {
                     IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
@@ -2152,6 +2202,12 @@ pub async fn start<K, T>(
             }
         }
 
+        let (kcpstack_tx, kcpstack_rx) = if group.use_kcp_session {
+            Some(tokio::sync::mpsc::channel(1024)).unzip()
+        } else {
+            None.unzip()
+        };
+
         let fut = tcp_handler(
             config,
             group,
@@ -2163,7 +2219,8 @@ pub async fn start<K, T>(
             routes,
             hooks.clone(),
             #[cfg(feature = "cross-nat")]
-            snat.clone()
+            snat.clone(),
+            kcpstack_rx,
         );
         future_list.push(Box::pin(fut));
 
@@ -2176,7 +2233,8 @@ pub async fn start<K, T>(
                 tun.clone(),
                 hooks.clone(),
                 #[cfg(feature = "cross-nat")]
-                snat.clone()
+                snat.clone(),
+                kcpstack_tx,
             );
             future_list.push(Box::pin(fut));
         }

@@ -17,20 +17,21 @@ use parking_lot::{Mutex, RwLock};
 use prettytable::{row, Table};
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use tokio::{sync, time};
-use tokio::io::BufReader;
+use tokio::io::{AsyncRead, AsyncWrite, BufReader, DuplexStream};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{mpsc, watch};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{mpsc, watch};
+use tokio::{sync, time};
 
-use crate::{GroupFinalize, ServerInfoType};
-use crate::common::{allocator, utc_to_str};
 use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
-use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, HeartbeatCache, HeartbeatInfo, PushResult, SocketExt, UdpStatus};
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, PeerStatus, Register, RegisterError, Seq, TcpMsg, UdpMsg, UdpSocketErr, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN};
+use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, HeartbeatCache, HeartbeatInfo, PushResult, SocketExt, UdpStatus};
+use crate::common::{allocator, utc_to_str};
+use crate::kcp_bridge::KcpStack;
 use crate::server::api::api_start;
 use crate::ServerConfigFinalize;
+use crate::{GroupFinalize, ServerInfoType};
 
 mod api;
 
@@ -175,7 +176,8 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
     heartbeat_interval: Duration,
     packet_loss_limit: u64,
     packet_continuous_recv: u64,
-    notified: watch::Receiver<()>
+    notified: watch::Receiver<()>,
+    kcp_acceptor_channel: mpsc::Sender<(DuplexStream, SocketAddr)>,
 ) -> Result<()> {
     let key = &group.key;
 
@@ -245,11 +247,14 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
         let group_handle = group_handle.clone();
         let socket = socket.clone();
         let mut notified = notified.clone();
+        let kcp_acceptor_channel = kcp_acceptor_channel.clone();
 
         tokio::spawn(async move {
             let fut = async {
                 let mut buff = vec![0u8; UDP_BUFF_SIZE];
                 let mut rng = rand::rngs::SmallRng::from_entropy();
+                let kcp_sessions = Arc::new(RwLock::new(Vec::<(u32, mpsc::Sender<Bytes>)>::new()));
+                let kcp_sessions_expired_list = Arc::new(RwLock::new(HashSet::new()));
 
                 loop {
                     let (len, peer_addr) = match UdpMsg::recv_msg(socket.deref(), &mut buff).await {
@@ -407,6 +412,91 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                 }
                             }
                         }
+                        UdpMsg::KcpData(data) => {
+                            let mut send_fut = None;
+                            let conv = kcp::get_conv(data);
+
+                            {
+                                let kcp_sessions_guard = kcp_sessions.read();
+                                let mut kcp_sessions_write_guard;
+                                let sessions = &*kcp_sessions_guard;
+
+                                let tx = match sessions.binary_search_by_key(&conv, |(k, _)| *k) {
+                                    Ok(i) => {
+                                        &sessions[i].1
+                                    }
+                                    Err(_) => {
+                                        drop(kcp_sessions_guard);
+
+                                        {
+                                            if kcp_sessions_expired_list.read().contains(&conv) {
+                                                continue;
+                                            }
+                                        }
+
+                                        kcp_sessions_write_guard = kcp_sessions.write();
+                                        let sessions = &mut *kcp_sessions_write_guard;
+
+                                        match sessions.binary_search_by_key(&conv, |(k, _)| *k) {
+                                            Ok(i) => {
+                                                &sessions[i].1
+                                            }
+                                            Err(i) => {
+                                                let kcp_sessions = kcp_sessions.clone();
+                                                let (stack_tx, mut stack_rx) = tokio::sync::mpsc::channel(1024);
+                                                let socket = socket.clone();
+                                                let (handler_kcp_channel, handler_tcp_channel) = tokio::io::duplex(8192);
+                                                let kcp_sessions_expired_list = kcp_sessions_expired_list.clone();
+
+                                                tokio::spawn(async move {
+                                                    let (mut rx, mut tx) = tokio::io::split(handler_tcp_channel);
+        
+                                                    let mut stack = KcpStack::new(
+                                                        &socket,
+                                                        peer_addr,
+                                                        conv,
+                                                        &mut tx,
+                                                        &mut rx,
+                                                        &mut stack_rx,
+                                                        key,
+                                                    );
+        
+                                                    let res = stack.block_on().await;
+
+                                                    {
+                                                        let mut kcp_sessions_guard = kcp_sessions.write();
+                                                        let sessions = &mut *kcp_sessions_guard;
+                                                        let remove_index = sessions.binary_search_by_key(&conv, |(k, _)| *k).unwrap();
+                                                        sessions.remove(remove_index);
+                                                    }
+
+                                                    if let Err(e) = res {
+                                                        warn!("kcpstack error: {:?}", e);
+                                                    }
+
+                                                    kcp_sessions_expired_list.write().insert(conv);
+                                                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                                                    kcp_sessions_expired_list.write().remove(&conv);
+                                                });
+        
+                                                send_fut = Some(kcp_acceptor_channel.send((handler_kcp_channel, peer_addr)));
+        
+                                                sessions.insert(i, (conv, stack_tx));
+                                                &sessions[i].1
+                                            }
+                                        }
+                                    }
+                                };
+
+                                let mut packet = allocator::alloc(data.len());
+                                packet.copy_from_slice(data);
+                                let _ = tx.try_send(packet);
+                            }
+
+                            if let Some(fut) = send_fut {
+                                fut.await?;
+                            }
+                        }
                         _ => error!("group {} receive invalid udp message", group.name),
                     };
                 };
@@ -429,53 +519,71 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
     config: &'static ServerConfigFinalize<K>,
     group: &'static GroupFinalize<K>,
     group_handle: Arc<GroupHandle>,
-    notified: watch::Receiver<()>
+    notified: watch::Receiver<()>,
+    mut kcp_acceptor_channel: mpsc::Receiver<(DuplexStream, SocketAddr)>,
 ) -> Result<()> {
     let nonce_pool = Arc::new(NoncePool::new());
     let address_pool = Arc::new(AddressPool::new(group.address_range)?);
 
-    loop {
-        let (stream, peer_addr) = tcp_listener
-            .accept()
-            .await
-            .context("accept connection error")?;
-
-        let mut tunnel = Tunnel::new(
-            stream,
-            udp_socket.clone(),
-            config,
-            group,
-            group_handle.clone(),
-            nonce_pool.clone(),
-            address_pool.clone(),
-        );
-
-        let mut notified = notified.clone();
-
-        tokio::spawn(async move {
-            let res = tokio::select! {
-                res = tunnel.exec() => res,
-                _ = notified.changed() => Err(anyhow!("abort task"))
-            };
-
-            if let Err(e) = res {
-                match &tunnel.register {
-                    None => error!("group {} address {} tunnel error: {:?}", group.name, peer_addr, e),
-                    Some(v) => error!("group {} node {}({}) tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
+    macro_rules! spawn_task {
+        ($stream: expr, $peer_addr: expr) => {{
+            let mut tunnel = Tunnel::new(
+                $stream,
+                udp_socket.clone(),
+                config,
+                group,
+                group_handle.clone(),
+                nonce_pool.clone(),
+                address_pool.clone(),
+            );
+    
+            let mut notified = notified.clone();
+    
+            tokio::spawn(async move {
+                let res = tokio::select! {
+                    res = tunnel.exec() => res,
+                    _ = notified.changed() => Err(anyhow!("abort task"))
+                };
+    
+                if let Err(e) = res {
+                    match &tunnel.register {
+                        None => error!("group {} address {} tunnel error: {:?}", group.name, $peer_addr, e),
+                        Some(v) => error!("group {} node {}({}) tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
+                    }
                 }
-            }
+    
+                if let Some(v) = &tunnel.register {
+                    warn!("group {} node {}-{} disconnected", group.name, v.node_name, v.virtual_addr);
+                }
+            });
+        }};
+    }
 
-            if let Some(v) = &tunnel.register {
-                warn!("group {} node {}-{} disconnected", group.name, v.node_name, v.virtual_addr);
+    loop {
+        tokio::select! {
+            res = tcp_listener.accept() => {
+                let (stream, peer_addr) = res.context("accept connection error")?;
+
+                stream.set_keepalive()?;
+                stream.set_nodelay(true)?;
+
+                let stream = stream.into_split();
+                spawn_task!(stream, peer_addr);
             }
-        });
+            res = kcp_acceptor_channel.recv() => {
+                let (stream, peer_addr) = res.ok_or_else(|| anyhow!("kcp channel has been closed"))?;
+                let stream = tokio::io::split(stream);
+                spawn_task!(stream, peer_addr);
+            }
+        }
+        
     }
 }
 
-struct Tunnel<K: 'static> {
+struct Tunnel<K: 'static, R, W> {
     config: &'static ServerConfigFinalize<K>,
     group: &'static GroupFinalize<K>,
-    stream: Option<TcpStream>,
+    stream: Option<(R, W)>,
     udp_socket: Arc<UdpSocket>,
     group_handle: Arc<GroupHandle>,
     nonce_pool: Arc<NoncePool>,
@@ -485,9 +593,14 @@ struct Tunnel<K: 'static> {
     node_handle: Option<Arc<NodeHandle>>
 }
 
-impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
+impl<K, R, W> Tunnel<K, R, W> 
+    where 
+        K: Cipher + Clone + Send + Sync,
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+{
     fn new(
-        stream: TcpStream,
+        stream: (R, W),
         udp_socket: Arc<UdpSocket>,
         config: &'static ServerConfigFinalize<K>,
         group: &'static GroupFinalize<K>,
@@ -511,13 +624,13 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
     async fn init(&mut self) -> Result<()> {
         let buff = &mut allocator::alloc(1024);
-        let stream = self.stream.as_mut().unwrap();
+        let (reader, writer) = self.stream.as_mut().unwrap();
         let key = &self.group.key;
         let mut rng = rand::rngs::SmallRng::from_entropy();
 
         loop {
             let nonce_pool = &self.nonce_pool;
-            let msg = TcpMsg::read_msg(stream, key, buff).await?
+            let msg = TcpMsg::read_msg(reader, key, buff).await?
                 .ok_or_else(|| anyhow!("node connection closed"))?;
 
             match msg {
@@ -525,7 +638,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     let addr = self.address_pool.get_idle_addr()
                         .map(|v| (v, self.group.address_range));
                     let len = TcpMsg::get_idle_virtual_addr_res_encode(key, rng.gen(), addr, buff)?;
-                    TcpMsg::write_msg(stream, &buff[..len]).await?;
+                    TcpMsg::write_msg(writer, &buff[..len]).await?;
                 }
                 TcpMsg::Register(msg) => {
                     let now = Utc::now().timestamp();
@@ -533,7 +646,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                     if !(-300..=300).contains(&remain) {
                         let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::Timeout), buff)?;
-                        TcpMsg::write_msg(stream, &buff[..len]).await?;
+                        TcpMsg::write_msg(writer, &buff[..len]).await?;
                         return Err(anyhow!("register message timeout"));
                     }
 
@@ -550,7 +663,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                     if !res {
                         let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::NonceRepeat), buff)?;
-                        TcpMsg::write_msg(stream, &buff[..len]).await?;
+                        TcpMsg::write_msg(writer, &buff[..len]).await?;
                         return Err(anyhow!("nonce repeat"));
                     }
 
@@ -563,7 +676,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
                         let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::InvalidVirtualAddress(e)), buff)?;
-                        TcpMsg::write_msg(stream, &buff[..len]).await?;
+                        TcpMsg::write_msg(writer, &buff[..len]).await?;
                         return Err(anyhow!(e))
                     };
 
@@ -591,7 +704,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
                     };
 
                     let len = TcpMsg::register_res_encode(key, rng.gen(), &Ok(gc), buff)?;
-                    return TcpMsg::write_msg(stream,  &buff[..len]).await;
+                    return TcpMsg::write_msg(writer,  &buff[..len]).await;
                 }
                 _ => return Err(anyhow!("init message error")),
             }
@@ -599,10 +712,6 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
     }
 
     async fn exec(&mut self) -> Result<()> {
-        let stream = self.stream.as_ref().unwrap();
-        stream.set_keepalive()?;
-        stream.set_nodelay(true)?;
-
         self.init().await?;
 
         info!("tcp handler: node {} is registered", self.register.as_ref().unwrap().node_name);
@@ -614,8 +723,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
 
         let (rx, mut tx) = self.stream
             .take()
-            .unwrap()
-            .into_split();
+            .unwrap();
 
         let mut rx = BufReader::with_capacity(TCP_BUFF_SIZE, rx);
         let (local_channel_tx, mut local_channel_rx) = mpsc::unbounded_channel();
@@ -840,7 +948,7 @@ impl<K: Cipher + Clone + Send + Sync> Tunnel<K> {
     }
 }
 
-impl<T> Drop for Tunnel<T> {
+impl<T, R, W> Drop for Tunnel<T, R, W> {
     fn drop(&mut self) {
         if let Some(reg) = &self.register {
             {
@@ -967,6 +1075,8 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
             let (_notify, notified) = watch::channel(());
             let gh1 = gh.clone();
 
+            let (kcp_acceptor_channel_tx, kcp_acceptor_channel_rx) = tokio::sync::mpsc::channel(1024);
+
             let udp_handle = async {
                 let fut = udp_handler(
                     group,
@@ -975,7 +1085,8 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                     config.udp_heartbeat_interval,
                     config.udp_heartbeat_continuous_loss,
                     config.udp_heartbeat_continuous_recv,
-                    notified.clone()
+                    notified.clone(),
+                    kcp_acceptor_channel_tx,
                 );
 
                 fut.await.context("udp handler error")
@@ -990,7 +1101,8 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                     config,
                     group,
                     gh,
-                    notified.clone()
+                    notified.clone(),
+                    kcp_acceptor_channel_rx,
                 );
 
                 tokio::spawn(async move {

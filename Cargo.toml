@@ -48,6 +48,8 @@ linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 mimalloc = { version = "*", default-features = false, optional = true }
 netstack-lwip = { git = "https://github.com/xutianyi1999/netstack-lwip.git", optional = true }
 pathfinding = "4"
+kcp = { git = "https://github.com/Matrix-Zhang/kcp.git", features = ["tokio"] }
+stackfuture = "0.3"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 log4rs = { version = "1", default-features = false, features = ["console_appender"] }
@@ -87,7 +89,6 @@ static-files = { version = "0.2", optional = true }
 advmac = { git = "https://github.com/xutianyi1999/advmac.git" }
 
 # todo fix link problem of windows.0.48.5.lib in win7-msvc toolchain
-winreg = { git = "https://github.com/kayabaNerve/winreg-rs.git" }
 self-replace = {git = "https://github.com/xutianyi1999/self-replace.git" }
 
 [features]

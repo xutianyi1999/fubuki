@@ -1,5 +1,5 @@
 #![feature(portable_simd)]
-#![feature(new_uninit)]
+#![feature(new_zeroed_alloc)]
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
 #![feature(impl_trait_in_assoc_type)]
@@ -35,6 +35,7 @@ mod common;
 mod node;
 mod server;
 mod tun;
+mod kcp_bridge;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[cfg_attr(target_os = "windows", path = "nat/windows.rs")]
@@ -189,7 +190,8 @@ struct TargetGroup {
     node_binding_port: Option<u16>,
     allowed_ips: Option<Vec<Ipv4Net>>,
     ips: Option<HashMap<VirtualAddr, Vec<Ipv4Net>>>,
-    auto_route_selection: Option<bool>
+    auto_route_selection: Option<bool>,
+    use_kcp_session: Option<bool>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -237,7 +239,8 @@ struct TargetGroupFinalize<K> {
     node_binding_port: u16,
     allowed_ips: Vec<Ipv4Net>,
     ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
-    auto_route_selection: bool
+    auto_route_selection: bool,
+    use_kcp_session: bool,
 }
 
 #[derive(Clone)]
@@ -320,7 +323,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 }
             }
 
-            let group_use_udp = mode.is_use_udp();
+            let group_use_udp = mode.is_use_udp() || group.use_kcp_session.unwrap_or(false);
 
             if group_use_udp {
                 use_ipv6 |= lan_ip_addr.is_ipv6();
@@ -359,7 +362,8 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 node_binding_port: group.node_binding_port.unwrap_or(0),
                 allowed_ips: group.allowed_ips.unwrap_or_default(),
                 ips: group.ips.unwrap_or_default(),
-                auto_route_selection: group.auto_route_selection.unwrap_or(false)
+                auto_route_selection: group.auto_route_selection.unwrap_or(false),
+                use_kcp_session: group.use_kcp_session.unwrap_or(false),
             };
             list.push(group_finalize)
         }
