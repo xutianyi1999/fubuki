@@ -1198,7 +1198,9 @@ pub mod protocol {
                 .map_err(|e| {
                     #[cfg(target_os = "windows")]
                     {
+                        // Connection reset by peer.
                         const WSAECONNRESET: i32 = 10054;
+                        // Network dropped connection on reset.
                         const WSAENETRESET: i32 = 10052;
 
                         let err = e.raw_os_error();
@@ -1214,42 +1216,60 @@ pub mod protocol {
                 })
         }
 
+        fn send_map_err(e: io::Error) -> UdpSocketErr<io::Error> {
+            #[cfg(target_os = "macos")]
+            {
+                // Network is unreachable
+                const ENETUNREACH: i32 = 51;
+
+                let err = e.raw_os_error();
+
+                if err == Some(ENETUNREACH) {
+                    return UdpSocketErr::SuppressError(e);
+                }
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                // Message too long
+                const EMSGSIZE: i32 = 90;
+                // No buffer space available
+                const ENOBUFS: i32 = 105;
+
+                let err = e.raw_os_error();
+
+                if err == Some(EMSGSIZE) ||
+                    err == Some(ENOBUFS)
+                {
+                    return UdpSocketErr::SuppressError(e);
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                // Network is unreachable.
+                const WSAENETUNREACH: i32 = 10051;
+                // No buffer space available.
+                const WSAENOBUFS: i32 = WSAENOBUFS;
+
+                let err = e.raw_os_error();
+
+                if err == Some(WSAENETUNREACH) ||
+                    err == Some(WSAENOBUFS)
+                {
+                    return UdpSocketErr::SuppressError(e);
+                }
+            }
+            UdpSocketErr::FatalError(e)
+        }
+
         pub async fn send_msg<A: ToSocketAddrs>(
             socket: &UdpSocket,
             buff: &[u8],
             to: A
         ) -> std::result::Result<(), UdpSocketErr<io::Error>> {
             socket.send_to(buff, to).await
-                .map_err(|e| {
-                    #[cfg(target_os = "macos")]
-                    {
-                        // Network is unreachable
-                        const ENETUNREACH: i32 = 51;
-
-                        let err = e.raw_os_error();
-
-                        if err == Some(ENETUNREACH) {
-                            return UdpSocketErr::SuppressError(e);
-                        }
-                    }
-
-                    #[cfg(target_os = "linux")]
-                    {
-                        // Message too long
-                        const EMSGSIZE: i32 = 90;
-                        // No buffer space available
-                        const ENOBUFS: i32 = 105;
-
-                        let err = e.raw_os_error();
-
-                        if err == Some(EMSGSIZE) ||
-                            err == Some(ENOBUFS)
-                        {
-                            return UdpSocketErr::SuppressError(e);
-                        }
-                    }
-                    UdpSocketErr::FatalError(e)
-                })
+                .map_err(Self::send_map_err)
                 .map(|_| ())
         }
 
@@ -1259,36 +1279,7 @@ pub mod protocol {
             to: SocketAddr
         ) -> std::result::Result<(), UdpSocketErr<io::Error>> {
             socket.try_send_to(buff, to)
-                .map_err(|e| {
-                    #[cfg(target_os = "macos")]
-                    {
-                        // Network is unreachable
-                        const ENETUNREACH: i32 = 51;
-
-                        let err = e.raw_os_error();
-
-                        if err == Some(ENETUNREACH) {
-                            return UdpSocketErr::SuppressError(e);
-                        }
-                    }
-
-                    #[cfg(target_os = "linux")]
-                    {
-                        // Message too long
-                        const EMSGSIZE: i32 = 90;
-                        // No buffer space available
-                        const ENOBUFS: i32 = 105;
-
-                        let err = e.raw_os_error();
-
-                        if err == Some(EMSGSIZE) ||
-                            err == Some(ENOBUFS)
-                        {
-                            return UdpSocketErr::SuppressError(e);
-                        }
-                    }
-                    UdpSocketErr::FatalError(e)
-                })
+                .map_err(Self::send_map_err)
                 .map(|_| ())
         }
     }
