@@ -1250,7 +1250,7 @@ pub mod protocol {
                 // Network is unreachable.
                 const WSAENETUNREACH: i32 = 10051;
                 // No buffer space available.
-                const WSAENOBUFS: i32 = WSAENOBUFS;
+                const WSAENOBUFS: i32 = 10055;
 
                 let err = e.raw_os_error();
 
