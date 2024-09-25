@@ -62,7 +62,6 @@ net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }
 hostsfile = { git = "https://github.com/tonarino/innernet.git" }
 klask = { git = "https://github.com/xutianyi1999/klask.git", optional = true }
-font-kit = { version = "0.14", optional = true}
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "3"
@@ -94,7 +93,7 @@ self-replace = {git = "https://github.com/xutianyi1999/self-replace.git" }
 [features]
 default = ["mimalloc"]
 web = ["static-files"]
-gui = ["klask", "font-kit"]
+gui = ["klask"]
 hash-routing-table = []
 cross-nat = ["netstack-lwip"]
 
