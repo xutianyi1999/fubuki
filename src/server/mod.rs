@@ -650,18 +650,9 @@ impl<K, R, W> Tunnel<K, R, W>
                         return Err(anyhow!("register message timeout"));
                     }
 
-                    let res = {
-                        let mut guard = nonce_pool.set.lock();
+                    let not_contained = nonce_pool.set.lock().insert(msg.nonce);
 
-                        if !guard.contains(&msg.nonce) {
-                            guard.insert(msg.nonce);
-                            true
-                        } else {
-                            false
-                        }
-                    };
-
-                    if !res {
+                    if !not_contained {
                         let len = TcpMsg::register_res_encode(key, rng.gen(), &Err(RegisterError::NonceRepeat), buff)?;
                         TcpMsg::write_msg(writer, &buff[..len]).await?;
                         return Err(anyhow!("nonce repeat"));
