@@ -159,5 +159,5 @@ cargo +nightly build --release --features "gui"
 export RUSTUP_TOOLCHAIN=nightly
 cargo install cross --git https://github.com/cross-rs/cross
 # 这里的目标平台是aarch64-linux-android, 有关于其他Rust支持的平台参阅 https://doc.rust-lang.org/nightly/rustc/platform-support.html
-cross +nightly build --lib --release --no-default-features --target aarch64-linux-android
+cross +nightly build --lib --release --no-default-features --features "ffi-export" --target aarch64-linux-android
 ```

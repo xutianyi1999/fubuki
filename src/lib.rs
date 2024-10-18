@@ -47,6 +47,7 @@ mod nat;
 mod web;
 mod routing_table;
 
+#[cfg(feature = "ffi-export")]
 mod ffi_export;
 
 type Key = CipherEnum;

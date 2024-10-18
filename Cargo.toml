@@ -96,6 +96,7 @@ web = ["static-files"]
 gui = ["klask"]
 hash-routing-table = []
 cross-nat = ["netstack-lwip"]
+ffi-export = []
 
 [profile.release]
 lto = true
