@@ -449,19 +449,25 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                 let kcp_sessions_expired_list = kcp_sessions_expired_list.clone();
 
                                                 tokio::spawn(async move {
-                                                    let (mut rx, mut tx) = tokio::io::split(handler_tcp_channel);
-        
-                                                    let mut stack = KcpStack::new(
-                                                        &socket,
-                                                        peer_addr,
-                                                        conv,
-                                                        &mut tx,
-                                                        &mut rx,
-                                                        &mut stack_rx,
-                                                        key,
-                                                    );
-        
-                                                    let res = stack.block_on().await;
+                                                    // destruction immediately after the connection is terminated, rather than the entire life cycle
+                                                    let block_on = async move {
+                                                        let (mut rx, mut tx) = tokio::io::split(handler_tcp_channel);
+
+                                                        let mut stack = KcpStack::new(
+                                                            &socket,
+                                                            peer_addr,
+                                                            conv,
+                                                            &mut tx,
+                                                            &mut rx,
+                                                            &mut stack_rx,
+                                                            key,
+                                                        );
+
+                                                        stack.block_on().await
+                                                    };
+
+                                                    let res = block_on.await;
+                                                    kcp_sessions_expired_list.write().insert(conv);
 
                                                     {
                                                         let mut kcp_sessions_guard = kcp_sessions.write();
@@ -474,7 +480,6 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                         warn!("kcpstack error: {:?}", e);
                                                     }
 
-                                                    kcp_sessions_expired_list.write().insert(conv);
                                                     tokio::time::sleep(Duration::from_secs(5 * 60)).await;
                                                     kcp_sessions_expired_list.write().remove(&conv);
                                                 });

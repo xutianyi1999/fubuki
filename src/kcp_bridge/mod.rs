@@ -167,8 +167,10 @@ where
                 opt = self.stack_rx.recv() => {
                     match opt {
                         Some(bytes) => {
-                            self.kcp.input(&bytes)?;
-                            update_and_recv!();
+                            match self.kcp.input(&bytes) {
+                                Ok(_) => update_and_recv!(),
+                                Err(e) => warn!("failed to kcp input: {}", e)
+                            }
                         }
                         None => return Ok(())
                     };
