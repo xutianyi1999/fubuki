@@ -24,6 +24,8 @@ pub fn create() -> Result<Linuxtun> {
 
     config.platform(|config| {
         config.packet_information(false);
+        config.napi(std::env::var("FUBUKI_USE_IFF_NAPI").is_ok());
+        config.vnet_hdr(std::env::var("FUBUKI_USE_IFF_VNET_HDR").is_ok());
     }).up();
 
     let device = tun::create_as_async(&config)?;
