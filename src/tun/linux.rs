@@ -22,6 +22,8 @@ unsafe impl Sync for Linuxtun {}
 pub fn create() -> Result<Linuxtun> {
     let mut config = tun::Configuration::default();
 
+    config.queues(2);
+
     config.platform(|config| {
         config.packet_information(false);
         config.napi(std::env::var("FUBUKI_USE_IFF_NAPI").is_ok());
