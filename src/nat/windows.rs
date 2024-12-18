@@ -3,6 +3,11 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, Result};
 use ipnet::Ipv4Net;
 
+#[allow(unused)]
+pub fn check_available() -> bool {
+    crate::common::cmd_exists("New-NetNat").is_ok()
+}
+
 pub fn add_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
     let output = Command::new("powershell")
         .args([

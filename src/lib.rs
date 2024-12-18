@@ -407,7 +407,13 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             allow_packet_not_in_rules_send_to_kernel: config.allow_packet_not_in_rules_send_to_kernel.unwrap_or(false),
             enable_hook: config.enable_hook.unwrap_or(false),
             #[cfg(feature = "cross-nat")]
-            cross_nat: config.cross_nat.unwrap_or(false),
+            cross_nat: config.cross_nat.unwrap_or_else(|| {
+                if !nat::check_available() {
+                    warn!("native NAT not available, falling back to cross-nat");
+                    return true;
+                }
+                false
+            }),
             socket_bind_device: {
                 #[allow(unused_mut)]
                 let mut bind = config.socket_bind_device;

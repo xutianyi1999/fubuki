@@ -10,6 +10,11 @@ use parking_lot::Mutex;
 
 use crate::common::net::get_interface_addr;
 
+#[allow(unused)]
+pub fn check_available() -> bool {
+    crate::common::cmd_exists("pfctl").is_ok()
+}
+
 static RECORDS: Mutex<Vec<Record>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Eq, PartialEq)]
