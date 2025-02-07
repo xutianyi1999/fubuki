@@ -38,7 +38,7 @@ prettytable-rs = "0.10"
 scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
-gethostname = "0.5"
+gethostname = "1"
 flume = { version = "0.11", default-features = false, features = ["async", "spin"] }
 blake3 = { version = "1", features = ["pure"] }
 crossbeam-utils = "0.8"
@@ -68,7 +68,7 @@ tempfile = "3"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "android", target_os = "ios"))'.dependencies]
 tun = { git = "https://github.com/xutianyi1999/rust-tun.git", features = ["async"] }
-self_update = { version = "0.41", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
+self_update = { version = "0.42", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
