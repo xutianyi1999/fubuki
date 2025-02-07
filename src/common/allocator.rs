@@ -20,7 +20,7 @@ impl Deref for Bytes {
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            MaybeUninit::slice_assume_init_ref(&self.inner[self.start.load(Ordering::Relaxed)..self.end])
+            &self.inner.assume_init_ref()[self.start.load(Ordering::Relaxed)..self.end]
         }
     }
 }
@@ -29,7 +29,7 @@ impl DerefMut for Bytes {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             let slice = Arc::get_mut_unchecked(&mut self.inner);
-            MaybeUninit::slice_assume_init_mut(&mut slice[*self.start.get_mut()..self.end])
+            &mut slice.assume_init_mut()[*self.start.get_mut()..self.end]
         }
     }
 }
