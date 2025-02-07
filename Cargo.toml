@@ -21,7 +21,7 @@ log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
-rand = { version = "0.8", features = ["small_rng"] }
+rand = { version = "0.9", features = ["small_rng"] }
 socket2 = "0.5"
 parking_lot = "0.12"
 anyhow = "1"
@@ -72,8 +72,8 @@ self_update = { version = "0.41", default-features = false, features = ["archive
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
-windows = { version = "0.58", features = ["Win32_Networking_WinSock"] }
-self_update = { version = "0.41", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
+windows = { version = "0.59", features = ["Win32_Networking_WinSock"] }
+self_update = { version = "0.42", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 libc = "0.2"

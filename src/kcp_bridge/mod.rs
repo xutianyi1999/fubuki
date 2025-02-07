@@ -46,7 +46,7 @@ impl <K: Cipher> AsyncWrite for KcpOutput<'_, K> {
 
             let len = UdpMsg::kcp_data_encode(
                 key,
-                rng.gen(),
+                rng.random(),
                 buf.len(),
                 buff
             );
@@ -124,7 +124,7 @@ where
             ready_fut: Box::new(None),
             udp_buff: vec![0u8; UDP_BUFF_SIZE],
             key,
-            rng: rand::rngs::SmallRng::from_entropy()
+            rng: rand::rngs::SmallRng::from_os_rng()
         };
 
         let kcp = kcp::Kcp::new_stream(conv, output);

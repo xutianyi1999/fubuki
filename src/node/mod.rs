@@ -546,7 +546,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
             hooks,
             #[cfg(feature = "cross-nat")]
             snat,
-            rng: rand::rngs::SmallRng::from_entropy(),
+            rng: rand::rngs::SmallRng::from_os_rng(),
             next_route: vec![Vec::new(); interfaces.len()]
         }
     }
@@ -667,7 +667,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                     match node_list.get_node(&addr) {
                         None => warn!("cannot find node {}", addr),
                         Some(node) => send(
-                            self.rng.gen(), 
+                            self.rng.random(),
                             interface, 
                             node,
                             buff,
@@ -690,7 +690,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
                             }
 
                             send(
-                                self.rng.gen(), 
+                                self.rng.random(),
                                 interface, 
                                 node, 
                                 buff, 
@@ -815,7 +815,7 @@ where
         let table = table.clone();
 
         let join = tokio::spawn(async move {
-            let mut rng = rand::rngs::SmallRng::from_entropy();
+            let mut rng = rand::rngs::SmallRng::from_os_rng();
             let socket = interface.udp_socket.as_ref().expect("must need udp socket");
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
@@ -842,7 +842,7 @@ where
 
                     UdpMsg::heartbeat_encode(
                         key,
-                        rng.gen(),
+                        rng.random(),
                         interface_addr,
                         seq,
                         HeartbeatType::Req,
@@ -889,7 +889,7 @@ where
 
                             UdpMsg::heartbeat_encode(
                                 key,
-                                rng.gen(),
+                                rng.random(),
                                 interface_addr, 
                                 seq, 
                                 HeartbeatType::Req, 
@@ -979,7 +979,7 @@ where
             let kcpstack_tx = kcpstack_tx.clone();
 
             let join = tokio::spawn(async move {
-                let mut rng = rand::rngs::SmallRng::from_entropy();
+                let mut rng = rand::rngs::SmallRng::from_os_rng();
                 let socket = interface.udp_socket.as_ref().expect("must need udp socket");
                 let key = &interface.key;
                 let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
@@ -1032,7 +1032,7 @@ where
 
                                     let len = UdpMsg::heartbeat_encode(
                                         key,
-                                        rng.gen(),
+                                        rng.random(),
                                         interface_addr,
                                         seq,
                                         HeartbeatType::Resp,
@@ -1613,7 +1613,7 @@ where
                                 snat.as_deref()
                             );
 
-                            let mut rng = rand::rngs::SmallRng::from_entropy();
+                            let mut rng = rand::rngs::SmallRng::from_os_rng();
 
                             const START: usize = UDP_MSG_HEADER_LEN;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -1686,7 +1686,7 @@ where
                                     }
                                     TcpMsg::Heartbeat(seq, HeartbeatType::Req) => {
                                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                                        TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Resp, &mut buff);
+                                        TcpMsg::heartbeat_encode(key, rng.random(), seq, HeartbeatType::Resp, &mut buff);
 
                                         let res = inner_channel_tx
                                             .send(buff)
@@ -1775,7 +1775,7 @@ where
 
                     let join = tokio::spawn(async move {
                         let fut = async {
-                            let mut rng = rand::rngs::SmallRng::from_entropy();
+                            let mut rng = rand::rngs::SmallRng::from_os_rng();
                             
                             loop {
                                 let seq = {
@@ -1791,7 +1791,7 @@ where
                                 };
 
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
-                                TcpMsg::heartbeat_encode(key, rng.gen(), seq, HeartbeatType::Req, &mut buff);
+                                TcpMsg::heartbeat_encode(key, rng.random(), seq, HeartbeatType::Req, &mut buff);
                                 inner_channel_tx.send(buff).map_err(|e| anyhow!(e))?;
 
                                 tokio::time::sleep(config.tcp_heartbeat_interval).await;
@@ -1814,7 +1814,7 @@ where
 
                     let join: JoinHandle<Result<()>> = tokio::spawn(async move {
                         let fut = async {
-                            let mut rng = rand::rngs::SmallRng::from_entropy();
+                            let mut rng = rand::rngs::SmallRng::from_os_rng();
                             let node_list = &interface.node_list;
                             let specify_mode = &interface.specify_mode;
                             let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -1855,7 +1855,7 @@ where
                                     peers_status
                                 };
 
-                                let len = TcpMsg::upload_peers_encode(key, rng.gen(), &peers_status, &mut buff)?;
+                                let len = TcpMsg::upload_peers_encode(key, rng.random(), &peers_status, &mut buff)?;
                                 let mut packet = allocator::alloc(len);
                                 packet.copy_from_slice(&buff[..len]);
                                 inner_channel_tx.send(packet).map_err(|e| anyhow!(e))?;
