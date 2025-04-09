@@ -408,11 +408,18 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             enable_hook: config.enable_hook.unwrap_or(false),
             #[cfg(feature = "cross-nat")]
             cross_nat: config.cross_nat.unwrap_or_else(|| {
-                if !nat::check_available() {
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                if nat::check_available() {
+                    false
+                } else {
                     warn!("native NAT not available, falling back to cross-nat");
-                    return true;
+                    true
                 }
-                false
+                
+                #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+                {
+                    true
+                }
             }),
             socket_bind_device: {
                 #[allow(unused_mut)]

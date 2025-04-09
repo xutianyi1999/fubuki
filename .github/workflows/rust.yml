@@ -55,12 +55,12 @@ jobs:
           - target: i686-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, mimalloc, cross-nat
+            features: web, cross-nat
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, mimalloc, cross-nat
+            features: web, cross-nat
 
           # todo libatomic not found when using mimalloc
           - target: armv7-unknown-linux-musleabihf
