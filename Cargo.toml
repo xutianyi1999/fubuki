@@ -55,7 +55,7 @@ stackfuture = "0.3"
 log4rs = { version = "1", default-features = false, features = ["console_appender"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.14"
+android_logger = "0.15"
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
@@ -72,7 +72,7 @@ self_update = { version = "0.42", default-features = false, features = ["archive
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
-windows = { version = "0.59", features = ["Win32_Networking_WinSock"] }
+windows = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 self_update = { version = "0.42", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
