@@ -2129,12 +2129,17 @@ pub async fn start<K, T>(
 
         let udp_opt = match group.lan_ip_addr {
             Some(lan_ip_addr) if group.mode.is_use_udp() || group.use_kcp_session => {
-                let bind_addr = match lan_ip_addr {
-                    IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                    IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                let bind_addr = if let Some(node_bind) = group.node_binding {
+                    node_bind
+                } else {
+                    let bind_addr = match lan_ip_addr {
+                        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+                    };
+                    SocketAddr::new(bind_addr, 0)
                 };
 
-                let udp_socket = UdpSocket::bind((bind_addr, group.node_binding_port))
+                let udp_socket = UdpSocket::bind(bind_addr)
                     .await
                     .context("create udp socket failed")?;
 
