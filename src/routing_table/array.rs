@@ -22,7 +22,7 @@ impl RoutingTable for ArrayRoutingTable {
         index.map(|index| self.inner.remove(index))
     }
 
-    fn find(&self, _src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>> {
+    fn find(&self, _src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<'_, Item>> {
         self.inner
             .iter()
             .find(|v| v.cidr.contains(&to))

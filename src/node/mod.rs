@@ -480,11 +480,11 @@ enum TransferType {
 }
 
 #[allow(unused)]
-fn find_once<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, dst_addr: Ipv4Addr) -> Option<Cow<Item>>{
+fn find_once<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, dst_addr: Ipv4Addr) -> Option<Cow<'_, Item>>{
     rt.find(src_addr, dst_addr)
 }
 
-fn find_route<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, mut dst_addr: Ipv4Addr) -> Option<(Ipv4Addr, Cow<Item>)> {
+fn find_route<RT: RoutingTable>(rt: &RT, src_addr: Ipv4Addr, mut dst_addr: Ipv4Addr) -> Option<(Ipv4Addr, Cow<'_, Item>)> {
     let mut item = rt.find(src_addr, dst_addr)?;
     let mut count = 1;
 

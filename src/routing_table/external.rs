@@ -158,7 +158,7 @@ impl<K> RoutingTable for ExternalRoutingTable<K> {
         Option::<ItemC>::from(optc).map(Item::from)
     }
 
-    fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>> {
+    fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<'_, Item>> {
         let optc = (self.find_fn)(self.handle, u32::from(src), u32::from(to));
         Option::<ItemC>::from(optc).map(|i| Cow::Owned(Item::from(i)))
     }

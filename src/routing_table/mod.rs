@@ -33,7 +33,7 @@ pub trait RoutingTable {
 
     fn remove(&mut self, cidr: &Ipv4Net) -> Option<Item>;
 
-    fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<Item>>;
+    fn find(&self, src: Ipv4Addr, to: Ipv4Addr) -> Option<Cow<'_, Item>>;
 }
 
 #[test]

@@ -893,7 +893,7 @@ pub mod protocol {
             Ok(ret)
         }
 
-        fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg> {
+        fn decode(mode: u8, data: &[u8]) -> Result<TcpMsg<'_>> {
             let msg = match mode {
                 REGISTER => {
                     let (register, _) =
