@@ -16,7 +16,7 @@ use ratatui::layout::Layout;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
+use ratatui::{DefaultTerminal, Frame};
 use std::io;
 use std::ops::Deref;
 use tokio::net::TcpStream;
@@ -348,8 +348,7 @@ impl App {
         }
     }
 
-    pub async fn run(&mut self) -> anyhow::Result<()> {
-        let mut terminal = ratatui::init();
+    pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         self.fetch_interfaces_info().await?;
         let mut iv = tokio::time::interval(tokio::time::Duration::from_secs(3));
 
@@ -368,7 +367,6 @@ impl App {
             terminal.draw(|frame| self.draw(frame))?;
         }
 
-        ratatui::restore();
         Ok(())
     }
 }
