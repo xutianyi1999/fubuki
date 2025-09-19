@@ -26,12 +26,13 @@ use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, Heartbea
 use crate::common::{allocator};
 use crate::kcp_bridge::KcpStack;
 use crate::server::api::api_start;
-use crate::server::into_tui::App;
+use crate::server::info_tui::App;
 use crate::ServerConfigFinalize;
 use crate::{GroupFinalize};
 
 mod api;
-mod into_tui;
+mod info_tui;
+
 pub type NodeMap = HashMap<VirtualAddr, Node>;
 
 struct NodeHandle {
