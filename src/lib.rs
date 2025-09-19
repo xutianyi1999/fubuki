@@ -578,7 +578,7 @@ pub fn launch(args: Args) -> Result<()> {
                         .enable_all()
                         .build()?;
 
-                    rt.block_on(server::info(&api));
+                    rt.block_on(server::info(&api))?;
                 }
             }
         }
@@ -601,7 +601,7 @@ pub fn launch(args: Args) -> Result<()> {
                         .enable_all()
                         .build()?;
 
-                    rt.block_on(node::info(&api));
+                    rt.block_on(node::info(&api))?;
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
                 _ => {

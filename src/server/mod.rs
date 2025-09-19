@@ -1130,13 +1130,10 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
     Ok(())
 }
 
-pub async fn info(api_addr: &str) {
+pub async fn info(api_addr: &str) -> Result<()> {
     let mut info_app = App::new(api_addr.to_string());
     let mut terminal = ratatui::init();
-
-    if let Err(e) = info_app.run(&mut terminal).await {
-        error!("info error: {:?}", e);
-    }
-
+    let res = info_app.run(&mut terminal).await;
     ratatui::restore();
+    res
 }
