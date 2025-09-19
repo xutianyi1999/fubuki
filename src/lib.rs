@@ -28,7 +28,7 @@ use tokio::runtime::Runtime;
 
 use crate::common::cipher::{Cipher, CipherEnum, NoOpCipher, XorCipher};
 use crate::common::net::get_interface_addr;
-use crate::common::net::protocol::{NetProtocol, ProtocolMode, SERVER_VIRTUAL_ADDR, VirtualAddr};
+use crate::common::net::protocol::{NetProtocol, ProtocolMode, VirtualAddr, SERVER_VIRTUAL_ADDR};
 
 #[macro_use]
 mod common;
@@ -448,25 +448,6 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
     }
 }
 
-#[derive(Clone, Copy, Subcommand)]
-pub enum NodeInfoType {
-    /// query node interface
-    Interface {
-        /// show more data for the specified interface
-        #[arg(short, long)]
-        index: Option<usize>,
-    },
-    /// query all peer nodes of a specified interface
-    NodeMap {
-        /// interface index
-        interface_index: usize,
-
-        /// show more data for the specified node
-        #[arg(short, long)]
-        node_ip: Option<VirtualAddr>,
-    }
-}
-
 #[derive(Subcommand)]
 pub enum NodeCmd {
     /// start the node process
@@ -479,25 +460,6 @@ pub enum NodeCmd {
         /// api address of the node
         #[arg(short, long, default_value = "127.0.0.1:3030")]
         api: String,
-
-        /// query type
-        #[command(subcommand)]
-        info_type: NodeInfoType,
-    }
-}
-
-#[derive(Clone, Subcommand)]
-pub enum ServerInfoType {
-    /// query server group
-    Group,
-    /// query the node map of the specified group
-    NodeMap {
-        /// group name
-        group_name: String,
-
-        /// show more data for the specified node
-        #[arg(short, long)]
-        node_ip: Option<VirtualAddr>,
     }
 }
 
@@ -513,10 +475,6 @@ pub enum ServerCmd {
         /// api address of the server
         #[arg(short, long, default_value = "127.0.0.1:3031")]
         api: String,
-
-        /// query type
-        #[command(subcommand)]
-        info_type: ServerInfoType,
     }
 }
 
@@ -615,12 +573,12 @@ pub fn launch(args: Args) -> Result<()> {
                     let rt = Runtime::new()?;
                     rt.block_on(server::start(config))?;
                 }
-                ServerCmd::Info { api, info_type } => {
+                ServerCmd::Info { api } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_io()
+                        .enable_all()
                         .build()?;
 
-                    rt.block_on(server::info(&api, info_type))?;
+                    rt.block_on(server::info(&api))?;
                 }
             }
         }
@@ -638,12 +596,12 @@ pub fn launch(args: Args) -> Result<()> {
                         node::start(c, tun, Arc::new(OnceLock::new())).await
                     })?;
                 }
-                NodeCmd::Info { api, info_type } => {
+                NodeCmd::Info { api } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_io()
+                        .enable_all()
                         .build()?;
 
-                    rt.block_on(node::info(&api, info_type))?;
+                    rt.block_on(node::info(&api))?;
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
                 _ => {

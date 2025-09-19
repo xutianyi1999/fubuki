@@ -1,57 +1,53 @@
+use ahash::{HashMap, HashMapExt};
 use std::borrow::Cow;
 use std::cell::SyncUnsafeCell;
 use std::ffi::c_char;
+use std::ffi::CString;
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::ops::{Deref, Range};
-use std::{env, slice};
-use std::sync::{Arc, OnceLock};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::ops::Range;
 use std::path::Path;
-use std::ffi::CString;
-use ahash::{HashMap, HashMapExt};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use std::{env, slice};
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use ahash::{HashSet, HashSetExt};
 
-use anyhow::{anyhow, Context as AnyhowContext, Error};
 use anyhow::Result;
+use anyhow::{anyhow, Context as AnyhowContext, Error};
 use arc_swap::{ArcSwap, ArcSwapOption, Cache};
 use chrono::Utc;
 use crossbeam_utils::atomic::AtomicCell;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
-use http_body_util::{BodyExt, Empty};
-use hyper::{Method, Request};
-use hyper_util::rt::TokioIo;
 use ipnet::Ipv4Net;
 use linear_map::LinearMap;
-use sys_route::Route;
 use parking_lot::RwLock;
-use prettytable::{row, Table};
 use rand::{random, Rng, SeedableRng};
 use scopeguard::defer;
 use serde::{Deserialize, Serialize};
+use sys_route::Route;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::net::{TcpSocket, TcpStream};
+use tokio::net::TcpSocket;
 use tokio::net::UdpSocket;
 use tokio::signal;
-use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel};
+use tokio::sync::mpsc::{unbounded_channel, Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 
-use crate::common::hook::{Hooks, PacketRecvOutput};
-use crate::kcp_bridge::KcpStack;
-use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, NodeInfoType, ProtocolMode, TargetGroupFinalize};
-use crate::common::{allocator, utc_to_str};
+use crate::common::allocator;
 use crate::common::allocator::Bytes;
+use crate::common::hook::{Hooks, PacketRecvOutput};
+use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, PeerStatus, Register, RegisterError, Seq, TcpMsg, UdpMsg, UdpSocketErr, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN};
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, HeartbeatCache, HeartbeatInfo, SocketExt, UdpStatus};
-use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, PeerStatus, Register, RegisterError, Seq, TcpMsg, UdpMsg, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN, UdpSocketErr};
+use crate::kcp_bridge::KcpStack;
 use crate::node::api::api_start;
 use crate::node::sys_route::SystemRouteHandle;
 use crate::routing_table::{Item, ItemKind, RoutingTable};
 use crate::tun::TunDevice;
+use crate::{common, routing_table, Cipher, Context, NodeConfigFinalize, ProtocolMode, TargetGroupFinalize};
 
 mod api;
 #[cfg(feature = "cross-nat")]
@@ -59,6 +55,7 @@ mod cross_nat;
 #[cfg_attr(any(target_os = "windows", target_os = "linux", target_os = "macos"), path = "sys_route.rs")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux", target_os = "macos")), path = "fake_sys_route.rs")]
 mod sys_route;
+mod info_tui;
 
 type NodeList = Vec<ExtendedNode>;
 
@@ -2315,118 +2312,8 @@ pub async fn start<K, T>(
     Ok(())
 }
 
-pub async fn info(api_addr: &str, info_type: NodeInfoType) -> Result<()> {
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri(format!("http://{}/info", api_addr))
-        .body(Empty::<hyper::body::Bytes>::new())?;
-
-    let stream = TcpStream::connect(api_addr).await?;
-    let stream = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
-
-    tokio::spawn(conn);
-
-    let resp = sender.send_request(req).await?;
-    let (parts, body) = resp.into_parts();
-    let bytes = body.collect().await?.to_bytes();
-
-    if parts.status != 200 {
-        let msg = String::from_utf8(bytes.to_vec())?;
-        return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
-    }
-
-    let mut interfaces_info: Vec<InterfaceInfo> = serde_json::from_slice(bytes.deref())?;
-    interfaces_info.sort_unstable_by_key(|v| v.index);
-
-    let mut table = Table::new();
-
-    match info_type {
-        NodeInfoType::Interface{ index: None } => {
-            table.add_row(row!["INDEX", "NAME", "GROUP", "IP"]);
-
-            for info in interfaces_info {
-                table.add_row(row![
-                    info.index,
-                    info.node_name,
-                    info.group_name.unwrap_or_default(),
-                    info.addr,
-                ]);
-            }
-        }
-        NodeInfoType::Interface{ index: Some(index) } => {
-            for info in interfaces_info {
-                if info.index == index {
-                    table.add_row(row!["INDEX", info.index]);
-                    table.add_row(row!["NAME", info.node_name]);
-                    table.add_row(row!["GROUP", info.group_name.unwrap_or_default()]);
-                    table.add_row(row!["IP", info.addr]);
-                    table.add_row(row!["CIDR", info.cidr]);
-                    table.add_row(row!["SERVER_ADDRESS", info.server_addr]);
-                    table.add_row(row!["PROTOCOL_MODE", format!("{:?}", info.mode)]);
-                    table.add_row(row!["IS_CONNECTED", info.server_is_connected]);
-                    table.add_row(row!["UDP_STATUS", info.server_udp_status]);
-                    table.add_row(row!["UDP_LATENCY", format!("{:?}", info.server_udp_hc.elapsed)]);
-
-                    let udp_loss_rate = info.server_udp_hc.packet_loss_count as f32 / info.server_udp_hc.send_count as f32 * 100f32;
-                    table.add_row(row!["UDP_LOSS_RATE", ternary!(!udp_loss_rate.is_nan(), format!("{}%", udp_loss_rate), String::new())]);
-
-                    table.add_row(row!["TCP_LATENCY", format!("{:?}", info.server_tcp_hc.elapsed)]);
-
-                    let tcp_loss_rate =  info.server_tcp_hc.packet_loss_count as f32 / info.server_tcp_hc.send_count as f32 * 100f32;
-                    table.add_row(row!["TCP_LOSS_RATE", ternary!(!tcp_loss_rate.is_nan(), format!("{}%", tcp_loss_rate), String::new())]);
-
-                    break;
-                }
-            }
-        }
-        NodeInfoType::NodeMap{ interface_index, node_ip: None } => {
-            table.add_row(row!["NAME", "IP", "REGISTER_TIME"]);
-
-            for info in interfaces_info {
-                if info.index == interface_index {
-                    let mut nodes = info.node_map.values().collect::<Vec<_>>();
-                    nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
-
-                    for node in nodes {
-                        let register_time = utc_to_str(node.node.register_time)?;
-
-                        table.add_row(row![
-                            node.node.name,
-                            node.node.virtual_addr,
-                            register_time,
-                        ]);
-                    }
-                    break;
-                }
-            }
-        }
-        NodeInfoType::NodeMap{ interface_index, node_ip: Some(ip) } => {
-            for info in interfaces_info {
-                if info.index == interface_index {
-                    if let Some(node) = info.node_map.get(&ip) {
-                        let register_time = utc_to_str(node.node.register_time)?;
-
-                        table.add_row(row!["NAME", node.node.name]);
-                        table.add_row(row!["IP", node.node.virtual_addr]);
-                        table.add_row(row!["LAN_ADDRESS", format!("{:?}", node.node.lan_udp_addr)]);
-                        table.add_row(row!["WAN_ADDRESS", format!("{:?}", node.node.wan_udp_addr)]);
-                        table.add_row(row!["PROTOCOL_MODE",  format!("{:?}", node.node.mode)]);
-                        table.add_row(row!["ALLOWED_IPS",  format!("{:?}", node.node.allowed_ips)]);
-                        table.add_row(row!["REGISTER_TIME", register_time]);
-                        table.add_row(row!["UDP_STATUS", node.udp_status]);
-                        table.add_row(row!["LATENCY", format!("{:?}", node.hc.elapsed)]);
-
-                        let loss_rate = node.hc.packet_loss_count as f32 / node.hc.send_count as f32 * 100f32;
-                        table.add_row(row!["LOSS_RATE", ternary!(!loss_rate.is_nan(), format!("{}%", loss_rate), String::new())]);
-                    }
-
-                    break;
-                }
-            }
-        }
-    }
-
-    table.printstd();
+pub async fn info(api_addr: &str) -> Result<()> {
+    let mut info_app = info_tui::App::new(api_addr.to_string());
+    info_app.run().await?;
     Ok(())
 }

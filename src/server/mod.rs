@@ -9,16 +9,12 @@ use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use chrono::Utc;
 use crossbeam_utils::atomic::AtomicCell;
-use http_body_util::{BodyExt, Empty};
-use hyper::{Method, Request};
-use hyper_util::rt::TokioIo;
 use ipnet::Ipv4Net;
 use parking_lot::{Mutex, RwLock};
-use prettytable::{row, Table};
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, DuplexStream};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{mpsc, watch};
 use tokio::{sync, time};
@@ -27,14 +23,15 @@ use crate::common::allocator::Bytes;
 use crate::common::cipher::Cipher;
 use crate::common::net::protocol::{AllocateError, GroupContent, HeartbeatType, NetProtocol, Node, PeerStatus, Register, RegisterError, Seq, TcpMsg, UdpMsg, UdpSocketErr, VirtualAddr, SERVER_VIRTUAL_ADDR, TCP_BUFF_SIZE, TCP_MSG_HEADER_LEN, UDP_BUFF_SIZE, UDP_MSG_HEADER_LEN};
 use crate::common::net::{get_ip_dst_addr, get_ip_src_addr, FlowControl, HeartbeatCache, HeartbeatInfo, PushResult, SocketExt, UdpStatus};
-use crate::common::{allocator, utc_to_str};
+use crate::common::{allocator};
 use crate::kcp_bridge::KcpStack;
 use crate::server::api::api_start;
+use crate::server::into_tui::App;
 use crate::ServerConfigFinalize;
-use crate::{GroupFinalize, ServerInfoType};
+use crate::{GroupFinalize};
 
 mod api;
-
+mod into_tui;
 pub type NodeMap = HashMap<VirtualAddr, Node>;
 
 struct NodeHandle {
@@ -1133,93 +1130,8 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
     Ok(())
 }
 
-pub async fn info(api_addr: &str, info_type: ServerInfoType) -> Result<()> {
-    let req = Request::builder()
-    .method(Method::GET)
-    .uri(format!("http://{}/info", api_addr))
-    .body(Empty::<hyper::body::Bytes>::new())?;
-
-    let stream = TcpStream::connect(api_addr).await?;
-    let stream = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
-
-    tokio::spawn(conn);
-
-    let resp = sender.send_request(req).await?;
-    let (parts, body) = resp.into_parts();
-    let bytes = body.collect().await?.to_bytes();
-
-    if parts.status != 200 {
-        let msg = String::from_utf8(bytes.to_vec())?;
-        return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
-    }
-
-    let groups: Vec<GroupInfo> = serde_json::from_slice(bytes.deref())?;
-    let mut table = Table::new();
-
-    match info_type {
-        ServerInfoType::Group => {
-            table.add_row(row!["NAME", "LISTENING_ADDRESS", "ADDRESS_RANGE"]);
-
-            for group in groups {
-                table.add_row(row![
-                    group.name,
-                    group.listen_addr,
-                    group.address_range
-                ]);
-            }
-        }
-        ServerInfoType::NodeMap { group_name, node_ip: None } => {
-            table.add_row(row!["NAME", "IP", "REGISTER_TIME"]);
-
-            for group in groups {
-                if group.name == group_name {
-                    let mut nodes = group.node_map.values().collect::<Vec<_>>();
-                    nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
-
-                    for node in nodes {
-                        let register_time = utc_to_str(node.node.register_time)?;
-
-                        table.add_row(row![
-                            node.node.name,
-                            node.node.virtual_addr,
-                            register_time,
-                        ]);
-                    }
-                    break;
-                }
-            }
-        }
-        ServerInfoType::NodeMap { group_name, node_ip: Some(ip) } => {
-            for group in groups {
-                if group.name == group_name {
-                    if let Some(node) = group.node_map.get(&ip) {
-                        let register_time = utc_to_str(node.node.register_time)?;
-
-                        table.add_row(row!["NAME", node.node.name]);
-                        table.add_row(row!["IP", node.node.virtual_addr]);
-                        table.add_row(row!["LAN_ADDRESS", format!("{:?}", node.node.lan_udp_addr)]);
-                        table.add_row(row!["WAN_ADDRESS", format!("{:?}", node.node.wan_udp_addr)]);
-                        table.add_row(row!["PROTOCOL_MODE",  format!("{:?}", node.node.mode)]);
-                        table.add_row(row!["ALLOWED_IPS",  format!("{:?}", node.node.allowed_ips)]);
-                        table.add_row(row!["REGISTER_TIME", register_time]);
-                        table.add_row(row!["UDP_STATUS", node.udp_status]);
-                        table.add_row(row!["UDP_LATENCY", format!("{:?}", node.udp_heartbeat_cache.elapsed)]);
-
-                        let udp_loss_rate = node.udp_heartbeat_cache.packet_loss_count as f32 / node.udp_heartbeat_cache.send_count as f32 * 100f32;
-                        table.add_row(row!["UDP_LOSS_RATE", ternary!(!udp_loss_rate.is_nan(), format!("{}%", udp_loss_rate), String::new())]);
-
-                        table.add_row(row!["TCP_LATENCY", format!("{:?}", node.tcp_heartbeat_cache.elapsed)]);
-
-                        let tcp_loss_rate = node.tcp_heartbeat_cache.packet_loss_count as f32 / node.tcp_heartbeat_cache.send_count as f32 * 100f32;
-                        table.add_row(row!["TCP_LOSS_RATE", ternary!(!tcp_loss_rate.is_nan(), format!("{}%", tcp_loss_rate), String::new())]);
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    table.printstd();
+pub async fn info(api_addr: &str) -> Result<()> {
+    let mut info_app = App::new(api_addr.to_string());
+    info_app.run().await?;
     Ok(())
 }
