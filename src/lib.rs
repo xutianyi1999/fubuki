@@ -1,5 +1,4 @@
 #![feature(portable_simd)]
-#![feature(new_zeroed_alloc)]
 #![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
 #![feature(impl_trait_in_assoc_type)]

@@ -240,7 +240,7 @@ impl App {
         let bytes = body.collect().await?.to_bytes();
 
         if parts.status != 200 {
-            let msg = String::from_utf8(bytes.to_vec())?;
+            let msg = String::from_utf8_lossy(&bytes);
             return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
         }
 
