@@ -2,6 +2,18 @@
 
 [![Release](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml/badge.svg)](https://github.com/xutianyi1999/fubuki/actions/workflows/rust.yml)
 
+<!-- Keep these links. Translations will automatically update with the README. -->
+[Deutsch](https://zdoc.app/de/xutianyi1999/fubuki) | 
+[English](https://zdoc.app/en/xutianyi1999/fubuki) | 
+[Español](https://zdoc.app/es/xutianyi1999/fubuki) | 
+[français](https://zdoc.app/fr/xutianyi1999/fubuki) | 
+[日本語](https://zdoc.app/ja/xutianyi1999/fubuki) | 
+[한국어](https://zdoc.app/ko/xutianyi1999/fubuki) | 
+[Português](https://zdoc.app/pt/xutianyi1999/fubuki) | 
+[Русский](https://zdoc.app/ru/xutianyi1999/fubuki) | 
+[中文](https://zdoc.app/zh/xutianyi1999/fubuki)
+
+
 fubuki是网状VPN实现，用于不同内网机器之间相互通信
 
 当前支持的平台：
