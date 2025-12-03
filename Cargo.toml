@@ -37,12 +37,12 @@ bincode = { version = "2", features = ["serde"] }
 prettytable-rs = "0.10"
 scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
-static-files = { version = "0.2", optional = true }
+static-files = { version = "0.3", optional = true }
 gethostname = "1"
 flume = { version = "0.11", default-features = false, features = ["async", "spin"] }
 blake3 = { version = "1", features = ["pure"] }
 crossbeam-utils = "0.8"
-libloading = "0.8"
+libloading = "0.9"
 byte-unit = { version = "5", features = ["serde"] }
 linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
 mimalloc = { version = "*", default-features = false, optional = true }
@@ -74,7 +74,7 @@ self_update = { version = "0.42", default-features = false, features = ["archive
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
-windows = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+windows = { version = "0.62", features = ["Win32_Networking_WinSock"] }
 self_update = { version = "0.42", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
@@ -84,7 +84,7 @@ libc = "0.2"
 winres = "0.1"
 
 [build-dependencies]
-static-files = { version = "0.2", optional = true }
+static-files = { version = "0.3", optional = true }
 
 [patch.crates-io]
 advmac = { git = "https://github.com/xutianyi1999/advmac.git" }
