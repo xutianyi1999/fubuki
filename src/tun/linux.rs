@@ -63,7 +63,7 @@ impl TunDevice for Linuxtun {
                     let (src, dst) = match f() {
                         Ok(v) => v,
                         Err(e) => {
-                            warn!("tun: {}", e);
+                            warn!("Failed to parse IP packet after a TUN send error: {}", e);
                             return Ok(())
                         }
                     };

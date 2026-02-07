@@ -72,7 +72,7 @@ impl <K: Cipher> AsyncWrite for KcpOutput<'_, K> {
             match UdpMsg::try_send_msg(socket, *packet, to) {
                 Ok(_) => return Poll::Ready(Ok(buf.len())),
                 Err(UdpSocketErr::SuppressError(e)) => {
-                    warn!("error sending kcp packet: {}", e);
+                    warn!("Failed to send KCP packet: {}", e);
                     return Poll::Ready(Ok(buf.len()))
                 }
                 Err(UdpSocketErr::FatalError(ref e)) if e.kind() == io::ErrorKind::WouldBlock => continue,
@@ -169,7 +169,7 @@ where
                         Some(bytes) => {
                             match self.kcp.input(&bytes) {
                                 Ok(_) => update_and_recv!(),
-                                Err(e) => warn!("failed to kcp input: {}", e)
+                                Err(e) => warn!("Failed to process incoming KCP data: {}", e)
                             }
                         }
                         None => return Ok(())

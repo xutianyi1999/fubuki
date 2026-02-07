@@ -113,7 +113,7 @@ async fn udp_inbound_handler(
                         };
 
                         if let Err(e) = res {
-                            error!("child udp handler error: {}", e);
+                            error!("Cross-NAT: Child UDP handler failed: {}", e);
                         }
 
                         mapping.rcu(|v| {
@@ -164,7 +164,7 @@ async fn tcp_inbound_handler(
             };
 
             if let Err(e) = fut.await {
-                error!("tcp_inbound_handler error: {:?}", e);
+                error!("Cross-NAT: TCP inbound handler failed: {:?}", e);
             }
         });
     }
@@ -246,26 +246,26 @@ impl SNat {
         tokio::spawn({
             async move {
                 if let Err(e) = tcp_inbound_handler(tcp_listener).await {
-                    error!("tcp_inbound_handler error: {:?}", e);
+                    error!("Cross-NAT: TCP inbound handler failed: {:?}", e);
                 }
-                error!("tcp_inbound_handler exited");
+                warn!("Cross-NAT: TCP inbound handler exited unexpectedly.");
             }
         });
 
         tokio::spawn(async move {
             if let Err(e) = udp_inbound_handler(udp_socket).await {
-                error!("udp_inbound_handler error: {:?}", e);
+                error!("Cross-NAT: UDP inbound handler failed: {:?}", e);
             }
-            error!("udp_inbound_handler exited");
+            warn!("Cross-NAT: UDP inbound handler exited unexpectedly.");
         });
 
         tokio::spawn(async move {
             if let Err(e) =
                 netstatck_handler(stack_stream, routing_table, interfaces, hooks, tun).await
             {
-                error!("netstack_handler error: {:?}", e);
+                error!("Cross-NAT: Netstack handler failed: {:?}", e);
             }
-            error!("netstatck_handler exited");
+            warn!("Cross-NAT: Netstack handler exited unexpectedly.");
         });
 
         let out = SNat {

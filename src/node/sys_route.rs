@@ -95,14 +95,14 @@ impl SystemRouteHandle {
 impl Drop for SystemRouteHandle {
     fn drop(&mut self) {
         if !self.routes.is_empty() {
-            info!("clear all routes");
+            info!("Clearing all network routes managed by Fubuki.");
 
             let rt = self.rt.clone();
 
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     if let Err(e) = rt.block_on(self.clear()) {
-                        warn!("failed to delete route: {}", e)
+                        warn!("Failed to clear all managed system routes: {}", e)
                     }
                 });
             });

@@ -141,7 +141,7 @@ fn fubuki_init_inner(
 
         rt.spawn(async move {
             if let Err(e) = start_fut.await {
-                error!("{:?}", e);
+                error!("Fubuki node (started via FFI bridge) failed: {:?}", e);
             }
         });
 
@@ -195,7 +195,7 @@ fn fubuki_init_with_tun(
 
         rt.spawn(async move {
             if let Err(e) = start_fut.await {
-                error!("{:?}", e);
+                error!("Fubuki node (started via FFI with TUN fd) failed: {:?}", e);
             }
         });
 

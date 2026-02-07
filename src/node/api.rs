@@ -28,7 +28,7 @@ fn info<K>(
     let resp = match serde_json::to_vec(&list) {
         Ok(v) => Response::new(Full::new(Bytes::from(v))),
         Err(e) => {
-            error!("api server error: {}", e);
+            error!("API server failed: {}", e);
 
             Response::builder()
                 .status(500)
@@ -64,7 +64,7 @@ pub(super) async fn api_start<K: Send + Sync + 'static>(
     let ctx = Arc::new(ctx);
 
     let listener = TcpListener::bind(bind).await?;
-    info!("api listening on http://{}", bind);
+    info!("API server listening on http://{}", bind);
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -83,7 +83,7 @@ pub(super) async fn api_start<K: Send + Sync + 'static>(
                 .await;
 
             if let Err(e) = res {
-                warn!("error serving connection: {:?}", e);
+                warn!("Failed to serve API request: {:?}", e);
             }
         });
     }

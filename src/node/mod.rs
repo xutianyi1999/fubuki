@@ -304,7 +304,7 @@ fn find_next_hop(
 
         match route {
             Some((route, cost)) => {
-                info!("select route {:?} for dest addr {}, cost: {}", route, dst, cost);
+                debug!("select route {:?} for dest addr {}, cost: {}", route, dst, cost);
                 // routing sequence starts from the current address, index 1 is the next hop.
                 Some(NextHop{next: route[1], cost })
             },
@@ -368,7 +368,7 @@ async fn send<K: Cipher>(
                                         Ok(_) => return Ok(()),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            warn!("node {} send udp packet warn {}", inter.node_name, e);
+                                            warn!("Failed to send UDP packet from node {}: {}", inter.node_name, e);
                                         }
                                     };
                                 }
@@ -402,7 +402,7 @@ async fn send<K: Cipher>(
                 Ok(_) => return Ok(()),
                 Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                 Err(UdpSocketErr::SuppressError(e)) => {
-                    warn!("node {} send udp packet warn {}", inter.node_name, e);
+                    warn!("Failed to send UDP packet from node {}: {}", inter.node_name, e);
                 }
             };
         }
@@ -430,7 +430,7 @@ async fn send<K: Cipher>(
                             debug!("PacketSender: tcp message relay to node {}", dst_node.node.name);
                             return Ok(());
                         },
-                        Err(e) => error!("PacketSender: tunnel error: {}", e)
+                        Err(e) => error!("PacketSender: Failed to send packet to TCP channel: {}", e)
                     }
                 }
                 NetProtocol::UDP if inter.server_allow_udp_relay.load(Ordering::Relaxed) => {
@@ -454,7 +454,7 @@ async fn send<K: Cipher>(
                         Ok(_) => return Ok(()),
                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                         Err(UdpSocketErr::SuppressError(e)) => {
-                            warn!("node {} send udp packet warn {}", inter.node_name, e);
+                            warn!("Failed to send UDP packet from node {}: {}", inter.node_name, e);
                         }
                     };
                 }
@@ -467,7 +467,7 @@ async fn send<K: Cipher>(
         relay_packet_through_node!(500);
     }
 
-    warn!("no route to {}", dst_node.node.name);
+    warn!("No available route to destination node '{}', packet dropped.", dst_node.node.name);
     Ok(())
 }
 
@@ -562,7 +562,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
         let packet = &mut buff[packet_range.clone()];
 
         let (Ok(src_addr), Ok(mut dst_addr)) = (get_ip_src_addr(packet), get_ip_dst_addr(packet)) else {
-            error!("Illegal ipv4 packet");
+            error!("Failed to parse packet as IPv4, dropping it.");
             return Ok(());
         };
 
@@ -662,7 +662,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
 
                 if f {
                     match node_list.get_node(&addr) {
-                        None => warn!("cannot find node {}", addr),
+                        None => warn!("Unable to find node for address '{}', packet dropped.", addr),
                         Some(node) => send(
                             self.rng.random(),
                             interface, 
@@ -850,7 +850,7 @@ where
                         Ok(_) => (),
                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                         Err(UdpSocketErr::SuppressError(e)) => {
-                            warn!("node {} send udp packet warn {}", group.node_name, e);
+                            warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                         }
                     }
 
@@ -899,7 +899,7 @@ where
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            warn!("node {} send udp packet warn {}", group.node_name, e);
+                                            warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                                         }
                                     };
                                 }
@@ -928,7 +928,7 @@ where
                                                         Ok(_) => (),
                                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                                            warn!("node {} send udp packet warn {}", group.node_name, e);
+                                                            warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                                                         }
                                                     };
                                                 }
@@ -998,7 +998,7 @@ where
                     let (len, peer_addr) = match UdpMsg::recv_msg(socket, &mut buff[START..]).await {
                         Ok(v) => v,
                         Err(UdpSocketErr::SuppressError(e)) => {
-                            warn!("node {} receive udp packet warn {}", group.node_name, e);
+                            warn!("Error receiving UDP packet for node {}: {}", group.node_name, e);
                             continue;
                         }
                         Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e))
@@ -1042,7 +1042,7 @@ where
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            warn!("node {} send udp packet warn {}", group.node_name, e);
+                                            warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                                         }
                                     };
                                 }
@@ -1198,7 +1198,7 @@ where
             );
 
             if let Err(e) = stack.block_on().await {
-                warn!("kcpstack err: {:?}", e);
+                warn!("KCP transport session failed: {:?}", e);
             }
         });
 
@@ -1436,7 +1436,7 @@ where
                 let guard = host_records.lock();
 
                 if !guard.is_empty() {
-                    info!("clear node {} host records", group.node_name);
+                    info!("Clearing host records for node {}.", group.node_name);
 
                     for host in &*guard {
                         let hb = hostsfile::HostsBuilder::new(host);
@@ -1450,7 +1450,7 @@ where
 
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             if is_add_nat.load(Ordering::Relaxed) && native_nat {
-                info!("clear node {} nat list", group.node_name);
+                info!("Clearing NAT mappings for node {}.", group.node_name);
 
                 if let Err(e) = crate::nat::del_nat(&group.allowed_ips, interface.cidr.load()) {
                     error!("failed to delete nat: {}", e);
@@ -1661,9 +1661,9 @@ where
                                                 let node_name = &group.node_name;
 
                                                 match update_hosts(&hb) {
-                                                    Ok(true) => info!("node {} update hosts", node_name),
+                                                    Ok(true) => info!("Successfully updated hosts for node {}.", node_name),
                                                     Ok(false) => (),
-                                                    Err(e) => error!("node {} update hosts error: {}", node_name, e)
+                                                    Err(e) => error!("Failed to update hosts for node {}: {}", node_name, e)
                                                 }
                                             });
                                         }
@@ -1888,7 +1888,7 @@ where
                     error!("node {} got non-retryable error: {}", group.node_name, e);
                     return Err(e)
                 }
-                error!("node {} tcp handler error: {:?}", &group.node_name, e)
+                error!("TCP handler for node {} failed: {:?}", &group.node_name, e)
             }
 
             interface.server_is_connected.store(false, Ordering::Relaxed);

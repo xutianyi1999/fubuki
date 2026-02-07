@@ -225,7 +225,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             Ok(_) => (),
                             Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
                             Err(UdpSocketErr::SuppressError(e)) => {
-                                warn!("group {} send udp packet warn {}", group.name, e);
+                                warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                             }
                         };
                     }
@@ -258,7 +258,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     let (len, peer_addr) = match UdpMsg::recv_msg(socket.deref(), &mut buff).await {
                         Ok(v) => v,
                         Err(e) => {
-                            error!("group {} receive udp message error: {:?}", group.name, e.as_ref());
+                            error!("Failed to process UDP message for group {}: {:?}", group.name, e.as_ref());
                             continue;
                         }
                     };
@@ -268,7 +268,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                     let msg = match UdpMsg::decode(key, packet) {
                         Ok(msg) => msg,
                         Err(e) => {
-                            error!("group {} receive udp message error: {:?}", group.name, e);
+                            error!("Failed to process UDP message for group {}: {:?}", group.name, e);
                             continue;
                         }
                     };
@@ -303,7 +303,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                     Ok(_) => (),
                                     Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                     Err(UdpSocketErr::SuppressError(e)) => {
-                                        warn!("group {} send udp packet warn {}", group.name, e);
+                                        warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                                     }
                                 };
                             }
@@ -366,7 +366,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                         }
                                                         break;
                                                     }
-                                                    Err(e) => warn!("group {} send packet to tcp channel error: {}", group.name, e)
+                                                    Err(e) => warn!("Failed to send packet to TCP channel for group {}: {}", group.name, e)
                                                 }
                                             }
                                             NetProtocol::UDP => {
@@ -405,7 +405,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                     Ok(_) => (),
                                     Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
                                     Err(UdpSocketErr::SuppressError(e)) => {
-                                        warn!("group {} send udp packet warn {}", group.name, e);
+                                        warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                                     }
                                 }
                             }
@@ -475,7 +475,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                     }
 
                                                     if let Err(e) = res {
-                                                        warn!("kcpstack error: {:?}", e);
+                                                        warn!("KCP transport session failed: {:?}", e);
                                                     }
 
                                                     tokio::time::sleep(Duration::from_secs(5 * 60)).await;
@@ -500,7 +500,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                 fut.await?;
                             }
                         }
-                        _ => error!("group {} receive invalid udp message", group.name),
+                        _ => error!("Received invalid UDP message for group {}", group.name),
                     };
                 };
             };
@@ -550,8 +550,8 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
     
                 if let Err(e) = res {
                     match &tunnel.register {
-                        None => error!("group {} address {} tunnel error: {:?}", group.name, $peer_addr, e),
-                        Some(v) => error!("group {} node {}({}) tunnel error: {:?}", group.name, v.node_name, v.virtual_addr, e)
+                        None => error!("Tunnel for address {} in group {} failed: {:?}", $peer_addr, group.name, e),
+                        Some(v) => error!("Tunnel for node {}({}) in group {} failed: {:?}", v.node_name, v.virtual_addr, group.name, e)
                     }
                 }
     
@@ -708,7 +708,7 @@ impl<K, R, W> Tunnel<K, R, W>
     async fn exec(&mut self) -> Result<()> {
         self.init().await?;
 
-        info!("tcp handler: node {} is registered", self.register.as_ref().unwrap().node_name);
+        info!("Node {} successfully registered via TCP.", self.register.as_ref().unwrap().node_name);
 
         let (mut bridge, node_handle) = match (self.bridge.take(), &self.node_handle) {
             (Some(bridge), Some(node_handle)) => (bridge, &*node_handle),
@@ -817,7 +817,7 @@ impl<K, R, W> Tunnel<K, R, W>
                                                             debug!("tcp handler: tcp message relay to node {}", node.name);
                                                             break;
                                                         },
-                                                        Err(e) => warn!("group {} send packet to tcp channel error: {}", group.name, e)
+                                                        Err(e) => warn!("Failed to send packet to TCP channel for group {}: {}", group.name, e)
                                                     }
                                                 }
                                                 NetProtocol::UDP =>  {
@@ -849,7 +849,7 @@ impl<K, R, W> Tunnel<K, R, W>
                                         Ok(_) => (),
                                         Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
-                                            warn!("group {} send udp packet warn {}", group.name, e);
+                                            warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                                         }
                                     }
                                 }
@@ -1058,13 +1058,13 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 
             let udp_socket = Arc::new(udp_socket);
 
-            info!("group {} udp socket listening on {}", group.name, listen_addr);
+            info!("UDP socket for group {} is listening on {}", group.name, listen_addr);
 
             let tcp_listener = TcpListener::bind(listen_addr)
                 .await
                 .with_context(|| format!("tcp socket bind {} error", listen_addr))?;
 
-            info!("group {} tcp socket listening on {}", group.name, listen_addr);
+            info!("TCP listener for group {} is listening on {}", group.name, listen_addr);
 
             let (_notify, notified) = watch::channel(());
             let gh1 = gh.clone();
@@ -1113,10 +1113,10 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
         };
 
         futures.push(async {
-            info!("group {} server start", group.name);
+            info!("Starting server for group {}...", group.name);
 
             if let Err(e) = fut.await {
-                error!("group {} server error: {:?}", group.name, e)
+                error!("Server for group {} failed: {:?}", group.name, e)
             }
         });
     }
