@@ -100,7 +100,7 @@ impl TunDevice for Linuxtun {
 
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to add IP address {}/{} to TUN interface '{}'. Error: {}", addr, netmask, self.inter.name(), e))?;
+            .map_err(|e| anyhow!("Failed to add IP address {}/{} to TUN interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
 
         guard.insert(addr);
         Ok(())
@@ -115,7 +115,7 @@ impl TunDevice for Linuxtun {
 
         self.inter
             .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to remove IP address {}/{} from TUN interface '{}'. Error: {}", addr, netmask, self.inter.name(), e))?;
+            .map_err(|e| anyhow!("Failed to remove IP address {}/{} from TUN interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
 
         guard.remove(&addr);
         Ok(())

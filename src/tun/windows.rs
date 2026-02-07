@@ -104,7 +104,7 @@ impl TunDevice for Wintun {
 
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to add address {}/{} to interface '{}'. Error: {}", addr, netmask, self.inter.name().unwrap(), e))?;
+            .map_err(|e| anyhow!("Failed to add address {}/{} to interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
 
         guard.insert(addr);
         Ok(())
@@ -119,7 +119,7 @@ impl TunDevice for Wintun {
 
         self.inter
             .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to delete address {}/{} from interface '{}'. Error: {}", addr, netmask, self.inter.name().unwrap(), e))?;
+            .map_err(|e| anyhow!("Failed to delete address {}/{} from interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
 
         guard.remove(&addr);
         Ok(())

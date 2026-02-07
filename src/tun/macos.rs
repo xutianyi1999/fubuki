@@ -80,7 +80,7 @@ impl TunDevice for Macostun {
 
         self.inter
             .add_address(IpNet::V4(cidr))
-            .map_err(|e| anyhow!("Failed to add address {} to interface '{}'. Error: {}", cidr, self.inter.name(), e))?;
+            .map_err(|e| anyhow!("Failed to add address {} to interface '{}'. Error: {}", cidr, self.inter.name().expect("Failed to get interface name"), e))?;
 
         let status = Command::new("route")
             .args([
