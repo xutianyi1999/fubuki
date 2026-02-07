@@ -333,6 +333,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             let flow_control_res = group_handle.flow_control.push(dst_virt_addr, data.len() as u64);
 
                             if flow_control_res == PushResult::Reject {
+                                debug!("group {} udp handler: UDP packet from {} to {} rejected by flow control.", group.name, peer_addr, dst_virt_addr);
                                 continue;
                             }
 
@@ -447,6 +448,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                                                 let kcp_sessions_expired_list = kcp_sessions_expired_list.clone();
 
                                                 tokio::spawn(async move {
+                                                    info!("group {} udp handler: KCP session (conv: {}) initiated with peer {}.", group.name, conv, peer_addr);
                                                     // destruction immediately after the connection is terminated, rather than the entire life cycle
                                                     let block_on = async move {
                                                         let (mut rx, mut tx) = tokio::io::split(handler_tcp_channel);
@@ -527,6 +529,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
 ) -> Result<()> {
     let nonce_pool = Arc::new(NoncePool::new());
     let address_pool = Arc::new(AddressPool::new(group.address_range)?);
+    info!("AddressPool for group '{}' initialized with range {}.", group.name, group.address_range);
 
     macro_rules! spawn_task {
         ($stream: expr, $peer_addr: expr) => {{
@@ -556,7 +559,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
                 }
     
                 if let Some(v) = &tunnel.register {
-                    warn!("group {} node {}-{} disconnected", group.name, v.node_name, v.virtual_addr);
+                    info!("group {} node {}-{} disconnected", group.name, v.node_name, v.virtual_addr);
                 }
             });
         }};
@@ -639,10 +642,16 @@ impl<K, R, W> Tunnel<K, R, W>
 
             match msg {
                 TcpMsg::GetIdleVirtualAddr => {
+                    debug!("group {} tunnel init: received GetIdleVirtualAddr request.", group.name);
                     let addr = self.address_pool.get_idle_addr()
                         .map(|v| (v, self.group.address_range));
                     let len = TcpMsg::get_idle_virtual_addr_res_encode(key, rng.random(), addr, buff)?;
                     TcpMsg::write_msg(writer, &buff[..len]).await?;
+                    if let Some((v_addr, _)) = addr {
+                        debug!("group {} tunnel init: sent GetIdleVirtualAddr response with allocated address {}.", group.name, v_addr);
+                    } else {
+                        debug!("group {} tunnel init: sent GetIdleVirtualAddr response, but no idle address found.", group.name);
+                    }
                 }
                 TcpMsg::Register(msg) => {
                     let now = Utc::now().timestamp();
@@ -655,6 +664,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     }
 
                     let not_contained = nonce_pool.set.lock().insert(msg.nonce);
+                    debug!("group {} tunnel init: nonce {} added to pool (new: {}).", group.name, msg.nonce, not_contained);
 
                     if !not_contained {
                         let len = TcpMsg::register_res_encode(key, rng.random(), &Err(RegisterError::NonceRepeat), buff)?;
@@ -663,10 +673,12 @@ impl<K, R, W> Tunnel<K, R, W>
                     }
 
                     let nonce_pool = nonce_pool.clone();
+                    let nonce = msg.nonce;
 
                     tokio::spawn(async move {
                         time::sleep(Duration::from_secs(300 * 2)).await;
-                        nonce_pool.set.lock().remove(&msg.nonce);
+                        nonce_pool.set.lock().remove(&nonce);
+                        debug!("group {} tunnel init: nonce {} removed from pool after timeout.", group.name, nonce);
                     });
 
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
@@ -799,6 +811,7 @@ impl<K, R, W> Tunnel<K, R, W>
                                 let flow_control_res = group_handle.flow_control.push(dst_virt_addr, packet.len() as u64);
 
                                 if flow_control_res == PushResult::Reject {
+                                    debug!("group {} tcp handler: TCP packet to {} rejected by flow control.", group.name, dst_virt_addr);
                                     continue;
                                 }
 

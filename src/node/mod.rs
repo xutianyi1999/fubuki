@@ -662,7 +662,7 @@ impl <'a, InterRT, ExternRT, Tun, K> PacketSender<'a, InterRT, ExternRT, Tun, K>
 
                 if f {
                     match node_list.get_node(&addr) {
-                        None => warn!("Unable to find node for address '{}', packet dropped.", addr),
+                        None => warn!("Unable to find node for virtual address '{}', packet dropped.", addr),
                         Some(node) => send(
                             self.rng.random(),
                             interface, 
@@ -845,6 +845,7 @@ where
                         HeartbeatType::Req,
                         &mut packet,
                     );
+                    debug!("node {} udp heartbeat: sending request to server {}.", group.node_name, interface.server_addr);
 
                     match UdpMsg::send_msg(socket, &packet, &interface.server_addr).await {
                         Ok(_) => (),
@@ -892,6 +893,7 @@ where
                                 HeartbeatType::Req, 
                                 &mut packet
                             );
+                            debug!("node {} udp heartbeat: sending request to peer {}", group.node_name, ext_node.node.name);
 
                             match udp_status {
                                 UdpStatus::Available { dst_addr } if !is_over => {
@@ -1048,6 +1050,7 @@ where
                                 }
                             }
                             UdpMsg::Heartbeat(from_addr, seq, HeartbeatType::Resp) => {
+                                debug!("node {} udp heartbeat: received response from {} (seq: {}).", group.node_name, from_addr, seq);
                                 if from_addr == SERVER_VIRTUAL_ADDR {
                                     let udp_status = interface.server_udp_status.load();
 
@@ -1078,6 +1081,7 @@ where
                                         }
                                     };
                                 } else if is_p2p {
+                                    debug!("node {} udp heartbeat: received P2P response from {} (seq: {}).", group.node_name, from_addr, seq);
                                     if let Some(node) = interface.node_list.load_full().get_node(&from_addr) {
                                         let mut hc_guard = node.hc.write();
 
@@ -1102,6 +1106,7 @@ where
                                                 node.udp_status.store(UdpStatus::Available {
                                                     dst_addr: peer_addr,
                                                 });
+                                                info!("node {} P2P connection to node {}({}) is now Available via {}.", group.node_name, node.node.name, node.node.virtual_addr, peer_addr);
                                             }
                                         }
                                     }
@@ -1180,11 +1185,13 @@ where
         let kcp_stack_rx = kcp_stack_rx.unwrap();
 
         tokio::spawn(async move {
+            let conv = rand::random();
+
+            info!("node {} KCP session (conv: {}) initiated with server {}.", group.node_name, conv, server_addr);
             let socket = interface.udp_socket.as_ref().expect("UDP socket unexpectedly not available for KCP session");
             let mut kcp_stack_rx_guard = kcp_stack_rx.lock().await;
             let kcp_stack_rx = &mut *kcp_stack_rx_guard;
 
-            let conv = rand::random();
             let (mut rx, mut tx) = tokio::io::split(handler_kcp_channel_from_kcp);
 
             let mut stack = KcpStack::new(
@@ -1220,6 +1227,8 @@ where
         let stream = socket.connect(server_addr)
             .await
             .with_context(|| format!("connect to {} error", &group.server_addr))?;
+
+        info!("node {} successfully connected to TCP server {}.", group.node_name, server_addr);
 
         let (reader, writer) = stream.into_split();
         (Box::new(reader), Box::new(writer))
@@ -1368,6 +1377,7 @@ fn update_tun_addr<T, K, InterRT, ExternRt>(
         cidr != old_cidr {
         tun.delete_addr(old_addr, old_cidr.netmask())?;
         tun.add_addr(addr, cidr.netmask())?;
+        info!("TUN device for node '{}' updated: address {}/{} configured.", interface.node_name, addr, cidr.prefix_len());
 
         interface.addr.store(addr);
         interface.cidr.store(cidr);
@@ -1573,6 +1583,7 @@ where
                     }
 
                     sys_route_is_sync = true;
+                    info!("node {} successfully added system routes.", group.node_name);
                 }
 
                 interface.server_is_connected.store(true, Ordering::Relaxed);
@@ -1692,9 +1703,11 @@ where
                                         if res.is_err() {
                                             return res;
                                         }
+                                        debug!("node {} tcp heartbeat: received response from server (seq: {}).", group.node_name, seq);
                                     }
                                     TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
                                         interface.server_tcp_hc.write().reply(recv_seq);
+                                        debug!("node {} tcp heartbeat: processed response from server (seq: {}).", group.node_name, recv_seq);
                                     }
                                     TcpMsg::FetchPeersRes(peers) => {
                                         if let Some(peers_map) = &interface.peers_map {
@@ -1789,6 +1802,7 @@ where
 
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                                 TcpMsg::heartbeat_encode(key, rng.random(), seq, HeartbeatType::Req, &mut buff);
+                                debug!("node {} tcp heartbeat: sending request to server (seq: {}).", group.node_name, seq);
                                 inner_channel_tx.send(buff).map_err(|e| anyhow!(e))?;
 
                                 tokio::time::sleep(config.tcp_heartbeat_interval).await;
