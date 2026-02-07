@@ -42,30 +42,30 @@ pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
         .status;
 
     if !status.success() {
-        return Err(anyhow!("enable net.inet.ip.forwarding option failed"));
+        return Err(anyhow!("Failed to enable net.inet.ip.forwarding option. This is required for NAT. Please ensure you have appropriate permissions (e.g., run with sudo)."));
     }
 
     let dir = tempfile::tempdir()?;
     let file_path = dir.path().join("fubuki-pf-nat.conf");
     let mut file = File::create(file_path.as_path())?;
 
-    let ifs = netconfig::list_interfaces().map_err(|e| anyhow!(e.to_string()))?;
+    let ifs = netconfig::list_interfaces().map_err(|e| anyhow!("Failed to list network interfaces to configure NAT. Error: {}", e))?;
 
     for range in ranges {
         let lan = get_interface_addr(SocketAddrV4::new(range.broadcast(), 1).into())?;
         let mut if_name = None;
 
         'top: for interface in &ifs {
-            for ip in interface.addresses().map_err(|e| anyhow!(e.to_string()))? {
+            for ip in interface.addresses().map_err(|e| anyhow!("Failed to get addresses for interface '{}'. Error: {}", interface.name().unwrap_or_default(), e))? {
                 if ip.addr() == lan {
-                    if_name = Some(interface.name().map_err(|e| anyhow!(e.to_string()))?);
+                    if_name = Some(interface.name().map_err(|e| anyhow!("Failed to get name for interface. Error: {}", e))?);
                     break 'top;
                 }
             }
         }
 
         let record = match if_name {
-            None => return Err(anyhow!("cannot found interface")),
+            None => return Err(anyhow!("Cannot find network interface for LAN address {} within range {}. Please check network configuration.", lan, range)),
             Some(if_name) => {
                 Record {
                     if_name,
@@ -81,14 +81,14 @@ pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
 
     let status = Command::new("pfctl")
         .args([
-            "-Ef", file_path.to_str().ok_or_else(|| anyhow!("cannot get fubuki-pf-nat.conf path"))?
+            "-Ef", file_path.to_str().ok_or_else(|| anyhow!("Failed to convert temporary configuration file path to string for adding NAT rules in 'add_nat' function. Path: {:?}", file_path))?
         ])
         .stderr(Stdio::inherit())
         .output()?
         .status;
 
     if !status.success() {
-        return Err(anyhow!("add nat record failed"));
+        return Err(anyhow!("Failed to apply NAT rules using pfctl in 'add_nat' function. Please check pfctl configuration and permissions."));
     }
 
     Ok(())
@@ -112,14 +112,14 @@ pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
 
     let status = Command::new("pfctl")
         .args([
-            "-Ef", file_path.to_str().ok_or_else(|| anyhow!("cannot get fubuki-pf-nat.conf path"))?
+            "-Ef", file_path.to_str().ok_or_else(|| anyhow!("Failed to convert temporary configuration file path to string for deleting NAT rules in 'del_nat' function. Path: {:?}", file_path))?
         ])
         .stderr(Stdio::inherit())
         .output()?
         .status;
 
     if !status.success() {
-        return Err(anyhow!("remove nat record failed"));
+        return Err(anyhow!("Failed to remove NAT rules using pfctl in 'del_nat' function. Please check pfctl configuration and permissions."));
     }
 
     Ok(())

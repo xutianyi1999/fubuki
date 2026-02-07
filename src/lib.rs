@@ -1,5 +1,4 @@
 #![feature(portable_simd)]
-#![feature(maybe_uninit_slice)]
 #![feature(get_mut_unchecked)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(sync_unsafe_cell)]
@@ -136,7 +135,7 @@ impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
 
                 for group in config.groups {
                     if group.listen_addr.ip().is_loopback() {
-                        return Err(anyhow!("listen address can't be a loopback address"));
+                        return Err(anyhow!("Invalid group configuration: listen address '{}' cannot be a loopback address. Please provide a public IP address.", group.listen_addr));
                     }
 
                     if group.address_range.contains(&SERVER_VIRTUAL_ADDR) {
@@ -290,7 +289,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             let mode = group.mode.unwrap_or_default();
 
             if mode.p2p.contains(&NetProtocol::TCP) {
-                return Err(anyhow!("p2p only support udp protocol"))
+                return Err(anyhow!("Invalid group configuration: P2P connections currently only support UDP protocol. TCP is not supported."))
             }
 
             let resolve_server_addr = group
@@ -305,11 +304,11 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 }
                 Some(addr) => {
                     if addr.is_loopback() {
-                        return Err(anyhow!("lan address cannot be a loopback address"));
+                        return Err(anyhow!("Invalid group configuration: LAN address '{}' cannot be a loopback address. Please specify a valid LAN IP.", addr));
                     }
 
                     if addr.is_unspecified() {
-                        return Err(anyhow!("lan address cannot be unspecified address"));
+                        return Err(anyhow!("Invalid group configuration: LAN address '{}' cannot be an unspecified address. Please specify a valid LAN IP.", addr));
                     }
                     addr
                 }
@@ -336,7 +335,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                         None => {
                             gethostname()
                                 .to_str()
-                                .ok_or_else(|| anyhow!("unable to resolve hostname"))?
+                                .ok_or_else(|| anyhow!("Failed to resolve hostname for node_name. Ensure the system hostname is properly configured."))?
                                 .to_string()
                         }
                         Some(v) => v
@@ -344,7 +343,7 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
                 },
                 server_addr: {
                     if resolve_server_addr.ip().is_loopback() {
-                        return Err(anyhow!("server address cannot be a loopback address"));
+                        return Err(anyhow!("Invalid group configuration: server address '{}' cannot be a loopback address. Please provide a public IP address.", resolve_server_addr));
                     }
                     group.server_addr
                 },
@@ -502,9 +501,9 @@ pub enum Args {
 
 fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
     let file = std::fs::File::open(path)
-        .with_context(|| format!("failed to read config from: {}", path.to_string_lossy()))?;
+        .with_context(|| format!("Failed to open configuration file: '{}'. Ensure the path is correct and the file is accessible.", path.display()))?;
 
-    serde_json::from_reader(file).context("failed to parse config")
+    serde_json::from_reader(file).context(format!("Failed to parse configuration file '{}'. Check for syntax errors or invalid values.", path.display()))
 }
 
 #[cfg(target_os = "android")]
@@ -555,7 +554,7 @@ fn logger_init() -> Result<()> {
     static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
 
     LOGGER_INIT.call_once(|| {
-        init().expect("logger initialization failed");
+        init().expect("Critical error: Logger initialization failed. Please check log configuration.");
     });
     Ok(())
 }
@@ -591,7 +590,7 @@ pub fn launch(args: Args) -> Result<()> {
 
                     rt.block_on(async {
                         // creating AsyncTun must be in the tokio runtime
-                        let tun = tun::create().context("failed to create tun")?;
+                        let tun = tun::create().context("Failed to create TUN device. Ensure necessary drivers are installed and permissions are granted.")?;
                         node::start(c, tun, Arc::new(OnceLock::new())).await
                     })?;
                 }
@@ -604,7 +603,7 @@ pub fn launch(args: Args) -> Result<()> {
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
                 _ => {
-                    return Err(anyhow!("fubuki does not support the current platform"))
+                    return Err(anyhow!("Fubuki is not supported on the current platform. This build only supports Windows, Linux, and macOS."))
                 }
             }
         }

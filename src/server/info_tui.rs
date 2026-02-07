@@ -103,7 +103,7 @@ impl App {
                 nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
 
                 for node in nodes {
-                    let register_time = utc_to_str(node.node.register_time).unwrap();
+                    let register_time = utc_to_str(node.node.register_time).unwrap_or_else(|_| "Invalid Time".to_string());
 
                     table.add_row(row![
                         node.node.name,
@@ -136,7 +136,7 @@ impl App {
                 let mut table = Table::new();
                 table.set_format(table_format);
 
-                let register_time = utc_to_str(node.node.register_time).unwrap();
+                let register_time = utc_to_str(node.node.register_time).unwrap_or_else(|_| "Invalid Time".to_string());
 
                 table.add_row(row!["NAME", node.node.name]);
                 table.add_row(row!["IP", node.node.virtual_addr]);

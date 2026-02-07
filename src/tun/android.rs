@@ -27,11 +27,11 @@ impl TunDevice for Androidtun {
     fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
         self.inner.send(packet)
             .map_ok(|_| ())
-            .map_err(|e| anyhow!(e))
+            .map_err(|e| anyhow!("Failed to send packet to Android TUN device. Error: {}", e))
     }
 
     fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {
-        self.inner.recv(buff).map_err(|e| anyhow!(e))
+        self.inner.recv(buff).map_err(|e| anyhow!("Failed to receive packet from Android TUN device. Error: {}", e))
     }
 
     fn set_mtu(&self, _mtu: usize) -> Result<()> {

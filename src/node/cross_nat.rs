@@ -157,7 +157,7 @@ async fn tcp_inbound_handler(
                 let mut outbound_stream = socket
                     .connect(remote_addr)
                     .await
-                    .with_context(|| format!("connect to {} error", &remote_addr))?;
+                    .with_context(|| format!("Failed to connect to remote address '{}' for TCP inbound handling. Check network connectivity and firewall rules.", &remote_addr))?;
 
                 tokio::io::copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await?;
                 Result::<_, anyhow::Error>::Ok(())

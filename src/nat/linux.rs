@@ -18,7 +18,7 @@ pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
         .status;
 
     if !status.success() {
-        return Err(anyhow!("enable net.ipv4.ip_forward option failed"));
+        return Err(anyhow!("Failed to enable net.ipv4.ip_forward option. This is required for NAT. Please ensure you have appropriate permissions (e.g., run with sudo)."));
     }
 
     for dst in ranges {
@@ -35,7 +35,7 @@ pub fn add_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("add nat record failed"));
+            return Err(anyhow!("Failed to add NAT record for destination '{}' from source '{}' using iptables. Please check iptables rules and permissions.", dst, src));
         }
     }
     Ok(())
@@ -56,7 +56,7 @@ pub fn del_nat(ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("remove nat record failed"));
+            return Err(anyhow!("Failed to remove NAT record for destination '{}' from source '{}' using iptables. Please check iptables rules and permissions.", dst, src));
         }
     }
     Ok(())

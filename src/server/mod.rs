@@ -138,7 +138,7 @@ impl GroupHandle {
             .collect();
 
         tx.send(Arc::new(node_list))
-            .map_err(|_| anyhow!("sync node_map error"))?;
+            .map_err(|_| anyhow!("Failed to synchronize node map. The watch channel might be closed."))?;
         Ok(())
     }
 }
@@ -223,7 +223,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
                         match UdpMsg::send_msg(&socket, packet, sock_addr).await {
                             Ok(_) => (),
-                            Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
+                            Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!("UDP heartbeat sender for group '{}' encountered a fatal socket error: {}", group.name, e)),
                             Err(UdpSocketErr::SuppressError(e)) => {
                                 warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                             }
@@ -236,7 +236,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
             tokio::select! {
                 res = fut => res,
-                _ = notified.changed() => Err(anyhow!("abort task"))
+                _ = notified.changed() => Err(anyhow!("UDP heartbeat sender for group '{}' aborted due to notification.", group.name))
             }
         }).await?
     };
@@ -301,7 +301,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
                                 match UdpMsg::send_msg(&socket, packet, peer_addr).await {
                                     Ok(_) => (),
-                                    Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                    Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("UDP heartbeat responder for group '{}' encountered a fatal socket error while sending response: {}", group.name, e)),
                                     Err(UdpSocketErr::SuppressError(e)) => {
                                         warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                                     }
@@ -403,7 +403,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
                             if let Some(fut) = fut {
                                 match fut.await {
                                     Ok(_) => (),
-                                    Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
+                                    Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!("UDP relay for group '{}' encountered a fatal socket error while forwarding packet: {}", group.name, e)),
                                     Err(UdpSocketErr::SuppressError(e)) => {
                                         warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                                     }
@@ -507,7 +507,7 @@ async fn udp_handler<K: Cipher + Clone + Send + Sync>(
 
             tokio::select! {
                 res = fut => res,
-                _ = notified.changed() => Err(anyhow!("abort task"))
+                _ = notified.changed() => Err(anyhow!("UDP receiver for group '{}' aborted due to notification.", group.name))
             }
         }).await?
     };
@@ -545,7 +545,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
             tokio::spawn(async move {
                 let res = tokio::select! {
                     res = tunnel.exec() => res,
-                    _ = notified.changed() => Err(anyhow!("abort task"))
+                    _ = notified.changed() => Err(anyhow!("Tunnel execution for group '{}' aborted due to notification.", group.name))
                 };
     
                 if let Err(e) = res {
@@ -565,7 +565,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
     loop {
         tokio::select! {
             res = tcp_listener.accept() => {
-                let (stream, peer_addr) = res.context("accept connection error")?;
+                let (stream, peer_addr) = res.context(format!("Failed to accept incoming TCP connection on {}. Check listening port and firewall rules.", group.listen_addr))?;
 
                 stream.set_keepalive()?;
                 stream.set_nodelay(true)?;
@@ -574,7 +574,7 @@ async fn tcp_handler<K: Cipher + Clone + Send + Sync>(
                 spawn_task!(stream, peer_addr);
             }
             res = kcp_acceptor_channel.recv() => {
-                let (stream, peer_addr) = res.ok_or_else(|| anyhow!("kcp channel has been closed"))?;
+                let (stream, peer_addr) = res.ok_or_else(|| anyhow!("KCP acceptor channel for group '{}' has been unexpectedly closed.", group.name))?;
                 let stream = tokio::io::split(stream);
                 spawn_task!(stream, peer_addr);
             }
@@ -630,11 +630,12 @@ impl<K, R, W> Tunnel<K, R, W>
         let (reader, writer) = self.stream.as_mut().unwrap();
         let key = &self.group.key;
         let mut rng = rand::rngs::SmallRng::from_os_rng();
+        let group = self.group;
 
         loop {
             let nonce_pool = &self.nonce_pool;
             let msg = TcpMsg::read_msg(reader, key, buff).await?
-                .ok_or_else(|| anyhow!("node connection closed"))?;
+                .ok_or_else(|| anyhow!("Node connection closed unexpectedly during initialization for group '{}'.", group.name))?;
 
             match msg {
                 TcpMsg::GetIdleVirtualAddr => {
@@ -650,7 +651,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     if !(-300..=300).contains(&remain) {
                         let len = TcpMsg::register_res_encode(key, rng.random(), &Err(RegisterError::Timeout), buff)?;
                         TcpMsg::write_msg(writer, &buff[..len]).await?;
-                        return Err(anyhow!("register message timeout"));
+                        return Err(anyhow!("Node registration for group '{}' failed: registration message timed out ({}s elapsed, max 300s).", group.name, remain));
                     }
 
                     let not_contained = nonce_pool.set.lock().insert(msg.nonce);
@@ -658,7 +659,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     if !not_contained {
                         let len = TcpMsg::register_res_encode(key, rng.random(), &Err(RegisterError::NonceRepeat), buff)?;
                         TcpMsg::write_msg(writer, &buff[..len]).await?;
-                        return Err(anyhow!("nonce repeat"));
+                        return Err(anyhow!("Node registration for group '{}' failed: nonce ({}) has already been used.", group.name, msg.nonce));
                     }
 
                     let nonce_pool = nonce_pool.clone();
@@ -671,7 +672,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     if let Err(e) = self.address_pool.allocate(msg.virtual_addr) {
                         let len = TcpMsg::register_res_encode(key, rng.random(), &Err(RegisterError::InvalidVirtualAddress(e)), buff)?;
                         TcpMsg::write_msg(writer, &buff[..len]).await?;
-                        return Err(anyhow!(e))
+                        return Err(anyhow!("Node registration for group '{}' failed: IP address allocation error: {}", group.name, e));
                     };
 
                     self.register = Some(msg.clone());
@@ -691,7 +692,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     self.node_handle = Some(node_handle);
 
                     let gc = GroupContent {
-                        name: self.group.name.clone(),
+                        name: group.name.clone(),
                         cidr: self.group.address_range,
                         allow_udp_relay: self.group.allow_udp_relay,
                         allow_tcp_relay: self.group.allow_tcp_relay
@@ -700,7 +701,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     let len = TcpMsg::register_res_encode(key, rng.random(), &Ok(gc), buff)?;
                     return TcpMsg::write_msg(writer,  &buff[..len]).await;
                 }
-                _ => return Err(anyhow!("init message error")),
+                _ => return Err(anyhow!("Received an invalid or unexpected message during tunnel initialization for group '{}'.", group.name)),
             }
         }
     }
@@ -729,7 +730,9 @@ impl<K, R, W> Tunnel<K, R, W>
             let node_handle = node_handle.clone();
             let config = self.config;
             let local_channel_tx = local_channel_tx.clone();
-            
+            let register = self.register.clone().unwrap();
+            let group = self.group;
+
             tokio::spawn(async move {
                 let fut = async {
                     let mut rng = rand::rngs::SmallRng::from_os_rng();
@@ -742,7 +745,7 @@ impl<K, R, W> Tunnel<K, R, W>
                             hc.check();
 
                             if hc.packet_continuous_loss_count >= config.tcp_heartbeat_continuous_loss {
-                                return Err(anyhow!("heartbeat receive timeout"))
+                                return Err(anyhow!("TCP heartbeat for node {}({}) in group '{}' timed out. No response received.", register.node_name, register.virtual_addr, group.name))
                             }
 
                             hc.ping();
@@ -752,14 +755,14 @@ impl<K, R, W> Tunnel<K, R, W>
                         let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                         TcpMsg::heartbeat_encode(key, rng.random(), seq, HeartbeatType::Req, &mut buff);
 
-                        local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
+                        local_channel_tx.send(buff).map_err(|e| anyhow!("Failed to send heartbeat packet to local channel for node {}({}) in group '{}': {}", register.node_name, register.virtual_addr, group.name, e))?;
                         tokio::time::sleep(config.tcp_heartbeat_interval).await;
                     }
                 };
 
                 tokio::select! {
                     res = fut => res,
-                    _ = notified.changed() => Err(anyhow!("abort task"))
+                    _ = notified.changed() => Err(anyhow!("TCP heartbeat schedule for node {}({}) in group '{}' aborted due to notification.", register.node_name, register.virtual_addr, group.name))
                 }
             }).await?
         };
@@ -771,6 +774,7 @@ impl<K, R, W> Tunnel<K, R, W>
             let udp_socket = self.udp_socket.clone();
             let group = self.group;
             let local_channel_tx = local_channel_tx.clone();
+            let register = self.register.clone().unwrap();
 
             tokio::spawn(async move {
                 let fut = async {
@@ -845,10 +849,9 @@ impl<K, R, W> Tunnel<K, R, W>
                                 }
 
                                 if let Some(fut) = fut {
-                                    match fut.await {
-                                        Ok(_) => (),
-                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
-                                        Err(UdpSocketErr::SuppressError(e)) => {
+                                                                    match fut.await {
+                                                                        Ok(_) => (),
+                                                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("TCP receiver for node {}({}) in group '{}' encountered a fatal UDP socket error during relay: {}", register.node_name, register.virtual_addr, group.name, e)),                                        Err(UdpSocketErr::SuppressError(e)) => {
                                             warn!("Failed to send UDP packet for group {}: {}", group.name, e);
                                         }
                                     }
@@ -858,7 +861,7 @@ impl<K, R, W> Tunnel<K, R, W>
                                 let mut buff = allocator::alloc(TCP_MSG_HEADER_LEN + size_of::<Seq>() + size_of::<HeartbeatType>());
                                 TcpMsg::heartbeat_encode(key, rng.random(), seq, HeartbeatType::Resp, &mut buff);
 
-                                local_channel_tx.send(buff).map_err(|e| anyhow!("{}", e))?;
+                                local_channel_tx.send(buff).map_err(|e| anyhow!("Failed to send heartbeat response to local channel for node {}({}) in group '{}': {}", register.node_name, register.virtual_addr, group.name, e))?;
                             }
                             TcpMsg::Heartbeat(recv_seq, HeartbeatType::Resp) => {
                                 node_handle.tcp_heartbeat_cache.write().reply(recv_seq);
@@ -887,22 +890,24 @@ impl<K, R, W> Tunnel<K, R, W>
                                 let len = TcpMsg::fetch_peers_res_encode(key, rng.random(), &peers, &mut buff)?;
                                 let mut data = allocator::alloc(len);
                                 data.copy_from_slice(&buff[..len]);
-                                local_channel_tx.send(data).map_err(|e| anyhow!("{}", e))?;
+                                local_channel_tx.send(data).map_err(|e| anyhow!("Failed to send fetched peers to local channel for node {}({}) in group '{}': {}", register.node_name, register.virtual_addr, group.name, e))?;
                             }
-                            _ => return Result::<()>::Err(anyhow!("invalid tcp msg")),
+                            _ => return Result::<()>::Err(anyhow!("Received an invalid or unexpected TCP message from node {}({}) in group '{}'.", register.node_name, register.virtual_addr, group.name)),
                         }
                     }
                 };
 
                 tokio::select! {
                     res = fut => res,
-                    _ = notified.changed() => Err(anyhow!("abort task"))
+                    _ = notified.changed() => Err(anyhow!("TCP receiver for node {}({}) in group '{}' aborted due to notification.", register.node_name, register.virtual_addr, group.name))
                 }
             }).await?
         };
 
         let send_handler = async {
             let mut notified = notified.clone();
+            let register = self.register.clone().unwrap();
+            let group = self.group;
 
             tokio::spawn(async move {
                 let mut buff = vec![0u8; TCP_BUFF_SIZE];
@@ -912,7 +917,7 @@ impl<K, R, W> Tunnel<K, R, W>
                     tokio::select! {
                         res = bridge.watch_rx.changed() => {
                             if let Err(e) = res {
-                                return Result::<(), _>::Err(anyhow!(e));
+                                return Result::<(), _>::Err(anyhow!("Watch channel for node {}({}) in group '{}' failed: {}", register.node_name, register.virtual_addr, group.name, e));
                             }
 
                             let node_list: Arc<NodeMap> = bridge.watch_rx.borrow().clone();
@@ -920,14 +925,14 @@ impl<K, R, W> Tunnel<K, R, W>
                             TcpMsg::write_msg(&mut tx, &buff[..len]).await?;
                         }
                         res = bridge.channel_rx.recv() => {
-                            let buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                            let buff = res.ok_or_else(|| anyhow!("Bridge channel for node {}({}) in group '{}' closed unexpectedly.", register.node_name, register.virtual_addr, group.name))?;
                             TcpMsg::write_msg(&mut tx, &buff).await?;
                         }
                         res = local_channel_rx.recv() => {
-                            let buff = res.ok_or_else(|| anyhow!("channel closed"))?;
+                            let buff = res.ok_or_else(|| anyhow!("Local channel for node {}({}) in group '{}' closed unexpectedly.", register.node_name, register.virtual_addr, group.name))?;
                             TcpMsg::write_msg(&mut tx, &buff).await?;
                         }
-                        _ = notified.changed() => return Err(anyhow!("abort task"))
+                        _ = notified.changed() => return Err(anyhow!("TCP sender for node {}({}) in group '{}' aborted due to notification.", register.node_name, register.virtual_addr, group.name))
                     }
                 }
             }).await?
@@ -949,7 +954,7 @@ impl<T, R, W> Drop for Tunnel<T, R, W> {
                 let mut guard = self.group_handle.mapping.write();
 
                 if guard.remove(&reg.virtual_addr).is_some() {
-                    self.group_handle.sync(&guard).expect("failed to sync nodemap");
+                    self.group_handle.sync(&guard).expect("FATAL: Failed to synchronize node map during tunnel drop. This indicates a serious internal consistency issue.");
                 }
             }
 
@@ -1054,7 +1059,7 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 
             let udp_socket = UdpSocket::bind(listen_addr)
                 .await
-                .with_context(|| format!("udp socket bind {} error", listen_addr))?;
+                .with_context(|| format!("Failed to bind UDP socket for group '{}' to address '{}'. Ensure the address is available and permissions are correct.", group.name, listen_addr))?;
 
             let udp_socket = Arc::new(udp_socket);
 
@@ -1062,7 +1067,7 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 
             let tcp_listener = TcpListener::bind(listen_addr)
                 .await
-                .with_context(|| format!("tcp socket bind {} error", listen_addr))?;
+                .with_context(|| format!("Failed to bind TCP listener for group '{}' to address '{}'. Ensure the address is available and permissions are correct.", group.name, listen_addr))?;
 
             info!("TCP listener for group {} is listening on {}", group.name, listen_addr);
 
@@ -1083,7 +1088,7 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                     kcp_acceptor_channel_tx,
                 );
 
-                fut.await.context("udp handler error")
+                fut.await.context(format!("UDP handler for group '{}' encountered an error.", group.name))
             };
 
             let tcp_handle = async {
@@ -1106,7 +1111,7 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
                     }
                 })
                 .await?
-                .context("tcp handler error")
+                .context(format!("TCP handler for group '{}' encountered an error.", group.name))
             };
 
             tokio::try_join!(udp_handle, tcp_handle).map(|_| ())

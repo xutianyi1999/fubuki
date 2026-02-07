@@ -41,7 +41,7 @@ impl SystemRouteHandle {
                 use anyhow::anyhow;
                 use tokio::process::Command;
 
-                let gateway = x.gateway.ok_or_else(|| anyhow!("must have gateway"))?;
+                let gateway = x.gateway.ok_or_else(|| anyhow!("Cannot add route: gateway is required but not provided for destination '{}'.", x.destination))?;
 
                 let status = Command::new("route")
                     .args([
@@ -59,7 +59,7 @@ impl SystemRouteHandle {
                     .status;
 
                 if !status.success() {
-                    return Err(anyhow!("failed to add route"));
+                    return Err(anyhow!("Failed to add route for destination '{}' via gateway '{}'. Command failed.", x.destination, gateway));
                 }
             }
 

@@ -400,7 +400,7 @@ async fn send<K: Cipher>(
 
             match UdpMsg::send_msg(socket, packet, dst_addr).await {
                 Ok(_) => return Ok(()),
-                Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("failed to send UDP P2P packet to node {}: {}", dst_node.node.name, e)),
                 Err(UdpSocketErr::SuppressError(e)) => {
                     warn!("Failed to send UDP packet from node {}: {}", inter.node_name, e);
                 }
@@ -452,7 +452,7 @@ async fn send<K: Cipher>(
 
                     match UdpMsg::send_msg(socket, packet, dst_addr).await {
                         Ok(_) => return Ok(()),
-                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("failed to send UDP relay packet to node {}: {}", dst_node.node.name, e)),
                         Err(UdpSocketErr::SuppressError(e)) => {
                             warn!("Failed to send UDP packet from node {}: {}", inter.node_name, e);
                         }
@@ -813,7 +813,7 @@ where
 
         let join = tokio::spawn(async move {
             let mut rng = rand::rngs::SmallRng::from_os_rng();
-            let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+            let socket = interface.udp_socket.as_ref().expect("UDP socket unexpectedly not available for node heartbeat schedule");
             let key = &interface.key;
             let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
             let mut packet = [0u8; UDP_MSG_HEADER_LEN + size_of::<VirtualAddr>() + size_of::<Seq>() + size_of::<HeartbeatType>()];
@@ -848,7 +848,7 @@ where
 
                     match UdpMsg::send_msg(socket, &packet, &interface.server_addr).await {
                         Ok(_) => (),
-                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("failed to send UDP heartbeat to server from node {}: {}", group.node_name, e)),
                         Err(UdpSocketErr::SuppressError(e)) => {
                             warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                         }
@@ -897,7 +897,7 @@ where
                                 UdpStatus::Available { dst_addr } if !is_over => {
                                     match UdpMsg::send_msg(socket, &packet, dst_addr).await {
                                         Ok(_) => (),
-                                        Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e)),
+                                        Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!("failed to send UDP P2P heartbeat to node {} from node {}: {}", ext_node.node.name, group.node_name, e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
                                             warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                                         }
@@ -926,7 +926,7 @@ where
                                                 {
                                                     match UdpMsg::send_msg(socket, &packet, $peer_addr).await {
                                                         Ok(_) => (),
-                                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("failed to send UDP heartbeat to peer {} from node {} during NAT traversal: {}", $peer_addr, group.node_name, e)),
                                                         Err(UdpSocketErr::SuppressError(e)) => {
                                                             warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                                                         }
@@ -977,7 +977,7 @@ where
 
             let join = tokio::spawn(async move {
                 let mut rng = rand::rngs::SmallRng::from_os_rng();
-                let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+                let socket = interface.udp_socket.as_ref().expect("UDP socket unexpectedly not available for receiving packets");
                 let key = &interface.key;
                 let is_p2p = interface.mode.p2p.contains(&NetProtocol::UDP);
 
@@ -1001,7 +1001,7 @@ where
                             warn!("Error receiving UDP packet for node {}: {}", group.node_name, e);
                             continue;
                         }
-                        Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!(e))
+                        Err(UdpSocketErr::FatalError(e)) => return Result::<(), _>::Err(anyhow!("fatal error receiving UDP packet for node {}: {}", group.node_name, e))
                     };
 
                     let packet = &mut buff[START..START + len];
@@ -1040,7 +1040,7 @@ where
 
                                     match UdpMsg::send_msg(socket, packet, peer_addr).await {
                                         Ok(_) => (),
-                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("failed to send UDP heartbeat response to peer {} from node {}: {}", peer_addr, group.node_name, e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
                                             warn!("Failed to send UDP packet from node {}: {}", group.node_name, e);
                                         }
@@ -1180,7 +1180,7 @@ where
         let kcp_stack_rx = kcp_stack_rx.unwrap();
 
         tokio::spawn(async move {
-            let socket = interface.udp_socket.as_ref().expect("must need udp socket");
+            let socket = interface.udp_socket.as_ref().expect("UDP socket unexpectedly not available for KCP session");
             let mut kcp_stack_rx_guard = kcp_stack_rx.lock().await;
             let kcp_stack_rx = &mut *kcp_stack_rx_guard;
 
@@ -1270,7 +1270,7 @@ where
                     *v = None;
                 }
             }
-            return Err(anyhow!(e))
+            return Err(anyhow!("registration failed due to invalid virtual address: {:?}", e))
         }
         TcpMsg::RegisterRes(res) => res?,
         _ => return Err(anyhow!("response message not match")),

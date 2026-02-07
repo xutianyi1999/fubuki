@@ -49,7 +49,7 @@ impl TunDevice for Bridge {
     fn recv_packet<'a>(&'a self, buff: &'a mut [u8]) -> Self::RecvFut<'a> {
         let rx = &self.if_to_fubuki_rx;
         async {
-            let bytes = rx.recv_async().await?;
+            let bytes = rx.recv_async().await.context("Failed to receive packet from FFI bridge channel.")?;
             buff[..bytes.len()].copy_from_slice(&bytes);
             Ok(bytes.len())
         }
@@ -94,8 +94,8 @@ pub struct Handle {
 
 fn parse_config(node_config_json: *const c_char) -> Result<NodeConfigFinalize<Key>> {
     let s = unsafe { CStr::from_ptr(node_config_json) }.to_bytes();
-    let config: NodeConfig = serde_json::from_slice(s)?;
-    let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
+    let config: NodeConfig = serde_json::from_slice(s).context("Failed to parse node configuration JSON from FFI. Check for valid JSON format.")?;
+    let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config).context("Failed to finalize node configuration from FFI. Check configuration values.")?;
     Ok(c)
 }
 
@@ -175,7 +175,7 @@ fn fubuki_init_with_tun(
 
         async move {
             // creating AsyncTun must be in the tokio runtime
-            let tun = crate::tun::create(tun_fd).context("failed to create tun")?;
+            let tun = crate::tun::create(tun_fd).context("Failed to create TUN device for FFI with provided file descriptor. Ensure the FD is valid.")?;
             node::start(c, tun, ih).await
         }
     };
@@ -284,8 +284,10 @@ pub extern "C" fn fubuki_start(
        
         _ => {
             Err(anyhow!(
-                "unknown version {}",
-                version
+                "Fubuki FFI start: Unsupported options version: {}. Supported versions are {}-{}.",
+                version,
+                FUBUKI_START_OPTIONS_VERSION1,
+                FUBUKI_START_OPTIONS_VERSION3
             ))
         }
     };
@@ -293,7 +295,7 @@ pub extern "C" fn fubuki_start(
     match res {
         Ok(p) => Box::into_raw(Box::new(p)),
         Err(e) => {
-            let e = CString::new(format!("{:?}", e)).unwrap();
+            let e = CString::new(format!("{:?}", e)).unwrap_or_else(|_| CString::new("Unknown FFI error (contains null bytes)").unwrap());
             let src = e.as_bytes_with_nul();
             unsafe { std::ptr::copy(src.as_ptr(), error as *mut u8, src.len()) };
             null_mut()
@@ -308,7 +310,7 @@ fn fubuki_block_on_inner(handle: &mut Handle) -> Result<()> {
 
     let (fut, stop_flag) = match (handle.node_start_fut.take(), handle.stop_flag.1.take()) {
         (Some(fut), Some(f)) => (fut, f),
-        _ => return Err(anyhow!("delayed start is not enabled or node has already been started"))
+        _ => return Err(anyhow!("Fubuki FFI block_on: Delayed start is not enabled, or the Fubuki node has already been started/stopped. Cannot block on future."))
     };
 
     rt.block_on(async {
@@ -324,7 +326,7 @@ pub extern "C" fn fubuki_block_on(handle: *mut Handle,  error: *mut c_char) -> i
     match fubuki_block_on_inner(unsafe {&mut *handle}) {
         Ok(_) => 0,
         Err(e) => {
-            let e = CString::new(format!("{:?}", e)).unwrap();
+            let e = CString::new(format!("{:?}", e)).unwrap_or_else(|_| CString::new("Unknown FFI error (contains null bytes)").unwrap());
             let src = e.as_bytes_with_nul();
             unsafe { std::ptr::copy(src.as_ptr(), error as *mut u8, src.len()) };
             1

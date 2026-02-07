@@ -51,7 +51,7 @@ fn bind_device<T: std::os::unix::io::AsFd>(
     let index = {
         netconfig::Interface::try_from_name(interface)
             .and_then(|i| i.index())
-            .map_err(|e| std::io::Error::new(io::ErrorKind::Other, e.to_string()))?
+            .map_err(|e| std::io::Error::new(io::ErrorKind::Other, format!("Failed to get interface index for '{}'. Error: {}", interface, e)))?
     };
 
     #[cfg(target_os = "ios")]
@@ -95,7 +95,7 @@ fn bind_device<T: std::os::unix::io::AsFd>(
         let name = InterfaceName::try_from(interface)?;
 
         match unsafe { libc::if_nametoindex(name.0.as_ptr()) } {
-            0 => return Err(io::Error::new(io::ErrorKind::NotFound, "interface not found")),
+            0 => return Err(io::Error::new(io::ErrorKind::NotFound, format!("Interface '{}' not found.", interface))),
             n => n,
         }
     };
@@ -118,7 +118,7 @@ fn bind_device<T: std::os::windows::io::AsSocket>(
 
     let index = netconfig::Interface::try_from_alias(interface)
         .and_then(|i| i.index())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to get interface index for alias '{}'. Error: {}", interface, e)))?;
 
     let raw = socket.as_socket().as_raw_socket();
 
@@ -153,11 +153,11 @@ pub fn find_interface(ip: IpAddr) -> Result<String> {
     use netconfig::sys::InterfaceExt;
     
     let ifs = netconfig::list_interfaces()
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to list network interfaces. Error: {}", e)))?;
 
     for inter in ifs {
         let addrs = inter.addresses()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to get addresses for interface '{}'. Error: {}", inter.name().unwrap_or_default(), e)))?;
 
         for addr in addrs {
             if addr.addr() == ip {
@@ -167,12 +167,12 @@ pub fn find_interface(ip: IpAddr) -> Result<String> {
                 #[cfg(unix)]
                 let if_name = inter.name();
 
-                return if_name.map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                return if_name.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to get name for interface with IP {}. Error: {}", ip, e)))
             }
         }
     }
 
-    Err(io::Error::new(io::ErrorKind::InvalidInput, "interface not found"))
+    Err(io::Error::new(io::ErrorKind::NotFound, format!("No interface found for IP address {}.", ip)))
 }
 
 macro_rules! build_socket_ext {
@@ -600,7 +600,7 @@ pub mod protocol {
             match value {
                 REQ => Ok(HeartbeatType::Req),
                 RESP => Ok(HeartbeatType::Resp),
-                _ => Err(anyhow!("Heartbeat type not match")),
+                _ => Err(anyhow!("Invalid heartbeat type: {}. Expected 0 (Req) or 1 (Resp).", value)),
             }
         }
     }
@@ -957,7 +957,7 @@ pub mod protocol {
                     >(data, config::standard())?;
                     TcpMsg::FetchPeersRes(peers_map)
                 }
-                _ => return Err(anyhow!("invalid tcp msg")),
+                _ => return Err(anyhow!("Invalid TCP message mode: {}. Unknown message type.", mode)),
             };
             Ok(msg)
         }
@@ -983,7 +983,7 @@ pub mod protocol {
             key.decrypt(&mut buff[..4], &ctx);
 
             if buff[0] != MAGIC_NUM {
-                return Err(anyhow!("magic number miss match"));
+                return Err(anyhow!("TCP message error: Magic number mismatch. Expected {}, got {}.", MAGIC_NUM, buff[0]));
             }
 
             let mode = buff[1];
@@ -1155,7 +1155,7 @@ pub mod protocol {
             let data = &mut packet[2..];
 
             if magic_num != MAGIC_NUM {
-                return Err(anyhow!("magic number miss match"));
+                return Err(anyhow!("UDP message error: Magic number mismatch. Expected {}, got {}.", MAGIC_NUM, magic_num));
             };
 
             match mode {
@@ -1181,12 +1181,12 @@ pub mod protocol {
                     let heartbeat_type = match heartbeat_type {
                         REQ => HeartbeatType::Req,
                         RESP => HeartbeatType::Resp,
-                        _ => return Err(anyhow!("invalid udp message")),
+                        _ => return Err(anyhow!("Invalid UDP heartbeat type: {}. Expected 0 (Req) or 1 (Resp).", heartbeat_type)),
                     };
                     Ok(UdpMsg::Heartbeat(virtual_addr, seq, heartbeat_type))
                 }
                 KCP_DATA => Ok(UdpMsg::KcpData(data)),
-                _ => Err(anyhow!("invalid udp message")),
+                _ => Err(anyhow!("Invalid UDP message mode: {}. Unknown message type.", mode)),
             }
         }
 

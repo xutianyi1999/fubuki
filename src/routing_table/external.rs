@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use ipnet::Ipv4Net;
 use libloading::{Library, Symbol};
 
@@ -21,7 +21,7 @@ struct CidrC {
 
 impl From<CidrC> for Ipv4Net {
     fn from(value: CidrC) -> Self {
-        Ipv4Net::new(Ipv4Addr::from(value.addr), value.prefix_len).unwrap()
+        Ipv4Net::new(Ipv4Addr::from(value.addr), value.prefix_len).expect("Internal Error: Invalid CIDR received from external routing table. Please check external library implementation.")
     }
 }
 
@@ -181,13 +181,13 @@ pub fn create<K>(
     };
 
     unsafe {
-        let lib = Library::new(lib_path)?;
+        let lib = Library::new(lib_path).context(format!("Failed to load external routing table library from path: '{}'. Ensure the file exists and is accessible.", lib_path.display()))?;
 
-        let create_fn: Symbol<CreateFn> = lib.get(b"create_routing_table")?;
-        let add_fn = transmute(lib.get::<AddFn>(b"add_route")?);
-        let remove_fn = transmute(lib.get::<RemoveFn>(b"remove_route")?);
-        let find_fn = transmute(lib.get::<FindFn>(b"find_route")?);
-        let drop_fn = transmute(lib.get::<DropFn>(b"drop_routing_table")?);
+        let create_fn: Symbol<CreateFn> = lib.get(b"create_routing_table").context("Failed to find 'create_routing_table' symbol in the external routing table library. Ensure the library is compiled correctly.")?;
+        let add_fn = transmute(lib.get::<AddFn>(b"add_route").context("Failed to find 'add_route' symbol in the external routing table library. Ensure the library is compiled correctly.")?);
+        let remove_fn = transmute(lib.get::<RemoveFn>(b"remove_route").context("Failed to find 'remove_route' symbol in the external routing table library. Ensure the library is compiled correctly.")?);
+        let find_fn = transmute(lib.get::<FindFn>(b"find_route").context("Failed to find 'find_route' symbol in the external routing table library. Ensure the library is compiled correctly.")?);
+        let drop_fn = transmute(lib.get::<DropFn>(b"drop_routing_table").context("Failed to find 'drop_routing_table' symbol in the external routing table library. Ensure the library is compiled correctly.")?);
 
         let handle = create_fn(extern_ctx);
 

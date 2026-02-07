@@ -28,7 +28,7 @@ pub struct Wintun {
 }
 
 fn get_interface(luid: LUID) -> Result<Interface> {
-    Interface::try_from_luid(luid).map_err(|e| anyhow!(e.to_string()))
+    Interface::try_from_luid(luid).map_err(|e| anyhow!("Failed to get interface for LUID: {}. Error: {}", luid, e))
 }
 
 pub fn create() -> Result<Wintun> {
@@ -63,7 +63,7 @@ impl TunDevice for Wintun {
         loop {
             match self.session.write_packet(packet) {
                 Err(e) if e.raw_os_error() == Some(ERROR_BUFFER_OVERFLOW) => continue,
-                res => return std::future::ready(res.map_err(|e| anyhow!(e))),
+                res => return std::future::ready(res.map_err(|e| anyhow!("Failed to write packet to Wintun session. Error: {}", e))),
             }
         }
     }
@@ -90,7 +90,7 @@ impl TunDevice for Wintun {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("failed to set mtu of tun"));
+            return Err(anyhow!("Failed to set MTU for TUN device '{}' to {}. Command failed.", ADAPTER_NAME, mtu));
         }
         Ok(())
     }
@@ -104,7 +104,7 @@ impl TunDevice for Wintun {
 
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .map_err(|e| anyhow!("Failed to add address {}/{} to interface '{}'. Error: {}", addr, netmask, self.inter.name().unwrap(), e))?;
 
         guard.insert(addr);
         Ok(())
@@ -119,13 +119,13 @@ impl TunDevice for Wintun {
 
         self.inter
             .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .map_err(|e| anyhow!("Failed to delete address {}/{} from interface '{}'. Error: {}", addr, netmask, self.inter.name().unwrap(), e))?;
 
         guard.remove(&addr);
         Ok(())
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().expect("can't get interface index")
+        self.inter.index().expect("Failed to get interface index for Wintun adapter.")
     }
 }

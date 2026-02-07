@@ -151,7 +151,7 @@ where
                         self.tx.write_all(&packet).await?;
                     }
                     Err(kcp::Error::RecvQueueEmpty) => (),
-                    Err(e) => return Err(anyhow!("failed to recv kcp packet {}", e))
+                    Err(e) => return Err(anyhow!("Failed to receive KCP packet. Error: {}", e))
                 }
             }};
         }

@@ -30,7 +30,7 @@ pub fn create() -> Result<Linuxtun> {
 
     let device = tun::create_as_async(&config)?;
     let device_name = device.get_ref().name()?;
-    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| anyhow!(e.to_string()))?;
+    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| anyhow!("Failed to get network interface for device '{}'. Error: {}", device_name, e))?;
 
     Ok(Linuxtun {
         ips: Mutex::new(HashSet::new()),
@@ -71,7 +71,7 @@ impl TunDevice for Linuxtun {
                     warn!("tun: send packet to tun warn: {}; packet {}->{}", e, src, dst);
                     Ok(())
                 }
-                res => res.map(|_| ()).map_err(|e| anyhow!(e))
+                res => res.map(|_| ()).map_err(|e| anyhow!("Failed to send packet to TUN device. Error: {}", e))
             }
         }
     }
@@ -100,7 +100,7 @@ impl TunDevice for Linuxtun {
 
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .map_err(|e| anyhow!("Failed to add IP address {}/{} to TUN interface '{}'. Error: {}", addr, netmask, self.inter.name(), e))?;
 
         guard.insert(addr);
         Ok(())
@@ -115,13 +115,13 @@ impl TunDevice for Linuxtun {
 
         self.inter
             .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!(e.to_string()))?;
+            .map_err(|e| anyhow!("Failed to remove IP address {}/{} from TUN interface '{}'. Error: {}", addr, netmask, self.inter.name(), e))?;
 
         guard.remove(&addr);
         Ok(())
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().expect("can't get interface index")
+        self.inter.index().expect("Failed to get interface index for Linux TUN adapter.")
     }
 }

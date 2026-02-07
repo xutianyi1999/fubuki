@@ -21,7 +21,7 @@ pub fn add_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
         .output()?;
 
     if !output.status.success() {
-        return Err(anyhow!("add nat record failed"));
+        return Err(anyhow!("Failed to add NAT record for range {}. Ensure PowerShell is available and permissions are sufficient. Command output: {:?}", src, output));
     }
     Ok(())
 }
@@ -39,7 +39,7 @@ pub fn del_nat(_ranges: &[Ipv4Net], src: Ipv4Net) -> Result<()> {
         .status;
 
     if !status.success() {
-        return Err(anyhow!("remove nat record failed"));
+        return Err(anyhow!("Failed to remove NAT record for range {}. Ensure PowerShell is available and permissions are sufficient.", src));
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
 use std::{mem::transmute, os::raw::c_void, path::Path, sync::Arc};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use libloading::{Library, Symbol};
 
 use crate::{node::{self, Direction}, Context, ExternalContext};
@@ -38,9 +38,9 @@ pub fn open_hooks_dll<K>(
     };
 
     unsafe {
-        let lib = Library::new(lib_path)?;
-        let create_fn: Symbol<CreateFn> = lib.get(b"create_hooks")?;
-        let drop_fn = transmute(lib.get::<DropFn>(b"drop_hooks")?);
+        let lib = Library::new(lib_path).context(format!("Failed to load hook library from path: '{}'. Ensure the file exists and is accessible.", lib_path.display()))?;
+        let create_fn: Symbol<CreateFn> = lib.get(b"create_hooks").context("Failed to find 'create_hooks' symbol in the hook library. Ensure the library is compiled correctly.")?;
+        let drop_fn = transmute(lib.get::<DropFn>(b"drop_hooks").context("Failed to find 'drop_hooks' symbol in the hook library. Ensure the library is compiled correctly.")?);
 
         let packet_recv = transmute(lib.get::<Callback>(b"packet_recv").ok());
         let handle = create_fn(extern_ctx);

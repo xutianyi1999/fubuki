@@ -14,7 +14,7 @@ macro_rules! ternary {
 }
 
 pub fn utc_to_str(t: i64) -> Result<String> {
-    let utc: DateTime<Utc> = DateTime::from_timestamp(t, 0).ok_or_else(|| anyhow!("can't convert timestamp"))?;
+    let utc: DateTime<Utc> = DateTime::from_timestamp(t, 0).ok_or_else(|| anyhow!("Failed to convert timestamp {} to UTC DateTime. Invalid timestamp value.", t))?;
     let local_time: DateTime<Local> = DateTime::from(utc);
     let str = local_time.format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -32,7 +32,7 @@ pub fn cmd_exists<T: AsRef<str>>(program: T) -> Result<()> {
         .output()?;
 
     if !output.status.success() {
-        return Err(anyhow!("command {} not found", program.as_ref()));
+        return Err(anyhow!("Command '{}' not found in PowerShell. Please ensure it is installed and in your PATH.", program.as_ref()));
     }
     Ok(())
 }
@@ -46,7 +46,7 @@ pub fn cmd_exists<T: AsRef<str>>(program: T) -> Result<()> {
         .output()?;
 
     if !output.status.success() {
-        return Err(anyhow!("command {} not found", program.as_ref()));
+        return Err(anyhow!("Command '{}' not found in system PATH. Please ensure it is installed and accessible.", program.as_ref()));
     }
     Ok(())
 }
