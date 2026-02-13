@@ -1,4 +1,5 @@
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local, Utc};
 
@@ -11,6 +12,23 @@ macro_rules! ternary {
     ($condition: expr, $_true: expr, $_false: expr) => {
         if $condition { $_true } else { $_false }
     };
+}
+
+/// Format optional duration for TUI display (e.g. "12 ms" or "—").
+pub fn format_elapsed(elapsed: Option<&Duration>) -> String {
+    elapsed
+        .map(|d| format!("{} ms", d.as_millis()))
+        .unwrap_or_else(|| "—".to_string())
+}
+
+/// Format packet loss as percentage for TUI display.
+pub fn format_loss_percent(packet_loss_count: u64, send_count: u64) -> String {
+    if send_count == 0 {
+        "—".to_string()
+    } else {
+        let rate = packet_loss_count as f32 / send_count as f32 * 100f32;
+        format!("{:.2}%", rate)
+    }
 }
 
 pub fn utc_to_str(t: i64) -> Result<String> {
