@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0f1116;
+  --surface: #1a1d24;
+  --surface-hover: #22262e;
+  --border: #2a2f3a;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --accent: #22d3ee;
+  --accent-dim: #0891b2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* subtle grid background */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(34, 211, 238, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* copy feedback */
+.copied::after {
+  content: ' Copied!';
+  opacity: 0.9;
+  font-size: 0.85em;
+}
+
+/* Table wrapper: horizontal scroll when needed, minimal scrollbar */
+.table-wrap {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.table-wrap::-webkit-scrollbar {
+  height: 6px;
+}
+.table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.table-wrap::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.table-wrap::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Table: sticky header, zebra rows */
+.table-wrap table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--border);
+}
+.table-wrap tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+.table-wrap tbody tr:hover {
+  background: var(--surface-hover);
+}
+.table-wrap tbody tr:nth-child(even):hover {
+  background: var(--surface-hover);
+}

@@ -366,7 +366,7 @@ async fn send<K: Cipher>(
                         
                                     match UdpMsg::send_msg(socket, packet, dst_addr).await {
                                         Ok(_) => return Ok(()),
-                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!(e)),
+                                        Err(UdpSocketErr::FatalError(e)) => return Err(anyhow!("failed to send UDP packet to node {}: {}", dst_node.node.name, e)),
                                         Err(UdpSocketErr::SuppressError(e)) => {
                                             warn!("Failed to send UDP packet from node {}: {}", inter.node_name, e);
                                         }
