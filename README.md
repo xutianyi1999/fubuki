@@ -4,7 +4,6 @@
 
 <!-- Keep these links. Translations will automatically update with the README. -->
 [Deutsch](https://zdoc.app/de/xutianyi1999/fubuki) |
-[English](https://zdoc.app/en/xutianyi1999/fubuki) |
 [Español](https://zdoc.app/es/xutianyi1999/fubuki) |
 [Français](https://zdoc.app/fr/xutianyi1999/fubuki) |
 [日本語](https://zdoc.app/ja/xutianyi1999/fubuki) |
