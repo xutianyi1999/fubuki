@@ -34,7 +34,6 @@ hyper = { version = "1", features = ["server", "client", "http1"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 bincode = { version = "2", features = ["serde"] }
-prettytable-rs = "0.10"
 scopeguard = "1"
 arrayvec = { version = "0.7", features = ["serde"] }
 static-files = { version = "0.2", optional = true }
