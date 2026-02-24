@@ -118,7 +118,7 @@ impl Cipher for CipherEnum {
 
 #[test]
 fn test() {
-    let k = XorCipher::try_from(b"abc".as_ref()).unwrap();
+    let k = XorCipher::from(b"abc".as_ref());
     let mut text = *b"abcdef";
 
     k.encrypt(&mut text, &CipherContext::default());
