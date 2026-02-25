@@ -1,3 +1,5 @@
+[中文](README.zh-CN.md) | English
+
 ### node-conf.json
 
 ```json
