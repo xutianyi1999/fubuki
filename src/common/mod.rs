@@ -7,6 +7,7 @@ pub mod cipher;
 pub mod net;
 pub mod allocator;
 pub mod hook;
+pub mod privilege;
 
 macro_rules! ternary {
     ($condition: expr, $_true: expr, $_false: expr) => {
