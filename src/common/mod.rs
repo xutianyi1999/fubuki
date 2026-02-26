@@ -7,6 +7,7 @@ pub mod cipher;
 pub mod net;
 pub mod allocator;
 pub mod hook;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub mod privilege;
 
 macro_rules! ternary {

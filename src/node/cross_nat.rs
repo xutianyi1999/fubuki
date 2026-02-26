@@ -213,7 +213,7 @@ where
         };
 
         let packet_range = START..START + packet.len();
-        buff[packet_range].copy_from_slice(&packet);
+        buff[packet_range.clone()].copy_from_slice(&packet);
 
         s.send_packet(
             Direction::Output,

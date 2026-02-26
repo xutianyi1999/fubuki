@@ -584,7 +584,9 @@ pub fn launch(args: Args) -> Result<()> {
             match cmd {
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 NodeCmd::Daemon { config_path } => {
+                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                     common::privilege::require_elevated_for_node()?;
+
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
                     let rt = Runtime::new()?;
