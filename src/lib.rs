@@ -448,55 +448,69 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
 
 #[derive(Subcommand)]
 pub enum NodeCmd {
-    /// start the node process
+    /// Start the node process (VPN client)
+    #[command(visible_alias = "start")]
     Daemon {
-        /// configuration file path
-        config_path: PathBuf
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config_path: PathBuf,
     },
-    /// query the current state of the node
+    /// Query the current state of the node
+    #[command(visible_alias = "status")]
     Info {
-        /// api address of the node
-        #[arg(short, long, default_value = "127.0.0.1:3030")]
+        /// API address of the node
+        #[arg(short, long, default_value = "127.0.0.1:3030", value_name = "ADDR")]
         api: String,
-    }
+    },
 }
 
 #[derive(Subcommand)]
 pub enum ServerCmd {
-    /// start the server process
+    /// Start the server process (coordinator)
+    #[command(visible_alias = "start")]
     Daemon {
-        /// configuration file path
-        config_path: PathBuf
+        /// Configuration file path
+        #[arg(short, long, value_name = "FILE")]
+        config_path: PathBuf,
     },
-    /// query the current state of the server
+    /// Query the current state of the server
+    #[command(visible_alias = "status")]
     Info {
-        /// api address of the server
-        #[arg(short, long, default_value = "127.0.0.1:3031")]
+        /// API address of the server
+        #[arg(short, long, default_value = "127.0.0.1:3031", value_name = "ADDR")]
         api: String,
-    }
+    },
 }
 
 #[derive(Parser)]
-#[command(version)]
+#[command(
+    name = "fubuki",
+    version,
+    about = "Lightweight mesh VPN with TUN interface",
+    author,
+    next_line_help = true,
+)]
 pub enum Args {
-    /// coordinator and data relay server
+    /// Run the coordinator and data relay server
     Server {
         #[command(subcommand)]
-        cmd: ServerCmd
+        cmd: ServerCmd,
     },
-    /// fubuki node
+    /// Run the fubuki node (VPN client)
     Node {
         #[command(subcommand)]
-        cmd: NodeCmd
+        cmd: NodeCmd,
     },
-    /// update fubuki
+    /// Update fubuki to the latest release
     Update {
-        #[arg(long, default_value = "xutianyi1999")]
+        /// GitHub repository owner
+        #[arg(short = 'o', long, default_value = "xutianyi1999", value_name = "OWNER")]
         repo_owner: String,
 
-        #[arg(long, default_value = "fubuki")]
-        repo_name: String
-    }
+        /// GitHub repository name
+        #[arg(short = 'r', long, default_value = "fubuki", value_name = "REPO")]
+        repo_name: String,
+    },
 }
 
 fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
