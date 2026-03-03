@@ -12,12 +12,15 @@ import {
   toViewName,
   toLatency,
   toLossRate,
+  hasHeartbeatData,
   parseUdpStatus,
+  udpStatusCopyLabel,
   formatDate,
   joinStrings,
   ipv4ToSortKey,
   latencyQualityClass,
   lossQualityClass,
+  formatHeartbeatTooltip,
   EMPTY,
 } from '@/utils/format';
 import type { HeartbeatInfo, Mode } from '@/types';
@@ -79,15 +82,25 @@ export function GroupDetail() {
       <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-5 py-4">
         <p className="text-red-300 font-medium">Failed to load</p>
         <p className="text-red-400/90 text-sm mt-1">{error}</p>
-        <Link to="/" className="inline-block text-cyan-400 text-sm mt-2 hover:underline">Back to list</Link>
+        <p className="text-[var(--text-muted)] text-sm mt-2">Check that Fubuki is running and the API is reachable.</p>
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <button
+            type="button"
+            onClick={() => { setError(null); load(); }}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-cyan-400/50"
+          >
+            Retry
+          </button>
+          <Link to="/" className="text-cyan-400 text-sm hover:underline">Back to list</Link>
+        </div>
       </div>
     );
   }
 
   if (serverType == null || groupList == null) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 gap-3">
-        <div className="w-8 h-8 rounded-full border-2 border-cyan-500/50 border-t-cyan-400 animate-spin" />
+      <div className="flex flex-col items-center justify-center py-24 gap-3" role="status" aria-live="polite" aria-busy="true">
+        <div className="w-8 h-8 rounded-full border-2 border-cyan-500/50 border-t-cyan-400 animate-spin" aria-hidden="true" />
         <p className="text-[var(--text-muted)] text-sm">Loading…</p>
       </div>
     );
@@ -98,7 +111,17 @@ export function GroupDetail() {
       <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-5 py-4">
         <p className="text-amber-300 font-medium">Group not found</p>
         <p className="text-amber-400/90 text-sm mt-1 font-mono">{pathName}</p>
-        <Link to="/" className="inline-block text-cyan-400 text-sm mt-2 hover:underline">Back to list</Link>
+        <p className="text-[var(--text-muted)] text-sm mt-2">The group may have been removed or the name is incorrect.</p>
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <button
+            type="button"
+            onClick={load}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30 focus:outline-none focus:ring-2 focus:ring-cyan-400/50"
+          >
+            Retry
+          </button>
+          <Link to="/" className="text-cyan-400 text-sm hover:underline">Back to list</Link>
+        </div>
       </div>
     );
   }
@@ -108,7 +131,7 @@ export function GroupDetail() {
   return (
     <div className="animate-fade-in space-y-8">
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Link to="/" className="text-[var(--text-muted)] hover:text-[var(--accent)]">Fubuki {serverType === 'node' ? 'Node' : 'Server'}</Link>
+        <Link to="/" className="text-[var(--text-muted)] hover:text-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-cyan-400/50 focus:ring-offset-1 focus:ring-offset-[var(--bg)] rounded">Fubuki {serverType === 'node' ? 'Node' : 'Server'}</Link>
         <span className="text-[var(--text-muted)]">/</span>
         <span className="text-[var(--text)] font-medium">{pathName}</span>
         {lastUpdated && (
@@ -120,30 +143,32 @@ export function GroupDetail() {
 
       <section>
         <h2 className="text-base font-semibold text-[var(--text)] mb-1">Group info</h2>
-        <p className="text-[var(--text-muted)] text-sm mb-3">Basic config and connection status for this group</p>
+        <p className="text-[var(--text-muted)] text-sm mb-3">
+          {isNode ? 'Config and server connection for this group' : 'Listen address and address range for this group'}
+        </p>
         <div className="table-wrap rounded-xl border border-[var(--border)]">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-[var(--surface)] border-b border-[var(--border)]">
                 {isNode
-                  ? (['group_name', 'node_name', 'server_is_connected', 'addr', 'server_addr'] as const).map((k) => (
-                      <th key={k} className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">
-                        {k === 'server_is_connected' ? 'Connected' : toViewName(k)}
+                  ? (['index', 'group_name', 'node_name', 'server_is_connected', 'addr', 'cidr', 'server_addr'] as const).map((k) => (
+                      <th key={k} scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">
+                        {toViewName(k)}
                       </th>
                     ))
                   : (['name', 'listen_addr', 'address_range'] as const).map((k) => (
-                      <th key={k} className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">
+                      <th key={k} scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">
                         {toViewName(k)}
                       </th>
                     ))}
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Mode</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('mode')}</th>
                 {isNode && (
                   <>
-                    <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">UDP status</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">UDP latency</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">UDP loss</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">TCP latency</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">TCP loss</th>
+                    <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('udp_path')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('udp_rtt')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('udp_loss')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('tcp_rtt')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('tcp_loss')}</th>
                   </>
                 )}
               </tr>
@@ -152,14 +177,16 @@ export function GroupDetail() {
               <tr className="border-b border-[var(--border)] hover:bg-[var(--surface-hover)]">
                 {isNode ? (
                   <>
+                    <td className="py-3 px-4 font-mono">{(group as import('@/types').NodeInfoListItem).index}</td>
                     <td className="py-3 px-4 font-mono">{(group as import('@/types').NodeInfoListItem).group_name ?? EMPTY}</td>
                     <td className="py-3 px-4 font-mono">{(group as import('@/types').NodeInfoListItem).node_name}</td>
                     <td className="py-3 px-4">
                       <span className={(group as import('@/types').NodeInfoListItem).server_is_connected ? 'text-emerald-400' : 'text-red-400'}>
-                        {(group as import('@/types').NodeInfoListItem).server_is_connected ? 'Yes' : 'No'}
+                        {(group as import('@/types').NodeInfoListItem).server_is_connected ? 'Connected' : 'Disconnected'}
                       </span>
                     </td>
                     <td className="py-3 px-4 font-mono">{(group as import('@/types').NodeInfoListItem).addr}</td>
+                    <td className="py-3 px-4 font-mono">{(group as import('@/types').NodeInfoListItem).cidr ?? EMPTY}</td>
                     <td className="py-3 px-4 font-mono">{(group as import('@/types').NodeInfoListItem).server_addr}</td>
                   </>
                 ) : (
@@ -171,13 +198,15 @@ export function GroupDetail() {
                 )}
                 <td className="py-3 px-4">
                   <div className="flex flex-wrap gap-1">
-                    {getActiveModes(isNode ? (group as import('@/types').NodeInfoListItem).mode : null).map((m) => (
-                      <CopyChip
-                        key={m}
-                        label={m}
-                        copyText={joinStrings((isNode ? (group as import('@/types').NodeInfoListItem).mode : null)?.[m as keyof Mode] as string[])}
-                      />
-                    ))}
+                    {isNode
+                      ? getActiveModes((group as import('@/types').NodeInfoListItem).mode).map((m) => (
+                          <CopyChip
+                            key={m}
+                            label={m}
+                            copyText={joinStrings((group as import('@/types').NodeInfoListItem).mode?.[m as keyof Mode] as string[])}
+                          />
+                        ))
+                      : EMPTY}
                   </div>
                 </td>
                 {isNode && (
@@ -185,23 +214,24 @@ export function GroupDetail() {
                     <td className="py-3 px-4">
                       <CopyChip
                         label={parseUdpStatus((group as import('@/types').NodeInfoListItem).server_udp_status)}
-                        copyText={JSON.stringify((group as import('@/types').NodeInfoListItem).server_udp_status)}
+                        copyText={udpStatusCopyLabel((group as import('@/types').NodeInfoListItem).server_udp_status)}
+                        title={udpStatusCopyLabel((group as import('@/types').NodeInfoListItem).server_udp_status)}
                       />
                     </td>
-                    <td className="py-3 px-4 text-right font-mono">
+                    <td className="py-3 px-4 text-right font-mono" title={formatHeartbeatTooltip((group as import('@/types').NodeInfoListItem).server_udp_hc)}>
                       {(() => {
                         const lat = toLatency((group as import('@/types').NodeInfoListItem).server_udp_hc?.elapsed);
                         return lat >= 0 ? <span className={latencyQualityClass(lat)}>{lat.toFixed(0)} ms</span> : EMPTY;
                       })()}
                     </td>
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3 px-4 text-right" title={formatHeartbeatTooltip((group as import('@/types').NodeInfoListItem).server_udp_hc)}>
                       <CopyChip
                         label={`${(toLossRate((group as import('@/types').NodeInfoListItem).server_udp_hc) * 100).toFixed(2)}%`}
                         copyText={JSON.stringify((group as import('@/types').NodeInfoListItem).server_udp_hc)}
                         qualityClass={lossQualityClass(toLossRate((group as import('@/types').NodeInfoListItem).server_udp_hc))}
                       />
                     </td>
-                    <td className="py-3 px-4 text-right font-mono">
+                    <td className="py-3 px-4 text-right font-mono" title={(group as import('@/types').NodeInfoListItem).server_tcp_hc ? formatHeartbeatTooltip((group as import('@/types').NodeInfoListItem).server_tcp_hc!) : undefined}>
                       {(group as import('@/types').NodeInfoListItem).server_tcp_hc
                         ? (() => {
                             const lat = toLatency((group as import('@/types').NodeInfoListItem).server_tcp_hc?.elapsed);
@@ -209,7 +239,7 @@ export function GroupDetail() {
                           })()
                         : EMPTY}
                     </td>
-                    <td className="py-3 px-4 text-right">
+                    <td className="py-3 px-4 text-right" title={(group as import('@/types').NodeInfoListItem).server_tcp_hc ? formatHeartbeatTooltip((group as import('@/types').NodeInfoListItem).server_tcp_hc!) : undefined}>
                       {(group as import('@/types').NodeInfoListItem).server_tcp_hc ? (
                         <CopyChip
                           label={`${(toLossRate((group as import('@/types').NodeInfoListItem).server_tcp_hc!) * 100).toFixed(2)}%`}
@@ -229,41 +259,45 @@ export function GroupDetail() {
       </section>
 
       <section>
-        <h2 className="text-base font-semibold text-[var(--text)] mb-1">Node list</h2>
-        <p className="text-[var(--text-muted)] text-sm mb-3">{nodeList.length} node(s). Latency and loss refresh every 3s.</p>
+        <h2 className="text-base font-semibold text-[var(--text)] mb-1">Peer list</h2>
+        <p className="text-[var(--text-muted)] text-sm mb-3">
+          {nodeList.length} peer{nodeList.length !== 1 ? 's' : ''}. {isNode ? 'RTT and loss refresh every 3s.' : 'RTT and loss (relay to each peer) refresh every 3s.'}
+        </p>
         <div className="table-wrap rounded-xl border border-[var(--border)]">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-[var(--surface)] border-b border-[var(--border)]">
-                <th className="w-8 py-3 px-2" />
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Name</th>
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Virtual IP</th>
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">UDP status</th>
+                <th scope="col" className="w-8 py-3 px-2" aria-label="Type" />
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Name</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('virtual_addr')}</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">
+                  {isNode ? toViewName('udp_path') : toViewName('udp_to_peer')}
+                </th>
                 {isNode ? (
                   <>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Latency</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Loss</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('latency')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('loss')}</th>
                   </>
                 ) : (
                   <>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">UDP latency</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">UDP loss</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">TCP latency</th>
-                    <th className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">TCP loss</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('udp_rtt_relay')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('udp_loss_relay')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('tcp_rtt_relay')}</th>
+                    <th scope="col" className="text-right py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('tcp_loss_relay')}</th>
                   </>
                 )}
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">LAN address</th>
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">WAN address</th>
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Mode</th>
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Allowed IPs</th>
-                <th className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">Registered</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('lan_udp_addr')}</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('wan_udp_addr')}</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('mode')}</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('allowed_ips')}</th>
+                <th scope="col" className="text-left py-3 px-4 text-[var(--text-muted)] font-medium text-xs uppercase tracking-wider">{toViewName('register_time')}</th>
               </tr>
             </thead>
             <tbody>
               {nodeList.length === 0 ? (
                 <tr>
-                  <td colSpan={20} className="py-12 text-center text-[var(--text-muted)] text-sm">
-                    No nodes in this group
+                  <td colSpan={15} className="py-12 text-center text-[var(--text-muted)] text-sm">
+                    No peers in this group yet
                   </td>
                 </tr>
               ) : nodeList.map((nodeStatus) => {
@@ -280,21 +314,22 @@ export function GroupDetail() {
                     <td className="py-2 px-4 font-mono">{n.virtual_addr}</td>
                     <td className="py-2 px-4">
                       <CopyChip
-                        label={parseUdpStatus(nodeStatus.udp_status)}
-                        copyText={JSON.stringify(nodeStatus.udp_status)}
+                        label={parseUdpStatus(nodeStatus.udp_status, !isNode)}
+                        copyText={udpStatusCopyLabel(nodeStatus.udp_status, !isNode)}
+                        title={udpStatusCopyLabel(nodeStatus.udp_status, !isNode)}
                       />
                     </td>
                     {isNode ? (
                       <>
-                        <td className="py-2 px-4 text-right font-mono">
+                        <td className="py-2 px-4 text-right font-mono" title={hc ? formatHeartbeatTooltip(hc) : undefined}>
                           {hc && toLatency(hc.elapsed) >= 0 ? (
                             <span className={latencyQualityClass(toLatency(hc.elapsed))}>{toLatency(hc.elapsed).toFixed(0)} ms</span>
                           ) : (
                             EMPTY
                           )}
                         </td>
-                        <td className="py-2 px-4 text-right">
-                          {hc ? (
+                        <td className="py-2 px-4 text-right" title={hc ? formatHeartbeatTooltip(hc) : undefined}>
+                          {hc && hasHeartbeatData(hc) ? (
                             <CopyChip
                               label={`${(toLossRate(hc) * 100).toFixed(2)}%`}
                               copyText={JSON.stringify(hc)}
@@ -307,31 +342,45 @@ export function GroupDetail() {
                       </>
                     ) : isNodeStatusServer(nodeStatus) ? (
                       <>
-                        <td className="py-2 px-4 text-right font-mono">
+                        <td className="py-2 px-4 text-right font-mono" title={(nodeStatus as NodeStatusServer).udp_heartbeat_cache ? formatHeartbeatTooltip((nodeStatus as NodeStatusServer).udp_heartbeat_cache) : undefined}>
                           {(() => {
-                            const lat = toLatency((nodeStatus as NodeStatusServer).udp_heartbeat_cache?.elapsed);
+                            const hc = (nodeStatus as NodeStatusServer).udp_heartbeat_cache;
+                            const lat = toLatency(hc?.elapsed);
                             return lat >= 0 ? <span className={latencyQualityClass(lat)}>{lat.toFixed(0)} ms</span> : EMPTY;
                           })()}
                         </td>
-                        <td className="py-2 px-4 text-right">
-                          <CopyChip
-                            label={`${(toLossRate((nodeStatus as NodeStatusServer).udp_heartbeat_cache!) * 100).toFixed(2)}%`}
-                            copyText={JSON.stringify((nodeStatus as NodeStatusServer).udp_heartbeat_cache)}
-                            qualityClass={lossQualityClass(toLossRate((nodeStatus as NodeStatusServer).udp_heartbeat_cache!))}
-                          />
-                        </td>
-                        <td className="py-2 px-4 text-right font-mono">
+                        <td className="py-2 px-4 text-right" title={(nodeStatus as NodeStatusServer).udp_heartbeat_cache ? formatHeartbeatTooltip((nodeStatus as NodeStatusServer).udp_heartbeat_cache) : undefined}>
                           {(() => {
-                            const lat = toLatency((nodeStatus as NodeStatusServer).tcp_heartbeat_cache?.elapsed);
+                            const hc = (nodeStatus as NodeStatusServer).udp_heartbeat_cache;
+                            if (!hc || !hasHeartbeatData(hc)) return EMPTY;
+                            return (
+                              <CopyChip
+                                label={`${(toLossRate(hc) * 100).toFixed(2)}%`}
+                                copyText={JSON.stringify(hc)}
+                                qualityClass={lossQualityClass(toLossRate(hc))}
+                              />
+                            );
+                          })()}
+                        </td>
+                        <td className="py-2 px-4 text-right font-mono" title={(nodeStatus as NodeStatusServer).tcp_heartbeat_cache ? formatHeartbeatTooltip((nodeStatus as NodeStatusServer).tcp_heartbeat_cache) : undefined}>
+                          {(() => {
+                            const hc = (nodeStatus as NodeStatusServer).tcp_heartbeat_cache;
+                            const lat = toLatency(hc?.elapsed);
                             return lat >= 0 ? <span className={latencyQualityClass(lat)}>{lat.toFixed(0)} ms</span> : EMPTY;
                           })()}
                         </td>
-                        <td className="py-2 px-4 text-right">
-                          <CopyChip
-                            label={`${(toLossRate((nodeStatus as NodeStatusServer).tcp_heartbeat_cache!) * 100).toFixed(2)}%`}
-                            copyText={JSON.stringify((nodeStatus as NodeStatusServer).tcp_heartbeat_cache)}
-                            qualityClass={lossQualityClass(toLossRate((nodeStatus as NodeStatusServer).tcp_heartbeat_cache!))}
-                          />
+                        <td className="py-2 px-4 text-right" title={(nodeStatus as NodeStatusServer).tcp_heartbeat_cache ? formatHeartbeatTooltip((nodeStatus as NodeStatusServer).tcp_heartbeat_cache) : undefined}>
+                          {(() => {
+                            const hc = (nodeStatus as NodeStatusServer).tcp_heartbeat_cache;
+                            if (!hc || !hasHeartbeatData(hc)) return EMPTY;
+                            return (
+                              <CopyChip
+                                label={`${(toLossRate(hc) * 100).toFixed(2)}%`}
+                                copyText={JSON.stringify(hc)}
+                                qualityClass={lossQualityClass(toLossRate(hc))}
+                              />
+                            );
+                          })()}
                         </td>
                       </>
                     ) : null}

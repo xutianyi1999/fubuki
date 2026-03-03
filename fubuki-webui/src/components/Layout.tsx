@@ -8,10 +8,10 @@ export function Layout({ children }: LayoutProps) {
   return (
     <>
       <header className="border-b border-[var(--border)] bg-[var(--surface)]/80 backdrop-blur-sm sticky top-0 z-20">
-        <div className="w-full mx-auto px-6 h-14 flex items-center gap-4">
+        <div className="w-full px-6 h-14 flex items-center gap-4">
           <Link
             to="/"
-            className="font-semibold text-lg text-[var(--accent)] hover:text-[var(--accent)] hover:no-underline"
+            className="font-semibold text-lg text-[var(--accent)] hover:text-[var(--accent)] hover:no-underline focus:outline-none focus:ring-2 focus:ring-cyan-400/60 focus:ring-offset-2 focus:ring-offset-[var(--bg)] rounded"
           >
             Fubuki
           </Link>

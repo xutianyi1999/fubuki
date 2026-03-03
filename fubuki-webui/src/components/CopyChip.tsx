@@ -7,9 +7,11 @@ interface CopyChipProps {
   className?: string;
   /** Status color class, e.g. text-emerald-400 / text-amber-400 / text-red-400 */
   qualityClass?: string;
+  /** Optional aria-label; defaults to "Copy [label]" */
+  ariaLabel?: string;
 }
 
-export function CopyChip({ label, copyText, title, className = '', qualityClass = '' }: CopyChipProps) {
+export function CopyChip({ label, copyText, title, className = '', qualityClass = '', ariaLabel }: CopyChipProps) {
   const [copied, setCopied] = useState(false);
 
   const handleClick = useCallback(async () => {
@@ -27,7 +29,8 @@ export function CopyChip({ label, copyText, title, className = '', qualityClass 
       type="button"
       onClick={handleClick}
       title={title ?? 'Click to copy'}
-      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-medium bg-cyan-500/15 border border-cyan-500/25 hover:bg-cyan-500/25 cursor-pointer transition-colors ${qualityClass || 'text-cyan-400'} ${className}`}
+      aria-label={ariaLabel ?? `Copy ${label}`}
+      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-medium bg-cyan-500/15 border border-cyan-500/25 hover:bg-cyan-500/25 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-400/50 ${qualityClass || 'text-cyan-400'} ${className}`}
     >
       {copied ? (
         <>
