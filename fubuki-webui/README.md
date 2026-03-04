@@ -1,27 +1,44 @@
-# FubukiWebui
+# Fubuki Web UI
 
-This project was generated with [Angular CLI](https://github.com/angular/angular-cli) version 15.1.5.
+Web dashboard for [Fubuki](https://github.com/nic-horse/fubuki) node and server. Shows groups, nodes, virtual IPs, latency, and packet loss.
 
-## Development server
+## Stack
 
-Run `ng serve` for a dev server. Navigate to `http://localhost:4200/`. The application will automatically reload if you change any of the source files.
+- **React 18** + **TypeScript**
+- **Vite** (build & dev server)
+- **Tailwind CSS**
+- **React Router**
 
-## Code scaffolding
+## Development
 
-Run `ng generate component component-name` to generate a new component. You can also use `ng generate directive|pipe|service|class|guard|interface|enum|module`.
+```bash
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 (or the port Vite prints). The dev server proxies `/info` and `/type` to `http://127.0.0.1:3030`, so run a Fubuki node (or server) with API on that address to load live data.
+
+To use another API host, edit `server.proxy` in `vite.config.ts`.
 
 ## Build
 
-Run `ng build` to build the project. The build artifacts will be stored in the `dist/` directory.
+```bash
+npm run build
+```
 
-## Running unit tests
+Output is written to `dist/fubuki-webui/`. The Fubuki binary embeds this directory when built with the `web` feature:
 
-Run `ng test` to execute the unit tests via [Karma](https://karma-runner.github.io).
+```bash
+cd fubuki-webui && npm install && npm run build && cd ..
+cargo build --release --features web
+```
 
-## Running end-to-end tests
+With `--features web`, the node/server serves the Web UI at the API root (e.g. http://127.0.0.1:3030 for node, http://127.0.0.1:3031 for server).
 
-Run `ng e2e` to execute the end-to-end tests via a platform of your choice. To use this command, you need to first add a package that implements end-to-end testing capabilities.
+## Preview
 
-## Further help
+```bash
+npm run preview
+```
 
-To get more help on the Angular CLI use `ng help` or go check out the [Angular CLI Overview and Command Reference](https://angular.io/cli) page.
+Serves the built output locally. Configure proxy or API base if you need to hit a real backend.

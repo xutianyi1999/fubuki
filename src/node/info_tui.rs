@@ -16,11 +16,14 @@ use std::io;
 use std::ops::Deref;
 use tokio::net::TcpStream;
 
-/// TUI theme: cyan accent, subtle borders, clear highlight
-const BORDER: Style = Style::new().fg(Color::Cyan);
-const TITLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Cyan);
-const MUTED: Style = Style::new().fg(Color::DarkGray);
+/// Fallout-style terminal: green phosphor CRT, double-line borders
+const BG: Color = Color::Rgb(0, 18, 0);
+const BORDER: Style = Style::new().fg(Color::Green);
+const TITLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
+const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Green);
+const MUTED: Style = Style::new().fg(Color::Rgb(0, 128, 0));
+const TEXT: Style = Style::new().fg(Color::Green);
+const HEADER: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 
 #[derive(Copy, Clone)]
 enum Page {
@@ -56,17 +59,18 @@ impl App {
     }
 
     fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(Block::default().style(Style::new().bg(BG)), frame.area());
         let area = frame.area().inner(Margin { vertical: 1, horizontal: 2 });
 
         if self.interfaces_info.is_empty() {
             let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
             let title = Paragraph::new(" Fubuki Node ")
                 .style(TITLE)
-                .block(Block::bordered().border_type(BorderType::Rounded).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
+                .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
             frame.render_widget(title, layout[0]);
             let msg = Paragraph::new(" No groups. Waiting for data… ")
                 .style(MUTED)
-                .block(Block::bordered().border_type(BorderType::Rounded).border_style(BORDER));
+                .block(Block::bordered().border_type(BorderType::Double).border_style(BORDER));
             frame.render_widget(msg, layout[1]);
             return;
         }
@@ -76,11 +80,11 @@ impl App {
                 let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
                 let title = Paragraph::new(" Fubuki Node  │  ↑/↓ select  Enter open  q quit ")
                     .style(TITLE)
-                    .block(Block::bordered().border_type(BorderType::Rounded).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
 
                 let header = Row::new(vec!["Group", "Node", "Local IP", "Peers"])
-                    .style(Style::new().add_modifier(Modifier::BOLD))
+                    .style(HEADER)
                     .bottom_margin(1);
                 let rows: Vec<Row> = self.interfaces_info
                     .iter()
@@ -92,14 +96,14 @@ impl App {
                             Cell::from(i.addr.to_string()),
                             Cell::from(i.node_map.len().to_string()),
                         ];
-                        Row::new(cells).style(if idx == self.group_index { HIGHLIGHT } else { Style::new() })
+                        Row::new(cells).style(if idx == self.group_index { HIGHLIGHT } else { TEXT })
                     })
                     .collect();
                 let widths = [Constraint::Min(12), Constraint::Min(10), Constraint::Min(14), Constraint::Length(6)];
                 let table = Table::new(rows, widths)
                     .header(header)
                     .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Rounded).title(" Groups ").border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).title(" Groups ").border_style(BORDER));
                 frame.render_widget(table, layout[1]);
             }
             Page::SelectedGroup { select } => {
@@ -110,23 +114,23 @@ impl App {
                 let layout = Layout::vertical([Constraint::Length(3), Constraint::Length(5), Constraint::Fill(1)]).split(area);
                 let title = Paragraph::new(" Fubuki Node  │  ↑/↓ select  Enter open  Esc back  q quit ")
                     .style(TITLE)
-                    .block(Block::bordered().border_type(BorderType::Rounded).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
 
-                let header = Row::new(vec!["Group", "Node", "Local IP"]).style(Style::new().add_modifier(Modifier::BOLD)).bottom_margin(1);
+                let header = Row::new(vec!["Group", "Node", "Local IP"]).style(HEADER).bottom_margin(1);
                 let interface_row = Row::new(vec![
                     Cell::from(interface.group_name.as_deref().unwrap_or("—")),
                     Cell::from(interface.node_name.as_str()),
                     Cell::from(interface.addr.to_string()),
-                ]).style(if select == 0 { HIGHLIGHT } else { Style::new() });
-                let block = Block::bordered().border_type(BorderType::Rounded).title(" Interface (row 0) ").border_style(BORDER);
+                ]).style(if select == 0 { HIGHLIGHT } else { TEXT });
+                let block = Block::bordered().border_type(BorderType::Double).title(" Interface (row 0) ").border_style(BORDER);
                 let t = Table::new([interface_row], [Constraint::Min(12), Constraint::Min(10), Constraint::Fill(1)]).header(header).column_spacing(2).block(block);
                 frame.render_widget(t, layout[1]);
 
-                let header2 = Row::new(vec!["Name", "Virtual IP", "Registered"]).style(Style::new().add_modifier(Modifier::BOLD)).bottom_margin(1);
+                let header2 = Row::new(vec!["Name", "Virtual IP", "Registered"]).style(HEADER).bottom_margin(1);
                 let peer_rows: Vec<Row> = nodes.iter().enumerate().map(|(idx, p)| {
                     let reg = utc_to_str(p.node.register_time).unwrap_or_else(|_| "—".to_string());
-                    let style = if idx + 1 == select { HIGHLIGHT } else { Style::new() };
+                    let style = if idx + 1 == select { HIGHLIGHT } else { TEXT };
                     Row::new(vec![
                         Cell::from(p.node.name.as_str()),
                         Cell::from(p.node.virtual_addr.to_string()),
@@ -137,7 +141,7 @@ impl App {
                 let t2 = Table::new(peer_rows, widths2)
                     .header(header2)
                     .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Rounded).title(" Peers ").border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).title(" Peers ").border_style(BORDER));
                 frame.render_widget(t2, layout[2]);
             }
             Page::Interface => {
@@ -145,27 +149,27 @@ impl App {
                 let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
                 let title = Paragraph::new(" Fubuki Node  │  Esc back  q quit ")
                     .style(TITLE)
-                    .block(Block::bordered().border_type(BorderType::Rounded).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
 
                 let kvs = vec![
-                    Row::new(vec![Cell::from("Index").style(MUTED), Cell::from(info.index.to_string())]),
-                    Row::new(vec![Cell::from("Name").style(MUTED), Cell::from(info.node_name.as_str())]),
-                    Row::new(vec![Cell::from("Group").style(MUTED), Cell::from(info.group_name.as_deref().unwrap_or("—"))]),
-                    Row::new(vec![Cell::from("Local IP").style(MUTED), Cell::from(info.addr.to_string())]),
-                    Row::new(vec![Cell::from("CIDR").style(MUTED), Cell::from(info.cidr.to_string())]),
-                    Row::new(vec![Cell::from("Server address").style(MUTED), Cell::from(info.server_addr.as_str())]),
-                    Row::new(vec![Cell::from("Mode").style(MUTED), Cell::from(format!("{:?}", info.mode))]),
-                    Row::new(vec![Cell::from("Connected").style(MUTED), Cell::from(if info.server_is_connected { "Yes" } else { "No" })]),
-                    Row::new(vec![Cell::from("UDP status").style(MUTED), Cell::from(info.server_udp_status.to_string())]),
-                    Row::new(vec![Cell::from("UDP latency").style(MUTED), Cell::from(format_elapsed(info.server_udp_hc.elapsed.as_ref()))]),
-                    Row::new(vec![Cell::from("UDP loss").style(MUTED), Cell::from(format_loss_percent(info.server_udp_hc.packet_loss_count, info.server_udp_hc.send_count))]),
-                    Row::new(vec![Cell::from("TCP latency").style(MUTED), Cell::from(format_elapsed(info.server_tcp_hc.elapsed.as_ref()))]),
-                    Row::new(vec![Cell::from("TCP loss").style(MUTED), Cell::from(format_loss_percent(info.server_tcp_hc.packet_loss_count, info.server_tcp_hc.send_count))]),
+                    Row::new(vec![Cell::from("Index").style(MUTED), Cell::from(info.index.to_string())]).style(TEXT),
+                    Row::new(vec![Cell::from("Name").style(MUTED), Cell::from(info.node_name.as_str())]).style(TEXT),
+                    Row::new(vec![Cell::from("Group").style(MUTED), Cell::from(info.group_name.as_deref().unwrap_or("—"))]).style(TEXT),
+                    Row::new(vec![Cell::from("Local IP").style(MUTED), Cell::from(info.addr.to_string())]).style(TEXT),
+                    Row::new(vec![Cell::from("CIDR").style(MUTED), Cell::from(info.cidr.to_string())]).style(TEXT),
+                    Row::new(vec![Cell::from("Server address").style(MUTED), Cell::from(info.server_addr.as_str())]).style(TEXT),
+                    Row::new(vec![Cell::from("Mode").style(MUTED), Cell::from(format!("{:?}", info.mode))]).style(TEXT),
+                    Row::new(vec![Cell::from("Connected").style(MUTED), Cell::from(if info.server_is_connected { "Yes" } else { "No" })]).style(TEXT),
+                    Row::new(vec![Cell::from("UDP status").style(MUTED), Cell::from(info.server_udp_status.to_string())]).style(TEXT),
+                    Row::new(vec![Cell::from("UDP latency").style(MUTED), Cell::from(format_elapsed(info.server_udp_hc.elapsed.as_ref()))]).style(TEXT),
+                    Row::new(vec![Cell::from("UDP loss").style(MUTED), Cell::from(format_loss_percent(info.server_udp_hc.packet_loss_count, info.server_udp_hc.send_count))]).style(TEXT),
+                    Row::new(vec![Cell::from("TCP latency").style(MUTED), Cell::from(format_elapsed(info.server_tcp_hc.elapsed.as_ref()))]).style(TEXT),
+                    Row::new(vec![Cell::from("TCP loss").style(MUTED), Cell::from(format_loss_percent(info.server_tcp_hc.packet_loss_count, info.server_tcp_hc.send_count))]).style(TEXT),
                 ];
                 let t = Table::new(kvs, [Constraint::Length(16), Constraint::Fill(1)])
                     .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Rounded).title(" Interface ").border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).title(" Interface ").border_style(BORDER));
                 frame.render_widget(t, layout[1]);
             }
             Page::PeerNode { select } => {
@@ -177,7 +181,7 @@ impl App {
                 let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
                 let title = Paragraph::new(" Fubuki Node  │  Esc back  q quit ")
                     .style(TITLE)
-                    .block(Block::bordered().border_type(BorderType::Rounded).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
 
                 let reg = utc_to_str(node.node.register_time).unwrap_or_else(|_| "—".to_string());
@@ -187,20 +191,20 @@ impl App {
                 let wan_addr = node.node.wan_udp_addr.as_ref().map(ToString::to_string).unwrap_or_else(|| "—".to_string());
 
                 let kvs = vec![
-                    Row::new(vec![Cell::from("Name").style(MUTED), Cell::from(node.node.name.as_str())]),
-                    Row::new(vec![Cell::from("Virtual IP").style(MUTED), Cell::from(node.node.virtual_addr.to_string())]),
-                    Row::new(vec![Cell::from("LAN address").style(MUTED), Cell::from(lan_addr)]),
-                    Row::new(vec![Cell::from("WAN address").style(MUTED), Cell::from(wan_addr)]),
-                    Row::new(vec![Cell::from("Mode").style(MUTED), Cell::from(format!("{:?}", node.node.mode))]),
-                    Row::new(vec![Cell::from("Allowed IPs").style(MUTED), Cell::from(allowed_ips)]),
-                    Row::new(vec![Cell::from("Registered").style(MUTED), Cell::from(reg)]),
-                    Row::new(vec![Cell::from("UDP status").style(MUTED), Cell::from(node.udp_status.to_string())]),
-                    Row::new(vec![Cell::from("Latency").style(MUTED), Cell::from(format_elapsed(node.hc.elapsed.as_ref()))]),
-                    Row::new(vec![Cell::from("Loss").style(MUTED), Cell::from(format_loss_percent(node.hc.packet_loss_count, node.hc.send_count))]),
+                    Row::new(vec![Cell::from("Name").style(MUTED), Cell::from(node.node.name.as_str())]).style(TEXT),
+                    Row::new(vec![Cell::from("Virtual IP").style(MUTED), Cell::from(node.node.virtual_addr.to_string())]).style(TEXT),
+                    Row::new(vec![Cell::from("LAN address").style(MUTED), Cell::from(lan_addr)]).style(TEXT),
+                    Row::new(vec![Cell::from("WAN address").style(MUTED), Cell::from(wan_addr)]).style(TEXT),
+                    Row::new(vec![Cell::from("Mode").style(MUTED), Cell::from(format!("{:?}", node.node.mode))]).style(TEXT),
+                    Row::new(vec![Cell::from("Allowed IPs").style(MUTED), Cell::from(allowed_ips)]).style(TEXT),
+                    Row::new(vec![Cell::from("Registered").style(MUTED), Cell::from(reg)]).style(TEXT),
+                    Row::new(vec![Cell::from("UDP status").style(MUTED), Cell::from(node.udp_status.to_string())]).style(TEXT),
+                    Row::new(vec![Cell::from("Latency").style(MUTED), Cell::from(format_elapsed(node.hc.elapsed.as_ref()))]).style(TEXT),
+                    Row::new(vec![Cell::from("Loss").style(MUTED), Cell::from(format_loss_percent(node.hc.packet_loss_count, node.hc.send_count))]).style(TEXT),
                 ];
                 let t = Table::new(kvs, [Constraint::Length(14), Constraint::Fill(1)])
                     .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Rounded).title(" Peer ").border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).title(" Peer ").border_style(BORDER));
                 frame.render_widget(t, layout[1]);
             }
         }
