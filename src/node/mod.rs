@@ -34,6 +34,7 @@ use tokio::net::TcpSocket;
 use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::sync::mpsc::{unbounded_channel, Receiver, Sender};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 
@@ -2267,8 +2268,9 @@ pub async fn start<K, T>(
          snat.clone()
     );
     future_list.push(Box::pin(tun_handler_fut));
+    let restart_notify = Arc::new(Notify::new());
     if !config.features.disable_api_server {
-        future_list.push(Box::pin(api_start(config.api_addr, interfaces.clone())));
+        future_list.push(Box::pin(api_start(config.api_addr, interfaces.clone(), restart_notify.clone())));
     }
 
     if Arc::strong_count(&ctx) > 1 {
@@ -2290,7 +2292,12 @@ pub async fn start<K, T>(
     let serve = futures_util::future::try_join_all(future_list);
 
     if config.features.disable_signal_handling {
-        serve.await?;
+        tokio::select! {
+            res = serve => { res?; },
+            _ = restart_notify.notified() => {
+                crate::SHOULD_RESTART.store(true, Ordering::SeqCst);
+            },
+        }
     } else {
 
         #[cfg(windows)]
@@ -2301,6 +2308,9 @@ pub async fn start<K, T>(
             tokio::select! {
                 _ = ctrl_c.recv() => (),
                 _ = ctrl_close.recv() => (),
+                _ = restart_notify.notified() => {
+                    crate::SHOULD_RESTART.store(true, Ordering::SeqCst);
+                },
                 res = serve => {
                     res?;
                 },
@@ -2315,6 +2325,9 @@ pub async fn start<K, T>(
             tokio::select! {
                 _ = terminate.recv() => (),
                 _ = interrupt.recv() => (),
+                _ = restart_notify.notified() => {
+                    crate::SHOULD_RESTART.store(true, Ordering::SeqCst);
+                },
                 res = serve => {
                     res?;
                 },

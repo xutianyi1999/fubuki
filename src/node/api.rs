@@ -3,16 +3,18 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use http_body_util::Full;
-use hyper::{http, Request, Response};
+use hyper::{http, Method, Request, Response};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 
 use crate::node::{Interface, InterfaceInfo};
 
 struct Context<K> {
     interfaces: Vec<Arc<Interface<K>>>,
+    restart_notify: Arc<Notify>,
 }
 
 fn info<K>(
@@ -38,15 +40,25 @@ fn info<K>(
     Ok(resp)
 }
 
+fn restart(
+    _req: Request<Incoming>,
+    restart_notify: &Arc<Notify>,
+) -> Result<Response<Full<Bytes>>, http::Error> {
+    restart_notify.notify_one();
+    Ok(Response::new(Full::new(Bytes::new())))
+}
+
 fn router<K>(
     ctx: &Context<K>,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, http::Error> {
-    let path = req.uri().path();
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
 
-    match path {
+    match path.as_str() {
         "/info" => info(req, ctx.interfaces.as_slice()),
         "/type" => Ok(Response::new(Full::new(Bytes::from("node")))),
+        "/restart" if method == Method::POST => restart(req, &ctx.restart_notify),
         #[cfg(feature = "web")]
         path => crate::web::static_files(path.trim_start_matches('/')),
         #[cfg(not(feature = "web"))]
@@ -59,8 +71,9 @@ fn router<K>(
 pub(super) async fn api_start<K: Send + Sync + 'static>(
     bind: SocketAddr,
     interfaces: Vec<Arc<Interface<K>>>,
+    restart_notify: Arc<Notify>,
 ) -> Result<()> {
-    let ctx = Context { interfaces };
+    let ctx = Context { interfaces, restart_notify };
     let ctx = Arc::new(ctx);
 
     let listener = TcpListener::bind(bind).await?;

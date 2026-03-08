@@ -10,6 +10,7 @@ use std::ffi::c_void;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -49,6 +50,64 @@ mod routing_table;
 mod ffi_export;
 
 type Key = CipherEnum;
+
+pub(crate) static SHOULD_RESTART: AtomicBool = AtomicBool::new(false);
+
+fn restart() -> ! {
+    let exe = std::env::current_exe().expect("failed to get current executable path");
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe).args(&args).exec();
+        eprintln!("restart failed: {err}");
+        std::process::exit(1);
+    }
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new(&exe)
+            .args(&args)
+            .spawn()
+            .expect("failed to spawn restart process");
+        std::process::exit(0);
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        eprintln!("restart is not supported on this platform");
+        std::process::exit(1);
+    }
+}
+
+async fn send_restart(api_addr: &str) -> Result<()> {
+    use http_body_util::Empty;
+    use hyper::Method;
+    use hyper_util::rt::TokioIo;
+    use tokio::net::TcpStream;
+
+    let req = hyper::Request::builder()
+        .method(Method::POST)
+        .uri(format!("http://{}/restart", api_addr))
+        .body(Empty::<hyper::body::Bytes>::new())?;
+
+    let stream = TcpStream::connect(api_addr).await?;
+    let stream = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
+    tokio::spawn(conn);
+
+    let resp = sender.send_request(req).await?;
+    if resp.status() != 200 {
+        return Err(anyhow!(
+            "restart request failed with status: {}",
+            resp.status()
+        ));
+    }
+
+    info!("Restart signal sent successfully");
+    Ok(())
+}
 
 pub struct Context<K> {
     interfaces: Option<Arc<OnceLock<Vec<Arc<Interface<K>>>>>>,
@@ -462,6 +521,12 @@ pub enum NodeCmd {
         #[arg(short, long, default_value = "127.0.0.1:3030", value_name = "ADDR")]
         api: String,
     },
+    /// Restart the running node process
+    Restart {
+        /// API address of the node
+        #[arg(short, long, default_value = "127.0.0.1:3030", value_name = "ADDR")]
+        api: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -476,6 +541,12 @@ pub enum ServerCmd {
     /// Query the current state of the server
     #[command(visible_alias = "status")]
     Info {
+        /// API address of the server
+        #[arg(short, long, default_value = "127.0.0.1:3031", value_name = "ADDR")]
+        api: String,
+    },
+    /// Restart the running server process
+    Restart {
         /// API address of the server
         #[arg(short, long, default_value = "127.0.0.1:3031", value_name = "ADDR")]
         api: String,
@@ -584,6 +655,9 @@ pub fn launch(args: Args) -> Result<()> {
                     let config: ServerConfigFinalize<Key> = ServerConfigFinalize::try_from(t)?;
                     let rt = Runtime::new()?;
                     rt.block_on(server::start(config))?;
+                    if SHOULD_RESTART.load(Ordering::SeqCst) {
+                        restart();
+                    }
                 }
                 ServerCmd::Info { api } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
@@ -591,6 +665,13 @@ pub fn launch(args: Args) -> Result<()> {
                         .build()?;
 
                     rt.block_on(server::info(&api))?;
+                }
+                ServerCmd::Restart { api } => {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+
+                    rt.block_on(send_restart(&api))?;
                 }
             }
         }
@@ -610,6 +691,9 @@ pub fn launch(args: Args) -> Result<()> {
                         let tun = tun::create().context("Failed to create TUN device. Ensure necessary drivers are installed and permissions are granted.")?;
                         node::start(c, tun, Arc::new(OnceLock::new())).await
                     })?;
+                    if SHOULD_RESTART.load(Ordering::SeqCst) {
+                        restart();
+                    }
                 }
                 NodeCmd::Info { api } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
@@ -617,6 +701,13 @@ pub fn launch(args: Args) -> Result<()> {
                         .build()?;
 
                     rt.block_on(node::info(&api))?;
+                }
+                NodeCmd::Restart { api } => {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+
+                    rt.block_on(send_restart(&api))?;
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
                 _ => {

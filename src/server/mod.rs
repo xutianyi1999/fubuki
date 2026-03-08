@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, DuplexStream};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio::{sync, time};
 
 use crate::common::allocator::Bytes;
@@ -1144,8 +1144,15 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
         Ok(())
     };
 
-    let api_handle = api_start(config.api_addr, group_handles);
-    tokio::try_join!(handle, api_handle)?;
+    let restart_notify = Arc::new(Notify::new());
+    let api_handle = api_start(config.api_addr, group_handles, restart_notify.clone());
+
+    tokio::select! {
+        res = async { tokio::try_join!(handle, api_handle) } => { res?; }
+        _ = restart_notify.notified() => {
+            crate::SHOULD_RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     Ok(())
 }
 

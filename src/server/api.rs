@@ -3,16 +3,18 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use http_body_util::Full;
-use hyper::{http, Request, Response};
+use hyper::{http, Method, Request, Response};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 
 use crate::server::{GroupHandle, GroupInfo};
 
 struct Context {
     group_handles: Vec<Arc<GroupHandle>>,
+    restart_notify: Arc<Notify>,
 }
 
 fn info(
@@ -38,12 +40,22 @@ fn info(
     Ok(resp)
 }
 
-fn router(ctx: &Context, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, http::Error> {
-    let path = req.uri().path();
+fn restart(
+    _req: Request<Incoming>,
+    restart_notify: &Arc<Notify>,
+) -> Result<Response<Full<Bytes>>, http::Error> {
+    restart_notify.notify_one();
+    Ok(Response::new(Full::new(Bytes::new())))
+}
 
-    match path {
+fn router(ctx: &Context, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, http::Error> {
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
+
+    match path.as_str() {
         "/info" => info(req, ctx.group_handles.as_slice()),
         "/type" => Ok(Response::new(Full::new(Bytes::from("server")))),
+        "/restart" if method == Method::POST => restart(req, &ctx.restart_notify),
         #[cfg(feature = "web")]
         path => crate::web::static_files(path.trim_start_matches('/')),
         #[cfg(not(feature = "web"))]
@@ -53,8 +65,12 @@ fn router(ctx: &Context, req: Request<Incoming>) -> Result<Response<Full<Bytes>>
     }
 }
 
-pub(super) async fn api_start(bind: SocketAddr, ghs: Vec<Arc<GroupHandle>>) -> Result<()> {
-    let ctx = Context { group_handles: ghs };
+pub(super) async fn api_start(
+    bind: SocketAddr,
+    ghs: Vec<Arc<GroupHandle>>,
+    restart_notify: Arc<Notify>,
+) -> Result<()> {
+    let ctx = Context { group_handles: ghs, restart_notify };
     let ctx = Arc::new(ctx);
 
     let listener = TcpListener::bind(bind).await?;
