@@ -44,7 +44,12 @@ fn restart(
     _req: Request<Incoming>,
     restart_notify: &Arc<Notify>,
 ) -> Result<Response<Full<Bytes>>, http::Error> {
-    restart_notify.notify_one();
+    info!("Restart request received via API, will restart in 3 seconds");
+    let notify = restart_notify.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        notify.notify_one();
+    });
     Ok(Response::new(Full::new(Bytes::new())))
 }
 

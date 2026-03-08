@@ -655,7 +655,12 @@ pub fn launch(args: Args) -> Result<()> {
                     let config: ServerConfigFinalize<Key> = ServerConfigFinalize::try_from(t)?;
                     let rt = Runtime::new()?;
                     rt.block_on(server::start(config))?;
-                    if SHOULD_RESTART.load(Ordering::SeqCst) {
+                    let should_restart = SHOULD_RESTART.load(Ordering::SeqCst);
+                    // Drop the runtime before restarting so all spawned tasks run their
+                    // defer! cleanup blocks (e.g. clearing hosts file entries) before exec/exit.
+                    drop(rt);
+                    if should_restart {
+                        info!("Restarting server process");
                         restart();
                     }
                 }
@@ -691,7 +696,12 @@ pub fn launch(args: Args) -> Result<()> {
                         let tun = tun::create().context("Failed to create TUN device. Ensure necessary drivers are installed and permissions are granted.")?;
                         node::start(c, tun, Arc::new(OnceLock::new())).await
                     })?;
-                    if SHOULD_RESTART.load(Ordering::SeqCst) {
+                    let should_restart = SHOULD_RESTART.load(Ordering::SeqCst);
+                    // Drop the runtime before restarting so all spawned tasks run their
+                    // defer! cleanup blocks (e.g. clearing hosts file entries) before exec/exit.
+                    drop(rt);
+                    if should_restart {
+                        info!("Restarting node process");
                         restart();
                     }
                 }

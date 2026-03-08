@@ -2295,6 +2295,7 @@ pub async fn start<K, T>(
         tokio::select! {
             res = serve => { res?; },
             _ = restart_notify.notified() => {
+                info!("Restart signal received, initiating restart");
                 crate::SHOULD_RESTART.store(true, Ordering::SeqCst);
             },
         }
@@ -2309,6 +2310,7 @@ pub async fn start<K, T>(
                 _ = ctrl_c.recv() => (),
                 _ = ctrl_close.recv() => (),
                 _ = restart_notify.notified() => {
+                    info!("Restart signal received, initiating restart");
                     crate::SHOULD_RESTART.store(true, Ordering::SeqCst);
                 },
                 res = serve => {
@@ -2326,6 +2328,7 @@ pub async fn start<K, T>(
                 _ = terminate.recv() => (),
                 _ = interrupt.recv() => (),
                 _ = restart_notify.notified() => {
+                    info!("Restart signal received, initiating restart");
                     crate::SHOULD_RESTART.store(true, Ordering::SeqCst);
                 },
                 res = serve => {

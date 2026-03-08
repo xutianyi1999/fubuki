@@ -1150,6 +1150,7 @@ pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
     tokio::select! {
         res = async { tokio::try_join!(handle, api_handle) } => { res?; }
         _ = restart_notify.notified() => {
+            info!("Restart signal received, initiating restart");
             crate::SHOULD_RESTART.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
