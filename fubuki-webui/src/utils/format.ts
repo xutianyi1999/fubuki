@@ -93,8 +93,9 @@ export function udpStatusCopyLabel(status: UdpStatus, isServer?: boolean): strin
   if (typeof status === 'string') {
     return status === 'Available' ? 'Direct' : status === 'Unavailable' ? 'Via relay' : status;
   }
-  const s = status as Record<string, { dst_addr?: string } | unknown>;
-  if (s?.Available?.dst_addr) return `Direct (${s.Available.dst_addr})`;
+  const s = status as Record<string, unknown>;
+  if (s.Available && typeof s.Available === 'object' && (s.Available as { dst_addr?: string }).dst_addr)
+    return `Direct (${(s.Available as { dst_addr: string }).dst_addr})`;
   return parseUdpStatus(status, false);
 }
 
