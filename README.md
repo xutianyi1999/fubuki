@@ -43,7 +43,7 @@ Fubuki is a **mesh VPN**: it connects machines in different networks (home, offi
 
 3. **Start the server** (on the machine with public IP):
    ```bash
-   fubuki server daemon ./server.json
+   fubuki server daemon -c ./server.json
    ```
 
 4. **Create node config** `node.json` on each machine that should join (replace `SERVER_IP` with the server’s public IP):
@@ -59,7 +59,7 @@ Fubuki is a **mesh VPN**: it connects machines in different networks (home, offi
 
 5. **Start each node** (as root/admin if required by your OS):
    ```bash
-   fubuki node daemon ./node.json
+   fubuki node daemon -c ./node.json
    ```
 
 6. **Test:** from one node, ping another by name or by virtual IP:
@@ -86,7 +86,7 @@ The **key** and **group name** must match between server and nodes; **node_name*
 
 ## Configuration
 
-All options are in JSON config files passed to `fubuki server daemon <path>` or `fubuki node daemon <path>`.
+All options are in JSON config files passed to `fubuki server daemon -c <path>` or `fubuki node daemon -c <path>`.
 
 **For complete and advanced examples** (all supported fields, multiple groups, optional tuning), see the **[cfg-example](cfg-example/)** directory ([GitHub](https://github.com/xutianyi1999/fubuki/tree/master/cfg-example)).
 
@@ -142,7 +142,7 @@ Example (one node, one group):
     "node_name": "alice",
     "server_addr": "203.0.113.10:12345",
     "key": "secret1"
-  ]
+  }]
 }
 ```
 
@@ -169,15 +169,19 @@ Example (one node, two groups):
 
 ## Running server and nodes
 
-- **Server** (one per deployment, on a machine reachable by all nodes):
-  ```bash
-  fubuki server daemon /path/to/server.json
-  ```
+```bash
+fubuki server daemon -c /path/to/server.json   # start server (alias: start)
+fubuki server info                             # status TUI  (alias: status, default API: 127.0.0.1:3031)
+fubuki server restart                          # restart server
 
-- **Node** (on each machine that should be in the mesh):
-  ```bash
-  fubuki node daemon /path/to/node.json
-  ```
+fubuki node daemon -c /path/to/node.json       # start node   (alias: start)
+fubuki node info                               # status TUI  (alias: status, default API: 127.0.0.1:3030)
+fubuki node restart                            # restart node
+
+fubuki update                                  # self-update to latest release
+```
+
+Use `-a <ADDR>` / `--api <ADDR>` with `info` and `restart` to target a non-default API address.
 
 Use the same **group name** and **key** on server and nodes. Each node’s **node_name** must be unique within that group. You can run multiple nodes on the same machine with different configs (different `node_name` and/or config file).
 
@@ -194,12 +198,7 @@ Use the same **group name** and **key** on server and nodes. Each node’s **nod
 ## Web UI and TUI
 
 - **Web UI** (build with `--features web`): While the node or server is running, open `http://API_ADDR` in a browser. Defaults: node `http://127.0.0.1:3030`, server `http://127.0.0.1:3031`. The dashboard shows groups, nodes, virtual IPs, latency, and loss.
-- **TUI** (terminal UI): Run `fubuki node info` or `fubuki server info` to open the status TUI. Use `--api` if the API is not on the default address:
-  ```bash
-  fubuki node info                    # default: 127.0.0.1:3030
-  fubuki node info --api 192.168.1.5:3030
-  fubuki server info                  # default: 127.0.0.1:3031
-  ```
+- **TUI** (terminal UI): Run `fubuki node info` or `fubuki server info` to open the status TUI. Use `-a`/`--api` to target a non-default API address.
 
 Set **api_addr** in the server or node config to change where the API (and Web UI) listens.
 
