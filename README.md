@@ -8,10 +8,15 @@ Fubuki is a **mesh VPN**: it connects machines in different networks (home, offi
 
 **Use cases:** remote access to home/office devices, linking servers across regions, gaming or tools that assume a single LAN.
 
+### Community
+
+- **[Fubukidaze](https://github.com/darkokoa/Fubukidaze)** — Community Android client for Fubuki.
+
 ---
 
 ## Table of contents
 
+- [Community](#community)
 - [Quick start](#quick-start)
 - [Prerequisites](#prerequisites)
 - [Configuration](#configuration)
