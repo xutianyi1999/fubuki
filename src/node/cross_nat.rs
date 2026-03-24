@@ -30,7 +30,8 @@ use crate::{
     tun::TunDevice,
 };
 
-use super::{Direction, Interface, PacketSender, RoutingTableEnum};
+use super::packet::PacketSender;
+use super::types::{Direction, Interface, RoutingTableEnum};
 
 pub struct SNat {
     netstack_sink: tokio::sync::Mutex<SplitSink<Pin<Box<NetStack>>, Vec<u8>>>,
