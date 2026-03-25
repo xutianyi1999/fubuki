@@ -5,9 +5,8 @@ authors = ["xty <xutianyi1999@live.com>"]
 edition = "2021"
 
 [lib]
-# differentiate from bin
 name = "fubukil"
-crate-type = ["lib", "staticlib", "cdylib"]
+crate-type = ["rlib"]
 path = "src/lib.rs"
 
 [[bin]]
@@ -20,84 +19,48 @@ tokio = { version = "1", features = ["full"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = "0.4"
-rand = { version = "0.9", features = ["small_rng"] }
-socket2 = "0.6"
-parking_lot = "0.12"
 anyhow = "1"
 ahash = "0.8"
+parking_lot = "0.12"
 futures-util = "0.3"
 ipnet = { version = "2", features = ["serde"] }
-arc-swap = "1"
 human-panic = "2"
-hyper = { version = "1", features = ["server", "client", "http1"] }
-http-body-util = "0.1"
-hyper-util = { version = "0.1", features = ["tokio"] }
 bincode = { version = "2", features = ["serde"] }
-scopeguard = "1"
-arrayvec = { version = "0.7", features = ["serde"] }
-static-files = { version = "0.2", optional = true }
 gethostname = "1"
-flume = { version = "0.12", default-features = false, features = ["async", "spin"] }
-blake3 = { version = "1", features = ["pure"] }
-crossbeam-utils = "0.8"
-libloading = "0.9"
-byte-unit = { version = "5", features = ["serde"] }
-linear-map = { git = "https://github.com/contain-rs/linear-map.git" }
-mimalloc = { version = "*", default-features = false, optional = true }
-netstack-lwip = { git = "https://github.com/eycorsican/netstack-lwip.git", optional = true }
-pathfinding = "4"
-kcp = { git = "https://github.com/Matrix-Zhang/kcp.git", features = ["tokio"] }
-stackfuture = "0.3"
-crossterm = { version = "0.28" , features = ["event-stream"] }
-ratatui = { version = "0.29"}
-
-[target.'cfg(not(target_os = "android"))'.dependencies]
+hkdf = "0.12"
+sha2 = "0.10"
+chacha20poly1305 = "0.10"
+aead = "0.5"
+uuid = { version = "1", features = ["v4"] }
 log4rs = { version = "1", default-features = false, features = ["console_appender"] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-android_logger = "0.15"
+self_update = { version = "0.42", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
+mimalloc = { version = "*", default-features = false, optional = true }
+dirs = "6"
+lru = "0.16"
+bytecodec = "0.5"
+stun_codec = "0.4"
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 net-route = { git = "https://github.com/johnyburd/net-route.git" }
 netconfig = { git = "https://github.com/xutianyi1999/netconfig.git" }
-hostsfile = { git = "https://github.com/tonarino/innernet.git" }
-klask = { git = "https://github.com/xutianyi1999/klask.git", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tun = { git = "https://github.com/xutianyi1999/rust-tun.git", features = ["async"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tempfile = "3"
-
-[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "android", target_os = "ios"))'.dependencies]
-tun = { git = "https://github.com/xutianyi1999/rust-tun.git", features = ["async"] }
-self_update = { version = "0.42", default-features = false, features = ["archive-tar", "compression-flate2", "rustls"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 simple_wintun = { git = "https://github.com/xutianyi1999/SimpleWintun.git", features = ["async"] }
 windows = { version = "0.62", features = ["Win32_Networking_WinSock"] }
 self_update = { version = "0.42", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
 
-[target.'cfg(target_os = "ios")'.dependencies]
-libc = "0.2"
-
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"
 
-[build-dependencies]
-static-files = { version = "0.2", optional = true }
-
-[patch.crates-io]
-advmac = { git = "https://github.com/xutianyi1999/advmac.git" }
-
 [features]
 default = ["mimalloc"]
-web = ["static-files"]
-gui = ["klask"]
-hash-routing-table = []
-cross-nat = ["netstack-lwip"]
-ffi-export = []
 
 [profile.release]
 lto = true

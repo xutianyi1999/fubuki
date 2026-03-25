@@ -1,0 +1,9 @@
+{
+  "network_id": "550e8400-e29b-41d4-a716-446655440000",
+  "psk": "change-me-shared-secret",
+  "virtual_net": "10.200.1.20/24",
+  "listen_udp": 22401,
+  "display_name": "bob",
+  "bootstrap": ["127.0.0.1:22400"],
+  "node_id_path": null
+}

@@ -12,61 +12,47 @@ jobs:
       - uses: actions/checkout@v6
       - uses: taiki-e/create-gh-release-action@v1
         env:
-          # (required)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload-assets:
     strategy:
       matrix:
         include:
-          # apple
           - target: x86_64-apple-darwin
             os: macos-latest
             build_tool: cargo
-            features: web, mimalloc, cross-nat
 
           - target: aarch64-apple-darwin
             os: macos-latest
             build_tool: cargo
-            features: web, mimalloc, cross-nat
 
-          # windows
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            features: web, mimalloc, cross-nat
 
           - target: i686-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            features: web, mimalloc, cross-nat
 
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             build_tool: cargo
-            features: web, mimalloc, cross-nat
 
-          # linux
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo
-            features: web, mimalloc, cross-nat
 
           - target: i686-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, cross-nat
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, cross-nat
 
-          # todo libatomic not found when using mimalloc
           - target: armv7-unknown-linux-musleabihf
             os: ubuntu-latest
             build_tool: cargo-zigbuild
-            features: web, cross-nat
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -78,87 +64,11 @@ jobs:
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           target: ${{ matrix.target }}
-          # (required)
           bin: fubuki
-          # (optional) On which platform to distribute the `.tar.gz` file.
-          # [default value: unix]
-          # [possible values: all, unix, windows, none]
           tar: unix
-          # (optional) On which platform to distribute the `.zip` file.
-          # [default value: windows]
-          # [possible values: all, unix, windows, none]
           zip: windows
           build_tool: ${{ matrix.build_tool }}
-          no-default-features: true
-          features: ${{ matrix.features }}
         env:
-          # (required)
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTUP_TOOLCHAIN: nightly
           CARGO_TERM_COLOR: always
-
-  build-android:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [
-          aarch64-linux-android,
-          armv7-linux-androideabi,
-          i686-linux-android,
-          x86_64-linux-android
-        ]
-    steps:
-      - uses: actions/checkout@v6
-      - run: |
-          cargo install cross --git https://github.com/cross-rs/cross
-          
-          echo "build ${{ matrix.target }}"
-          cross +nightly build --lib --release --no-default-features --features "cross-nat,ffi-export" --target ${{ matrix.target }}
-          
-          cd target/${{ matrix.target }}/release
-          tar -czf libfubuki-${{ matrix.target }}.tar.gz libfubukil.so
-          gh release upload ${{ github.ref_name }} libfubuki-${{ matrix.target }}.tar.gz
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUSTUP_TOOLCHAIN: nightly
-          CARGO_TERM_COLOR: always
-
-  build-ios:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-      - run: |
-          rustup target add aarch64-apple-ios
-          cargo +nightly build --lib --release --no-default-features --features "cross-nat,ffi-export" --target aarch64-apple-ios
-          
-          cd target/aarch64-apple-ios/release
-          tar -czf libfubuki-aarch64-apple-ios.tar.gz libfubukil.dylib
-          gh release upload ${{ github.ref_name }} libfubuki-aarch64-apple-ios.tar.gz
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUSTUP_TOOLCHAIN: nightly
-          CARGO_TERM_COLOR: always
-
-#  build-windows7:
-#    runs-on: windows-latest
-#    strategy:
-#      matrix:
-#        target: [
-#          x86_64-win7-windows-msvc,
-#          i686-win7-windows-msvc
-#        ]
-#    steps:
-#      - uses: actions/checkout@v6
-#      - run: |
-#          rustup target add x86_64-pc-windows-msvc
-#          rustup component add rust-src --toolchain $env:RUSTUP_TOOLCHAIN
-#          cargo +$env:RUSTUP_TOOLCHAIN build -Z build-std --bin fubuki --release --no-default-features --features "cross-nat,web" --target ${{ matrix.target }}
-#
-#          cd target\${{ matrix.target }}\release
-#          $fubuki_zip = "fubuki-${{ matrix.target }}.zip"
-#          Compress-Archive -Path .\fubuki.exe -Destination $fubuki_zip
-#          gh release upload ${{ github.ref_name }} $fubuki_zip
-#        env:
-#          GH_TOKEN: ${{ github.token }}
-#          RUSTUP_TOOLCHAIN: nightly
-#          CARGO_TERM_COLOR: always

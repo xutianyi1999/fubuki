@@ -1,31 +1,33 @@
-//! Privilege check for node daemon: root on Unix, Administrator on Windows.
+//! Privilege check: root on Linux/macOS, Administrator on Windows.
 
 use anyhow::{anyhow, Result};
 
-/// Returns `Ok(())` if the process has the privileges required to run the node
-/// (root on Linux/macOS, Administrator on Windows). Otherwise returns an error
-/// with a message telling the user how to elevate.
+/// Root on Linux / macOS, Administrator on Windows.
 pub fn require_elevated_for_node() -> Result<()> {
     if is_elevated() {
         return Ok(());
     }
     #[cfg(target_os = "windows")]
     return Err(anyhow!(
-        "Fubuki node requires Administrator privileges. Please run the command prompt or PowerShell as Administrator, then run the command again."
+        "Fubuki requires Administrator privileges. Run PowerShell or cmd as Administrator, then try again."
     ));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     return Err(anyhow!(
-        "Fubuki node requires root privileges. Please run with sudo or as root (e.g. sudo fubuki node daemon ./node.json)."
+        "Fubuki requires root (e.g. sudo fubuki daemon -c ./dc.json)."
+    ));
+    #[cfg(target_os = "macos")]
+    return Err(anyhow!(
+        "Fubuki requires root (e.g. sudo fubuki daemon -c ./dc.json)."
     ));
 }
 
 fn is_elevated() -> bool {
     #[cfg(target_os = "windows")]
     return is_elevated_windows();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     return is_elevated_unix();
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    return true;
+    #[cfg(target_os = "macos")]
+    return is_elevated_unix();
 }
 
 #[cfg(target_os = "windows")]
@@ -44,7 +46,12 @@ fn is_elevated_windows() -> bool {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn is_elevated_unix() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(target_os = "macos")]
 fn is_elevated_unix() -> bool {
     unsafe { libc::geteuid() == 0 }
 }

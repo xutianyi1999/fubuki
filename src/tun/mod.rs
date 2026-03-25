@@ -9,8 +9,6 @@ pub use os::create;
 #[cfg_attr(target_os = "windows", path = "windows.rs")]
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
-#[cfg_attr(target_os = "android", path = "android.rs")]
-#[cfg_attr(target_os = "ios", path = "ios.rs")]
 mod os;
 
 pub trait TunDevice {
@@ -30,6 +28,7 @@ pub trait TunDevice {
 
     fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()>;
 
+    #[allow(dead_code)]
     fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()>;
 
     fn get_index(&self) -> u32;
