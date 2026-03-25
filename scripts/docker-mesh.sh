@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Multi-node Fubuki mesh on a single host (Docker Compose).
+# Generated configs use a single bootstrap seed (node1); other nodes only list node1.
 # Usage:
 #   ./scripts/docker-mesh.sh build          # build image fubuki-mesh:test
 #   ./scripts/docker-mesh.sh gen [N]        # write docker/mesh/out/ (default N=3)

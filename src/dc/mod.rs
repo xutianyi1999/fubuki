@@ -5,7 +5,8 @@
 //! gossip membership stacks assume their own wire format and do not speak FBDC.
 //!
 //! STUN ([`stun_codec`], same UDP socket) + [`NEIGHBOR_SYNC`](msg::NEIGHBOR_SYNC) spread reflexive
-//! endpoints; plaintext `PCH\x01` probes hole-punch to those endpoints.
+//! endpoints and observed underlay (`direct_udp`) so LAN / single-seed meshes converge.
+//! Plaintext `PCH\x01` probes hole-punch to those endpoints.
 
 mod config;
 mod crypto;

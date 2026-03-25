@@ -335,8 +335,8 @@ Ready --(all paths dead)--> Reconnecting -> Ready
 | 逻辑 | 位置 |
 |------|------|
 | FBDC 帧、HKDF/AEAD、目录、运行时 | `src/dc/` |
-| TUN | `src/tun/`（仅 Windows / Linux / macOS） |
-| 系统路由 | `src/sys_route.rs` |
+| TUN | `src/platform/tun/`（仅 Windows / Linux / macOS） |
+| 系统路由 | `src/platform/sys_route.rs` |
 | CLI | `src/cli.rs`、`src/app.rs` |
 | 权限 | `src/common/privilege.rs` |
 

@@ -12,27 +12,34 @@ use super::msg::{DirectoryEntryWire, NeighborSyncBody, ReachEntry};
 const MAX_NEIGHBORS: usize = 32;
 const MAX_SYNC_ENTRIES: usize = 24;
 
+/// One member as stored locally: overlay identity, merge version, and best-known underlay paths.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub display_name: String,
+    /// Overlay IPv4 network for this member; the assigned host is `virtual_net.addr()`.
     pub virtual_net: Ipv4Net,
+    /// Last merged directory [`super::msg::DirectoryEntryWire::version`] / HELLO row version.
     pub version: u64,
+    /// Observed or announced UDP source for FBDC (preferred for encapsulation).
     pub direct_udp: Option<SocketAddrV4>,
-    /// STUN XOR mapped address (punch target when `direct_udp` unknown).
+    /// STUN XOR mapped address, used as punch target and fallback when `direct_udp` is unknown.
     pub reflexive: Option<SocketAddrV4>,
+    /// Last time this row was updated from the network or locally.
     pub last_seen: Instant,
 }
 
+/// Thread-safe member directory and bounded neighbor fan-out set.
 pub struct Directory {
     inner: RwLock<Inner>,
 }
 
+/// Mutable directory state behind [`Directory`].
 struct Inner {
+    /// Members keyed by `node_id`.
     by_id: HashMap<[u8; 16], Entry>,
-    /// Bootstrap and recently seen UDP sources (LRU eviction).
+    /// Bootstrap seeds and recently seen UDP sources used for gossip fan-out (LRU eviction).
     neighbors: LruCache<SocketAddr, ()>,
-    conflict_warns: u32,
-    /// Reflexive known before HELLO / MEMBER row exists.
+    /// Underlay address learned from [`NeighborSyncBody`] before a HELLO/MEMBER row exists for that `node_id`.
     reach_pending: HashMap<[u8; 16], SocketAddrV4>,
 }
 
@@ -44,7 +51,6 @@ impl Directory {
                 neighbors: LruCache::new(
                     NonZeroUsize::new(MAX_NEIGHBORS).expect("neighbor cap must be non-zero"),
                 ),
-                conflict_warns: 0,
                 reach_pending: HashMap::default(),
             }),
         }
@@ -66,44 +72,72 @@ impl Directory {
         }
     }
 
-    /// Merge reflexive endpoints from gossip; extends neighbor LRU for fan-out / punch.
+    /// Merge [`NeighborSyncBody`] rows: updates `direct_udp`, may insert placeholder entries, extends neighbor LRU.
     pub fn merge_neighbor_sync(&self, body: &NeighborSyncBody, now: Instant) {
         let mut g = self.inner.write();
         for e in body.entries.iter().take(MAX_SYNC_ENTRIES) {
+            let Ok(vnet) = Ipv4Net::new(Ipv4Addr::from(e.virtual_ip), e.virtual_prefix_len) else {
+                continue;
+            };
             let sa = SocketAddrV4::new(Ipv4Addr::from(e.ip), e.port);
             g.neighbors.put(SocketAddr::V4(sa), ());
-            if let Some(ent) = g.by_id.get_mut(&e.node_id) {
-                ent.reflexive = Some(sa);
-                ent.last_seen = now;
-            } else {
-                g.reach_pending.insert(e.node_id, sa);
+            match g.by_id.get_mut(&e.node_id) {
+                Some(ent) => {
+                    ent.direct_udp = Some(sa);
+                    ent.last_seen = now;
+                }
+                None => {
+                    g.by_id.insert(
+                        e.node_id,
+                        Entry {
+                            display_name: String::new(),
+                            virtual_net: vnet,
+                            version: 0,
+                            direct_udp: Some(sa),
+                            reflexive: None,
+                            last_seen: now,
+                        },
+                    );
+                }
             }
+            g.reach_pending.remove(&e.node_id);
         }
     }
 
     pub fn build_neighbor_sync(&self, self_id: [u8; 16]) -> NeighborSyncBody {
         let g = self.inner.read();
         let mut entries: Vec<ReachEntry> = Vec::new();
-        if let Some(sa) = g.by_id.get(&self_id).and_then(|e| e.reflexive) {
-            entries.push(ReachEntry {
-                node_id: self_id,
-                ip: sa.ip().octets(),
-                port: sa.port(),
-            });
+        if let Some(ent) = g.by_id.get(&self_id) {
+            if let Some(sa) = ent.direct_udp.or(ent.reflexive) {
+                entries.push(ReachEntry {
+                    node_id: self_id,
+                    virtual_ip: ent.virtual_net.addr().octets(),
+                    virtual_prefix_len: ent.virtual_net.prefix_len(),
+                    ip: sa.ip().octets(),
+                    port: sa.port(),
+                });
+            }
         }
-        let mut rest: Vec<([u8; 16], SocketAddrV4)> = g
+        let mut rest: Vec<([u8; 16], Ipv4Net, SocketAddrV4)> = g
             .by_id
             .iter()
-            .filter(|(id, e)| **id != self_id && e.reflexive.is_some())
-            .map(|(id, e)| (*id, e.reflexive.expect("filtered")))
+            .filter(|(id, e)| {
+                **id != self_id && (e.direct_udp.is_some() || e.reflexive.is_some())
+            })
+            .map(|(id, e)| {
+                let sa = e.direct_udp.or(e.reflexive).expect("filtered");
+                (*id, e.virtual_net, sa)
+            })
             .collect();
-        rest.sort_by_key(|(id, _)| *id);
-        for (nid, sa) in rest {
+        rest.sort_by_key(|(id, _, _)| *id);
+        for (nid, vnet, sa) in rest {
             if entries.len() >= MAX_SYNC_ENTRIES {
                 break;
             }
             entries.push(ReachEntry {
                 node_id: nid,
+                virtual_ip: vnet.addr().octets(),
+                virtual_prefix_len: vnet.prefix_len(),
                 ip: sa.ip().octets(),
                 port: sa.port(),
             });
@@ -155,7 +189,6 @@ impl Directory {
             *id != w.node_id && e.virtual_net.addr() == w.virtual_net.addr()
         });
         if conflict {
-            g.conflict_warns += 1;
             warn!(
                 "dc: virtual_addr conflict {} includes {}",
                 w.virtual_net.addr(),

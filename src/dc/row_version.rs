@@ -8,9 +8,12 @@ use sha2::{Digest, Sha256};
 
 use super::config::DcConfig;
 
+/// On-disk state next to `dc.json` tracking directory row version vs config fingerprint.
 #[derive(Serialize, Deserialize)]
 struct RowState {
+    /// Last published [`super::msg::HelloBody::row_version`] / [`super::msg::DirectoryEntryWire::version`].
     version: u64,
+    /// SHA-256 over stable config fields; bump `version` when this changes.
     fingerprint: [u8; 32],
 }
 

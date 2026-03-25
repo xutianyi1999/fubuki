@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate docker-compose.yml and dc.json files for a local multi-node Fubuki mesh."""
+"""Generate docker-compose.yml and dc.json files for a local multi-node Fubuki mesh.
+
+Bootstrap topology: **single seed** — only ``node1`` is listed in ``bootstrap`` (for every
+node except the seed). ``node1`` uses an empty ``bootstrap`` and acts as the lone entry
+point; other peers discover each other via gossip after joining through the seed.
+"""
 
 from __future__ import annotations
 
@@ -58,11 +63,10 @@ def main() -> None:
         virtual_host = 10 + i
         virtual_net = f"10.200.1.{virtual_host}/24"
         display_name = f"node{i}"
+        # Docker tests: one seed only (node1). Everyone else bootstraps solely to node1.
         bootstrap: list[str] = []
-        for j in range(1, args.nodes + 1):
-            if j == i:
-                continue
-            bootstrap.append(f"node{j}:{22400 + j}")
+        if i != 1:
+            bootstrap.append(f"node1:{22400 + 1}")
 
         cfg = {
             "network_id": network_id,

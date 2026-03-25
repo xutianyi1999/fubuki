@@ -6,9 +6,13 @@ use net_route::Handle;
 
 pub use net_route::Route;
 
+/// Owns OS route operations and remembers routes added by this process for teardown.
 pub struct SystemRouteHandle {
+    /// Platform `net_route` handle (add/list/delete).
     handle: Handle,
+    /// Routes successfully installed by [`Self::add`] (used by [`Self::clear`]).
     routes: Vec<Route>,
+    /// Handle to the runtime that created this struct (for spawn safety on some paths).
     rt: tokio::runtime::Handle,
 }
 

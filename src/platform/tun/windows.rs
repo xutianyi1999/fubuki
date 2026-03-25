@@ -12,20 +12,25 @@ use std::time::Duration;
 use simple_wintun::adapter::{WintunAdapter, WintunStream};
 use simple_wintun::LUID;
 
-use crate::tun::TunDevice;
+use super::TunDevice;
+
+/// Windows Wintun-backed session with interface metadata and address bookkeeping.
+pub struct Wintun {
+    /// IPv4 addresses applied on the tunnel adapter.
+    ips: Mutex<HashSet<Ipv4Addr>>,
+    /// Netconfig view of the Wintun interface.
+    inter: Interface,
+    /// Active read/write session (lives as long as the adapter).
+    session: WintunStream<'static>,
+    /// Keeps the Wintun adapter open for the lifetime of this struct.
+    _adapter: WintunAdapter,
+}
 
 const ADAPTER_NAME: &str = "fubuki-tun";
 const TUNNEL_TYPE: &str = "vpn";
 const ADAPTER_GUID: &str = "{248B1B2B-94FA-0E20-150F-5C2D2FB4FBF9}";
 //1MB
 const ADAPTER_BUFF_SIZE: u32 = 0x100000;
-
-pub struct Wintun {
-    ips: Mutex<HashSet<Ipv4Addr>>,
-    inter: Interface,
-    session: WintunStream<'static>,
-    _adapter: WintunAdapter,
-}
 
 fn get_interface(luid: LUID) -> Result<Interface> {
     Interface::try_from_luid(luid).map_err(|e| anyhow!("Failed to get interface for LUID: {}. Error: {}", luid, e))

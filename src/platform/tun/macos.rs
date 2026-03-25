@@ -10,12 +10,15 @@ use netconfig::Interface;
 use parking_lot::Mutex;
 use tun::Device;
 
-use crate::common::allocator::alloc;
-use crate::tun::TunDevice;
+use super::TunDevice;
 
+/// macOS TUN implementation: async device, address set, and netconfig interface.
 pub struct Macostun {
+    /// IPv4 addresses applied to the utun device.
     ips: Mutex<HashSet<Ipv4Addr>>,
+    /// Underlying async TUN device (`UnsafeCell` for `Sync`).
     fd: UnsafeCell<tun::AsyncDevice>,
+    /// OS interface metadata for routes and addressing.
     inter: Interface,
 }
 
@@ -45,7 +48,7 @@ impl TunDevice for Macostun {
         let fd = unsafe { &*self.fd.get() };
 
         async {
-            let mut buff = alloc(packet.len() + 4);
+            let mut buff = vec![0u8; packet.len() + 4];
             buff[..3].copy_from_slice(&[0u8; 3]);
             buff[3] = 2;
             buff[4..].copy_from_slice(packet);

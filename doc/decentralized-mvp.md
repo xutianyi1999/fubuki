@@ -124,7 +124,7 @@
 | 密码 | `src/dc/crypto.rs`：HKDF + AEAD | 不沿用 `XorCipher` |
 | 目录 | `src/dc/directory.rs`：`HashMap<NodeId, Entry>` + 合并规则 | `ahash` |
 | 运行时 | `src/dc/runtime.rs`：`tokio::net::UdpSocket` + `interval` + TUN 两向任务 | **`tun::*`**、`routing_table` 可选 |
-| 系统路由 | 将 `virtual_addr/prefix` 写入本机路由 | **`node/sys_route.rs`** 或同级逻辑拷贝适配 |
+| 系统路由 | 将 `virtual_addr/prefix` 写入本机路由 | **`src/platform/sys_route.rs`** 或同级逻辑拷贝适配 |
 | 权限 | TUN 提权 | **`common/privilege.rs`** |
 
 **已移除**：旧版 `server` / `node` 协调协议与 `common/net` 大块注册报文逻辑；当前代码路径仅为 `dc/` + TUN。

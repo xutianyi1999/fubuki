@@ -11,8 +11,8 @@ use tokio::net::UdpSocket;
 use tokio::signal;
 use tokio::time::{interval, MissedTickBehavior};
 
-use crate::sys_route::{Route, SystemRouteHandle};
-use crate::tun::TunDevice;
+use crate::platform::sys_route::{Route, SystemRouteHandle};
+use crate::platform::tun::TunDevice;
 
 use super::config::DcConfig;
 use super::crypto::{build_aad, decrypt, encrypt, DcKeys};
@@ -32,9 +32,13 @@ const PUNCH_HDR: &[u8] = b"PCH\x01";
 const PUNCH_BYTES: usize = PUNCH_HDR.len() + 16;
 const PUNCH_BURST: usize = 8;
 
+/// Per-process STUN client state (binding requests on the mesh UDP socket).
 struct StunTrack {
+    /// Pending transaction: start time and 12-byte STUN transaction id.
     inflight: Option<(Instant, [u8; 12])>,
+    /// When a binding response was last accepted.
     last_ok: Option<Instant>,
+    /// Round-robin index into [`DcConfig::stun_servers`].
     next_server_idx: usize,
 }
 
@@ -53,15 +57,25 @@ fn load_or_create_node_id(path: &std::path::Path) -> Result<[u8; 16]> {
     Ok(*u.as_bytes())
 }
 
+/// Shared daemon state for UDP receive loop, gossip ticks, and crypto.
 struct DcShared {
+    /// Loaded `dc.json` (overlay net, bootstrap, STUN, etc.).
     cfg: DcConfig,
+    /// Derived PSK keys for control vs data frames.
     keys: DcKeys,
+    /// This instance's stable member id.
     node_id: [u8; 16],
+    /// Effective display name after trimming / hostname fallback.
     display_name: String,
+    /// Current directory row version for HELLO / MEMBER_ANNOUNCE.
     row_version: u64,
+    /// Monotonic outer nonce for outbound AEAD (see also per-sender replay map).
     send_nonce: AtomicU64,
+    /// Last accepted outer nonce per peer `node_id` (replay protection for decrypt).
     last_rx: Mutex<HashMap<[u8; 16], u64>>,
+    /// Member table and gossip neighbor LRU.
     directory: Directory,
+    /// STUN query bookkeeping.
     stun: Mutex<StunTrack>,
 }
 
@@ -270,7 +284,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
         .with_context(|| format!("dc: bind UDP {}", cfg.listen_udp))?;
     let socket = Arc::new(socket);
 
-    let tun = crate::tun::create().context("dc: TUN create")?;
+    let tun = crate::platform::tun::create().context("dc: TUN create")?;
     let netmask = vnet.netmask();
     tun
         .add_addr(vnet.addr(), netmask)
@@ -491,13 +505,10 @@ async fn handle_udp_datagram<T: TunDevice>(
 }
 
 async fn handle_tun_out(s: &DcShared, sock: &UdpSocket, packet: &[u8]) -> Result<()> {
-    if packet.len() < 20 {
-        return Ok(());
-    }
-    if packet[0] >> 4 != 4 {
-        return Ok(());
-    }
-    let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    let dst = match crate::common::net::get_ip_dst_addr(packet) {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
     if !s.cfg.virtual_net.contains(&dst) {
         return Ok(());
     }

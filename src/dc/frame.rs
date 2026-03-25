@@ -22,11 +22,16 @@ pub fn encode(
     v
 }
 
+/// Parsed FBDC UDP datagram header plus ciphertext slice (see module constants for layout).
 #[derive(Debug)]
 pub struct ParsedFrame<'a> {
+    /// Application message discriminant ([`super::msg`] constants).
     pub msg_type: u16,
+    /// Sender `node_id` (16 bytes, usually a UUID).
     pub sender: [u8; 16],
+    /// Outer nonce; combined with `msg_type` for AEAD nonce uniqueness.
     pub nonce: u64,
+    /// Encrypted inner payload (bincode [`super::msg::Inner`] for control types).
     pub ciphertext: &'a [u8],
 }
 

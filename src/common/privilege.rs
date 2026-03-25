@@ -24,9 +24,7 @@ pub fn require_elevated_for_node() -> Result<()> {
 fn is_elevated() -> bool {
     #[cfg(target_os = "windows")]
     return is_elevated_windows();
-    #[cfg(target_os = "linux")]
-    return is_elevated_unix();
-    #[cfg(target_os = "macos")]
+    #[cfg(all(unix, not(target_os = "windows")))]
     return is_elevated_unix();
 }
 
@@ -46,12 +44,7 @@ fn is_elevated_windows() -> bool {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn is_elevated_unix() -> bool {
-    unsafe { libc::geteuid() == 0 }
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(all(unix, not(target_os = "windows")))]
 fn is_elevated_unix() -> bool {
     unsafe { libc::geteuid() == 0 }
 }

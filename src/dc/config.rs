@@ -9,22 +9,28 @@ use ipnet::Ipv4Net;
 use serde::Deserialize;
 use tokio::time::Instant;
 
+/// `dc.json` root: PSK mesh identity, overlay addressing, and discovery endpoints.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DcConfig {
-    /// UUID string → 16-byte network id
+    /// Network UUID string; hashed with PSK to derive keys and to namespace persisted state.
     pub network_id: String,
+    /// Pre-shared key for this mesh; never sent on the wire (used in HKDF).
     pub psk: String,
-    /// Virtual interface address and prefix, e.g. `"10.200.1.5/24"`.
+    /// Virtual TUN IPv4 address and prefix, e.g. `"10.200.1.5/24"`.
     pub virtual_net: Ipv4Net,
+    /// Local UDP port bound for FBDC frames (`0.0.0.0:listen_udp`).
     #[serde(default = "default_listen_udp")]
     pub listen_udp: u16,
+    /// Optional short name shown to peers; empty uses OS hostname.
     #[serde(default)]
     pub display_name: String,
+    /// Initial peers as `host:port` or numeric `SocketAddr`; resolved at startup for HELLO fan-out.
     pub bootstrap: Vec<String>,
-    /// STUN `host:port` servers for reflexive address (same UDP socket as mesh). Empty disables.
+    /// STUN `host:port` servers for reflexive (NAT) address on the same UDP socket as the mesh.
     #[serde(default = "default_stun_servers")]
     pub stun_servers: Vec<String>,
+    /// If set, persist this instance's stable member UUID (text) here; otherwise use a default path under the config directory.
     pub node_id_path: Option<PathBuf>,
 }
 

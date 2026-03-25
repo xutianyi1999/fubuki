@@ -9,12 +9,16 @@ use netconfig::Interface;
 use parking_lot::Mutex;
 use tun::Device;
 
-use crate::tun::TunDevice;
+use super::TunDevice;
 
+/// Linux TUN implementation: async device plus tracked addresses and netconfig handle.
 pub struct Linuxtun {
+    /// IPv4 addresses successfully applied to the TUN (for idempotent `add_addr`).
     ips: Mutex<HashSet<Ipv4Addr>>,
+    /// Underlying async TUN device (wrapped in `UnsafeCell` for `Sync`).
     fd: UnsafeCell<tun::AsyncDevice>,
-    inter: Interface
+    /// OS interface metadata (name, index) for routes and ioctls.
+    inter: Interface,
 }
 
 unsafe impl Sync for Linuxtun {}

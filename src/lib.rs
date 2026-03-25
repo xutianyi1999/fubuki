@@ -14,8 +14,7 @@ mod app;
 mod cli;
 mod common;
 mod dc;
-mod sys_route;
-mod tun;
+mod platform;
 
 pub use app::launch;
 pub use cli::Args;
