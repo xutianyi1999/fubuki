@@ -6,7 +6,7 @@ use sha2::Sha256;
 
 /// Symmetric keys derived from PSK + network id (ChaCha20-Poly1305).
 pub struct DcKeys {
-    /// AEAD key for HELLO, MEMBER_ANNOUNCE, NEIGHBOR_SYNC, etc.
+    /// AEAD key for MEMBER_ANNOUNCE, NEIGHBOR_SYNC, etc.
     pub k_control: [u8; 32],
     /// AEAD key for encapsulated IP payloads ([`super::msg::DATA_IP`]).
     pub k_data: [u8; 32],

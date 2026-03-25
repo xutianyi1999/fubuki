@@ -9,6 +9,16 @@ use parking_lot::RwLock;
 
 use super::msg::{DirectoryEntryWire, NeighborSyncBody, ReachEntry};
 
+/// How underlay addresses relate to overlay reachability:
+/// - **Observed source** (`merge_wire` / MEMBER): the UDP `recv` address is often the best path when this host
+///   is on the public Internet and the peer is behind NAT (return traffic uses the same mapping), or when both
+///   are on the same LAN (the source is the peer's LAN IP, not their STUN reflexive / WAN).
+/// - **Reflexive** (STUN XOR mapped): useful for punching and as a fallback; can be wrong for same-subnet peers
+///   or when NAT behavior makes the reflexive port differ from the mapping seen on packets this host receives.
+/// - **Gossip (`merge_neighbor_sync`)**: third-party view; fills the table before a local MEMBER merge, but must not replace
+///   an address already learned from a packet **this** host received from that peer (`direct_udp` + `version > 0`).
+/// - **Placeholders**: peers known only via gossip use `by_id` entries with `version == 0` (no separate pending map).
+
 const MAX_NEIGHBORS: usize = 32;
 const MAX_SYNC_ENTRIES: usize = 24;
 
@@ -18,11 +28,12 @@ pub struct Entry {
     pub display_name: String,
     /// Overlay IPv4 network for this member; the assigned host is `virtual_net.addr()`.
     pub virtual_net: Ipv4Net,
-    /// Last merged directory [`super::msg::DirectoryEntryWire::version`] / HELLO row version.
+    /// Last merged directory [`super::msg::DirectoryEntryWire::version`].
     pub version: u64,
-    /// Observed or announced UDP source for FBDC (preferred for encapsulation).
+    /// Best underlay UDP to send FBDC to this peer: usually the source address of MEMBER we received
+    /// (see module note on LAN vs NAT vs reflexive).
     pub direct_udp: Option<SocketAddrV4>,
-    /// STUN XOR mapped address, used as punch target and fallback when `direct_udp` is unknown.
+    /// STUN XOR mapped endpoint for this peer when known; punch target and fallback after `direct_udp` in lookup.
     pub reflexive: Option<SocketAddrV4>,
     /// Last time this row was updated from the network or locally.
     pub last_seen: Instant,
@@ -35,12 +46,10 @@ pub struct Directory {
 
 /// Mutable directory state behind [`Directory`].
 struct Inner {
-    /// Members keyed by `node_id`.
+    /// Members keyed by `node_id` (including `version == 0` placeholders from [`Self::merge_neighbor_sync`] until MEMBER).
     by_id: HashMap<[u8; 16], Entry>,
     /// Bootstrap seeds and recently seen UDP sources used for gossip fan-out (LRU eviction).
     neighbors: LruCache<SocketAddr, ()>,
-    /// Underlay address learned from [`NeighborSyncBody`] before a HELLO/MEMBER row exists for that `node_id`.
-    reach_pending: HashMap<[u8; 16], SocketAddrV4>,
 }
 
 impl Directory {
@@ -51,7 +60,6 @@ impl Directory {
                 neighbors: LruCache::new(
                     NonZeroUsize::new(MAX_NEIGHBORS).expect("neighbor cap must be non-zero"),
                 ),
-                reach_pending: HashMap::default(),
             }),
         }
     }
@@ -72,7 +80,10 @@ impl Directory {
         }
     }
 
-    /// Merge [`NeighborSyncBody`] rows: updates `direct_udp`, may insert placeholder entries, extends neighbor LRU.
+    /// Merge [`NeighborSyncBody`] rows: fills `direct_udp` when unknown or placeholder-only, extends neighbor LRU.
+    ///
+    /// Does not replace `direct_udp` if we already merged a real directory row (`version > 0`), so a path learned
+    /// from this host's view of the peer (MEMBER `recv`, LAN IP, NAT return path) wins over relayed gossip.
     pub fn merge_neighbor_sync(&self, body: &NeighborSyncBody, now: Instant) {
         let mut g = self.inner.write();
         for e in body.entries.iter().take(MAX_SYNC_ENTRIES) {
@@ -83,8 +94,11 @@ impl Directory {
             g.neighbors.put(SocketAddr::V4(sa), ());
             match g.by_id.get_mut(&e.node_id) {
                 Some(ent) => {
-                    ent.direct_udp = Some(sa);
                     ent.last_seen = now;
+                    let sync_fills_gap = ent.direct_udp.is_none() || ent.version == 0;
+                    if sync_fills_gap {
+                        ent.direct_udp = Some(sa);
+                    }
                 }
                 None => {
                     g.by_id.insert(
@@ -100,7 +114,6 @@ impl Directory {
                     );
                 }
             }
-            g.reach_pending.remove(&e.node_id);
         }
     }
 
@@ -166,7 +179,7 @@ impl Directory {
         };
         let accept = match ent.reflexive {
             None => true,
-            Some(r) => r == from || r.ip() == from.ip(),
+            Some(r) => r.ip() == from.ip(),
         };
         if accept {
             ent.direct_udp = Some(from);
@@ -196,8 +209,6 @@ impl Directory {
             );
         }
 
-        let pending_rx = g.reach_pending.remove(&w.node_id);
-
         use std::cmp::Ordering;
         match g.by_id.get(&w.node_id).cloned() {
             None => {
@@ -208,7 +219,7 @@ impl Directory {
                         virtual_net: w.virtual_net,
                         version: w.version,
                         direct_udp: direct,
-                        reflexive: pending_rx,
+                        reflexive: None,
                         last_seen: now,
                     },
                 );
@@ -222,7 +233,7 @@ impl Directory {
                             virtual_net: w.virtual_net,
                             version: w.version,
                             direct_udp: direct.or(cur.direct_udp),
-                            reflexive: cur.reflexive.or(pending_rx),
+                            reflexive: cur.reflexive,
                             last_seen: now,
                         },
                     );
@@ -233,9 +244,6 @@ impl Directory {
                     e.virtual_net = w.virtual_net;
                     if let Some(d) = direct {
                         e.direct_udp = Some(d);
-                    }
-                    if e.reflexive.is_none() {
-                        e.reflexive = pending_rx;
                     }
                     e.last_seen = now;
                     g.by_id.insert(w.node_id, e);
@@ -283,6 +291,7 @@ impl Directory {
             .and_then(|e| e.reflexive)
     }
 
+    /// Returns underlay UDP for `dst` overlay host: [`Entry::direct_udp`] first (observed / MEMBER path), else [`Entry::reflexive`].
     pub fn lookup_udp_for_dst(&self, dst: Ipv4Addr, self_id: [u8; 16]) -> Option<SocketAddrV4> {
         let g = self.inner.read();
         for (id, e) in g.by_id.iter() {

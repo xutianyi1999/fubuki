@@ -25,7 +25,7 @@ pub struct DcConfig {
     /// Optional short name shown to peers; empty uses OS hostname.
     #[serde(default)]
     pub display_name: String,
-    /// Initial peers as `host:port` or numeric `SocketAddr`; resolved at startup for HELLO fan-out.
+    /// Initial peers as `host:port` or numeric `SocketAddr`; resolved at startup for first MEMBER_ANNOUNCE.
     pub bootstrap: Vec<String>,
     /// STUN `host:port` servers for reflexive (NAT) address on the same UDP socket as the mesh.
     #[serde(default = "default_stun_servers")]

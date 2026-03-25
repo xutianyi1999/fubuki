@@ -28,9 +28,6 @@ pub trait TunDevice {
 
     fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()>;
 
-    #[allow(dead_code)]
-    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()>;
-
     fn get_index(&self) -> u32;
 }
 
@@ -52,10 +49,6 @@ impl<T: TunDevice> TunDevice for Arc<T> {
 
     fn add_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
         (**self).add_addr(addr, netmask)
-    }
-
-    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
-        (**self).delete_addr(addr, netmask)
     }
 
     fn get_index(&self) -> u32 {

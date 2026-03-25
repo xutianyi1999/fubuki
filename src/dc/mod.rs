@@ -1,7 +1,8 @@
 //! Decentralized mesh (FBDC): PSK, UDP directory gossip, TUN data plane.
 //! See `doc/decentralized-mvp.md`.
 //!
-//! HELLO / MEMBER_ANNOUNCE fan-out uses a bounded [`lru::LruCache`] peer set; off-the-shelf
+//! Control-plane gossip sends [`MEMBER_ANNOUNCE`](msg::MEMBER_ANNOUNCE) and optional [`NEIGHBOR_SYNC`](msg::NEIGHBOR_SYNC).
+//! Fan-out uses a bounded [`lru::LruCache`] peer set; off-the-shelf
 //! gossip membership stacks assume their own wire format and do not speak FBDC.
 //!
 //! STUN ([`stun_codec`], same UDP socket) + [`NEIGHBOR_SYNC`](msg::NEIGHBOR_SYNC) spread reflexive

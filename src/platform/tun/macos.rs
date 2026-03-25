@@ -107,53 +107,6 @@ impl TunDevice for Macostun {
         Ok(())
     }
 
-    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> anyhow::Result<()> {
-        let cidr = Ipv4Net::with_netmask(addr, netmask)?;
-        let mut guard = self.ips.lock();
-
-        if !guard.contains(&addr) {
-            return Ok(());
-        }
-
-        let status = Command::new("route")
-            .args([
-                "-n",
-                "delete",
-                "-net",
-                cidr.network().to_string().as_str(),
-                "-netmask",
-                netmask.to_string().as_str(),
-                addr.to_string().as_str(),
-            ])
-            .stderr(Stdio::inherit())
-            .output()?
-            .status;
-
-        if !status.success() {
-            return Err(anyhow!("Failed to delete route for {} via {}. Command failed.", cidr, addr));
-        }
-
-        let if_name = self.inter.name().map_err(|e| anyhow!("Failed to get interface name for deleting address. Error: {}", e))?;
-
-        let status = Command::new("ifconfig")
-            .args([
-                if_name.as_str(),
-                "inet",
-                addr.to_string().as_str(),
-                "-alias"
-            ])
-            .stderr(Stdio::inherit())
-            .output()?
-            .status;
-
-        if !status.success() {
-            return Err(anyhow!("Failed to delete TUN IP address {} from interface '{}'. Command failed.", addr, if_name));
-        }
-
-        guard.remove(&addr);
-        Ok(())
-    }
-
     fn get_index(&self) -> u32 {
         self.inter.index().expect("Failed to get interface index for MacOS TUN adapter.")
     }

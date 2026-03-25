@@ -133,7 +133,7 @@ k_invite     = HKDF-Expand(psk, info="invite"     || info_network, L=32)  // 仅
 ## 4. 传输与端口
 
 - **控制/数据 UDP 端口**：配置项 `listen_udp: u16`（默认建议与现网不同，如 `22400`）。
-- **Bootstrap 连接**：向配置的 `bootstrap[]` 发送 `HELLO`；成功后加入 `peer_seeds`。
+- **Bootstrap 连接**：向配置的 `bootstrap[]` 发送 `MEMBER_ANNOUNCE`（自身目录行）；成功后加入邻居 fan-out 集合。
 - **TCP 兜底**（可选实现）：用于 `DIR_SNAPSHOT` 大块；首版可省略，用 **分片 Gossip** 代替。
 
 ---
@@ -144,10 +144,10 @@ k_invite     = HKDF-Expand(psk, info="invite"     || info_network, L=32)  // 仅
 
 | `msg_type` | 名称 | 方向 | 载荷概要 |
 |------------|------|------|----------|
-| 1 | `HELLO` | 任意 | `capabilities`, `listen_port`, `display_name` |
-| 2 | `HELLO_ACK` | 应答 | `your_endpoint_seen: SocketAddrV4`（反射） |
+| 1 | *（实现未用）* | — | 保留编号空档 |
+| 2 | *（实现未用）* | — | 保留编号空档 |
 | 3 | `PEER_INTRO` | A→B（经第三方转发或由 bootstrap 引荐） | `target: NodeId`, `hint_addr` |
-| 4 | `MEMBER_ANNOUNCE` | 广播/多播 | 完整 `DirectoryEntry` 快照单行 |
+| 4 | `MEMBER_ANNOUNCE` | 广播/多播 | 完整 `DirectoryEntry` 快照单行（**当前实现**：bootstrap + 周期 gossip） |
 | 5 | `MEMBER_DIGEST` | 反熵 | `version_vector: Vec<(NodeId,u64)>` 或 Bloom+版本（首版用向量） |
 | 6 | `MEMBER_PULL` | 请求 | `want: Vec<NodeId>` |
 | 7 | `MEMBER_PUSH` | 响应 | `entries: Vec<DirectoryEntry>` |
@@ -158,6 +158,8 @@ k_invite     = HKDF-Expand(psk, info="invite"     || info_network, L=32)  // 仅
 | 13 | `RELAY_REGISTER` | 中继 | `capacity`, `token` |
 | 14 | `RELAY_FORWARD` | 中继 | `inner_mac`, 内层加密数据包 |
 | 15 | `DATA_PROBE` | 路径探测 | 小 payload，测量可达性 |
+
+**本仓库实现与上表编号差异**：使用 `msg_type=8` 为 `NEIGHBOR_SYNC`（有界 reach 同步），`msg_type=16` 为 `DATA_IP`；未实现 `HELLO` / `HELLO_ACK`。
 
 **广播语义**：`dst=None` 时，仅向 **当前 `active_neighbors` 集合** 转发（非全网泛洪），除非 `TTL` 字段递减（可选）。
 
@@ -211,8 +213,8 @@ on_recv MEMBER_PULL(want):
 
 1. 读配置 `virtual_addr` + `psk` + `network_id` + `bootstrap`。
 2. 加载/生成 `node_id`。
-3. 向 bootstrap `HELLO` → 获得至少一个邻居。
-4. 发 `MEMBER_ANNOUNCE`（自身行，`version=1` 或持久化恢复的上次版本+1）。
+3. 向 bootstrap 发 `MEMBER_ANNOUNCE` → 获得至少一个邻居（收包源进入 LRU）。
+4. 周期发 `MEMBER_ANNOUNCE` + 可选 `NEIGHBOR_SYNC`（自身行 / 有界 reach 表，`version` 见持久化逻辑）。
 5. **冲突检测**：若收到他节点 `MEMBER_ANNOUNCE` / `MEMBER_PUSH` 中 **同 `virtual_addr` 且 `node_id` 不同`**：
    - 进入 `ConflictState`：向双方发 `ADDR_CONFLICT`，UI/日志告警。
    - **策略 A（推荐首版）**：**后启动者**停止转发数据面并退避（比较 `node_id` 字典序或启动时间戳协商字段）。
@@ -220,7 +222,7 @@ on_recv MEMBER_PULL(want):
 
 ### 7.2 邀请制地址（可选）
 
-- 新节点携带 **邀请令牌** 在首个 `HELLO` 或专用 `JOIN` 消息中提交。
+- 新节点携带 **邀请令牌** 在首个 `MEMBER_ANNOUNCE` 或专用 `JOIN` 消息中提交。
 - 令牌限定 `allowed_prefix`；节点从前缀内自选地址时，**不得**与目录中已声明冲突。
 
 ---
@@ -230,7 +232,7 @@ on_recv MEMBER_PULL(want):
 ### 8.1 前置
 
 - 可选 **STUN**（与数据口独立或复用）：获取 `server_reflexive` 地址，写入 `DirectoryEntry` 辅助字段。
-- 两节点 A、B 需交换 **外部端点猜测**：通过 Gossip 中的 `direct_udp` 或通过 `bootstrap` 交换 `HELLO_ACK` 中看到的对端地址。
+- 两节点 A、B 需交换 **外部端点猜测**：通过 Gossip 中的 `direct_udp`、`NEIGHBOR_SYNC`，或 `bootstrap` 路径上观测到的对端地址。
 
 ### 8.2 打洞会话
 

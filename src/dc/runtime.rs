@@ -19,9 +19,9 @@ use super::crypto::{build_aad, decrypt, encrypt, DcKeys};
 use super::directory::Directory;
 use super::frame;
 use super::msg::{
-    decode_directory_entry, decode_hello, decode_inner, decode_neighbor_sync,
-    encode_directory_entry, encode_hello, encode_inner, encode_neighbor_sync,
-    DirectoryEntryWire, HelloBody, Inner, DATA_IP, HELLO, MEMBER_ANNOUNCE, NEIGHBOR_SYNC,
+    decode_directory_entry, decode_inner, decode_neighbor_sync,
+    encode_directory_entry, encode_inner, encode_neighbor_sync,
+    DirectoryEntryWire, Inner, DATA_IP, MEMBER_ANNOUNCE, NEIGHBOR_SYNC,
 };
 use super::row_version;
 use super::stun;
@@ -67,7 +67,7 @@ struct DcShared {
     node_id: [u8; 16],
     /// Effective display name after trimming / hostname fallback.
     display_name: String,
-    /// Current directory row version for HELLO / MEMBER_ANNOUNCE.
+    /// Current directory row version for MEMBER_ANNOUNCE.
     row_version: u64,
     /// Monotonic outer nonce for outbound AEAD (see also per-sender replay map).
     send_nonce: AtomicU64,
@@ -230,15 +230,6 @@ async fn punch_burst(sock: &UdpSocket, to: SocketAddrV4, my_id: &[u8; 16]) {
     }
 }
 
-fn hello_body(s: &DcShared) -> HelloBody {
-    HelloBody {
-        listen_port: s.cfg.listen_udp,
-        display_name: s.display_name.clone(),
-        virtual_net: s.cfg.virtual_net,
-        row_version: s.row_version,
-    }
-}
-
 fn self_directory_row(s: &DcShared) -> DirectoryEntryWire {
     DirectoryEntryWire::from_self(
         s.node_id,
@@ -246,6 +237,16 @@ fn self_directory_row(s: &DcShared) -> DirectoryEntryWire {
         s.cfg.virtual_net,
         s.row_version,
     )
+}
+
+/// Serialized [`MEMBER_ANNOUNCE`] frame (shared by bootstrap send and periodic gossip).
+fn pack_member_announce(s: &DcShared) -> Result<Vec<u8>> {
+    let wire = self_directory_row(s);
+    let inner = Inner {
+        dst: None,
+        payload: encode_directory_entry(&wire)?,
+    };
+    s.pack(MEMBER_ANNOUNCE, false, inner)
 }
 
 pub async fn run(config_path: &Path) -> Result<()> {
@@ -298,11 +299,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
     let mut route = Route::new(IpAddr::V4(network), vnet.prefix_len())
         .with_gateway(IpAddr::V4(vnet.addr()))
         .with_ifindex(tun_index);
-    #[cfg(target_os = "windows")]
-    {
-        route = route.with_metric(1);
-    }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         route = route.with_metric(1);
     }
@@ -336,7 +333,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
     });
 
     for a in &bootstrap {
-        let _ = send_hello_to(&shared, socket.as_ref(), *a).await;
+        let _ = send_member_announce_to(&shared, socket.as_ref(), *a).await;
     }
 
     let mut udp_buf = vec![0u8; 65536];
@@ -381,13 +378,8 @@ pub async fn run(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn send_hello_to(s: &DcShared, sock: &UdpSocket, to: SocketAddr) -> Result<()> {
-    let body = encode_hello(&hello_body(s))?;
-    let inner = Inner {
-        dst: None,
-        payload: body,
-    };
-    let pkt = s.pack(HELLO, false, inner)?;
+async fn send_member_announce_to(s: &DcShared, sock: &UdpSocket, to: SocketAddr) -> Result<()> {
+    let pkt = pack_member_announce(s)?;
     sock.send_to(&pkt, to).await?;
     Ok(())
 }
@@ -395,23 +387,7 @@ async fn send_hello_to(s: &DcShared, sock: &UdpSocket, to: SocketAddr) -> Result
 async fn gossip(s: &DcShared, sock: &UdpSocket) -> Result<()> {
     tick_stun(s, sock).await?;
 
-    let wire = self_directory_row(s);
-    let announce = s.pack(
-        MEMBER_ANNOUNCE,
-        false,
-        Inner {
-            dst: None,
-            payload: encode_directory_entry(&wire)?,
-        },
-    )?;
-    let hello = s.pack(
-        HELLO,
-        false,
-        Inner {
-            dst: None,
-            payload: encode_hello(&hello_body(s))?,
-        },
-    )?;
+    let announce = pack_member_announce(s)?;
     let sync_body = s.directory.build_neighbor_sync(s.node_id);
     let sync_pkt = if !sync_body.entries.is_empty() {
         Some(s.pack(
@@ -429,7 +405,6 @@ async fn gossip(s: &DcShared, sock: &UdpSocket) -> Result<()> {
     let neighbors = s.directory.neighbors_snapshot();
     for a in &neighbors {
         let _ = sock.send_to(&announce, *a).await;
-        let _ = sock.send_to(&hello, *a).await;
         if let Some(ref p) = sync_pkt {
             let _ = sock.send_to(p, *a).await;
         }
@@ -486,14 +461,13 @@ async fn handle_udp_datagram<T: TunDevice>(
     }
 
     match f.msg_type {
-        HELLO => {
-            let h = decode_hello(&inner.payload)?;
-            s.directory
-                .merge_wire(DirectoryEntryWire::from_hello(f.sender, h), from, now);
-        }
         MEMBER_ANNOUNCE => {
             let w = decode_directory_entry(&inner.payload)?;
-            s.directory.merge_wire(w, from, now);
+            if w.node_id != f.sender {
+                debug!("dc: MEMBER row node_id != frame sender; ignored");
+            } else {
+                s.directory.merge_wire(w, from, now);
+            }
         }
         NEIGHBOR_SYNC => {
             let body = decode_neighbor_sync(&inner.payload)?;

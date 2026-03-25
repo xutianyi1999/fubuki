@@ -1,4 +1,4 @@
-//! Persistent [`HelloBody::row_version`] / directory `version`: bumps when peer-visible row changes.
+//! Persistent directory row `version` (published in [`MEMBER_ANNOUNCE`](crate::dc::msg::DirectoryEntryWire::version)); bumps when peer-visible row changes.
 
 use std::fs;
 
@@ -11,7 +11,7 @@ use super::config::DcConfig;
 /// On-disk state next to `dc.json` tracking directory row version vs config fingerprint.
 #[derive(Serialize, Deserialize)]
 struct RowState {
-    /// Last published [`super::msg::HelloBody::row_version`] / [`super::msg::DirectoryEntryWire::version`].
+    /// Last published [`super::msg::DirectoryEntryWire::version`].
     version: u64,
     /// SHA-256 over stable config fields; bump `version` when this changes.
     fingerprint: [u8; 32],

@@ -115,21 +115,6 @@ impl TunDevice for Wintun {
         Ok(())
     }
 
-    fn delete_addr(&self, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<()> {
-        let mut guard = self.ips.lock();
-
-        if !guard.contains(&addr) {
-            return Ok(());
-        }
-
-        self.inter
-            .remove_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to delete address {}/{} from interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
-
-        guard.remove(&addr);
-        Ok(())
-    }
-
     fn get_index(&self) -> u32 {
         self.inter.index().expect("Failed to get interface index for Wintun adapter.")
     }

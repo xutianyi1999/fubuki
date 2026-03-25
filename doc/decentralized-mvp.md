@@ -41,9 +41,8 @@
 
 | `msg_type` | 名称 | MVP 行为 |
 |------------|------|----------|
-| 1 | `HELLO` | 携带本机 `listen_port`、`display_name`、`virtual_addr`、`prefix_len`、`row_version`（见下） |
-| 2 | `HELLO_ACK` | 可选；MVP 可合并进 HELLO 的「互发」：收到任意合法包即更新 `direct_udp = 来源 SocketAddr` |
-| 4 | `MEMBER_ANNOUNCE` | **仅广播自身一行** `DirectoryEntry`；周期如 3s |
+| 4 | `MEMBER_ANNOUNCE` | **广播自身一行** `DirectoryEntryWire`；bootstrap 首包 + 周期如 3s；`direct_udp` 通常取自收包源地址 |
+| 8 | `NEIGHBOR_SYNC` | 有界 `ReachEntry` 列表，扩散成员 underlay（单 seed / 无 STUN 时必需） |
 | 9 | `PING` | 可选；无则靠 MEMBER_ANNOUNCE 刷新 TTL |
 | 10 | `PONG` | 与 PING 对应用 |
 | **16** | `DATA_IP`（MVP 新增编号，全规格后续可并入 §5） | 载荷：原始 IPv4 包字节（或 `dst_virtual` + IP，二选一写死） |
@@ -137,7 +136,7 @@
 
 | 阶段 | 内容 | 可测 |
 |------|------|------|
-| **P0** | `dc.json` + UDP 收发包 + FBDC 加解密环回（无 TUN） | 两进程互发 `HELLO` 日志 |
+| **P0** | `dc.json` + UDP 收发包 + FBDC 加解密环回（无 TUN） | 两进程互发 `MEMBER_ANNOUNCE` 日志 |
 | **P1** | `MEMBER_ANNOUNCE` + 目录表 + `GOSSIP_INTERVAL` | 一方能看到对方 `virtual_addr` |
 | **P2** | TUN 起接口 + 系统路由 + `DATA_IP` 双向 | `ping` 虚拟 IP |
 | **P3**（可选） | `PING`/`PONG`、`ENTRY_TTL` 剔除离线节点 | 拔网线后路由收敛 |
