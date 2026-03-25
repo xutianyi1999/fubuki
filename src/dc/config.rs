@@ -1,10 +1,13 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use backon::{ExponentialBuilder, Retryable};
 use ipnet::Ipv4Net;
 use serde::Deserialize;
+use tokio::time::Instant;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +78,10 @@ impl DcConfig {
     }
 }
 
+/// DNS for bootstrap peers can be briefly unavailable (e.g. Docker Compose parallel start).
+/// Retries use [`backon::ExponentialBuilder`] (100 ms–10 s, factor 2, jitter) under a wall-clock cap.
+const BOOTSTRAP_DNS_BUDGET: Duration = Duration::from_secs(90);
+
 async fn resolve_host_port_udp(s: &str) -> Result<SocketAddr> {
     let (host, port_s) = s
         .rsplit_once(':')
@@ -82,12 +89,75 @@ async fn resolve_host_port_udp(s: &str) -> Result<SocketAddr> {
     let port: u16 = port_s
         .parse()
         .with_context(|| format!("bootstrap UDP port: {port_s}"))?;
-    let mut addrs = tokio::net::lookup_host((host, port))
+    lookup_host_bootstrap(host, port)
         .await
-        .with_context(|| format!("bootstrap DNS lookup: {host}"))?;
-    addrs.next().ok_or_else(|| {
-        anyhow!("bootstrap DNS lookup produced no addresses for {host}:{port}")
+        .with_context(|| format!("bootstrap DNS lookup: {host}"))
+}
+
+async fn lookup_host_bootstrap(host: &str, port: u16) -> Result<SocketAddr> {
+    let start = Instant::now();
+    let host_owned = host.to_string();
+    let builder = ExponentialBuilder::new()
+        .with_min_delay(Duration::from_millis(100))
+        .with_max_delay(Duration::from_secs(10))
+        .with_max_times(24)
+        .with_jitter();
+
+    let outcome = (|| async {
+        match tokio::net::lookup_host((host_owned.as_str(), port)).await {
+            Ok(addrs) => pick_socket_addr(addrs).ok_or_else(|| {
+                format!("no addresses returned for {host}:{port}")
+            }),
+            Err(e) => Err(e.to_string()),
+        }
     })
+    .retry(builder)
+    .when(|_| start.elapsed() < BOOTSTRAP_DNS_BUDGET)
+    .notify(|err: &String, dur: Duration| {
+        log::warn!(
+            "bootstrap DNS: {host}:{port} not ready yet ({err}); retry in {:?} (elapsed {:?})",
+            dur,
+            start.elapsed()
+        );
+    })
+    .adjust(|_err, dur| {
+        let elapsed = start.elapsed();
+        if elapsed >= BOOTSTRAP_DNS_BUDGET {
+            return None;
+        }
+        let remaining = BOOTSTRAP_DNS_BUDGET.saturating_sub(elapsed);
+        dur.map(|d| d.min(remaining)).filter(|d| !d.is_zero())
+    })
+    .await;
+
+    match outcome {
+        Ok(a) => {
+            if start.elapsed() > Duration::from_millis(50) {
+                log::info!(
+                    "bootstrap DNS: resolved {host}:{port} to {a} after {:?}",
+                    start.elapsed()
+                );
+            }
+            Ok(a)
+        }
+        Err(e) => Err(anyhow!(
+            "bootstrap DNS: gave up on {host}:{port} after {:?}: {e}",
+            BOOTSTRAP_DNS_BUDGET
+        )),
+    }
+}
+
+fn pick_socket_addr(
+    addrs: impl Iterator<Item = SocketAddr>,
+) -> Option<SocketAddr> {
+    let mut first = None;
+    for a in addrs {
+        if matches!(a, SocketAddr::V4(_)) {
+            return Some(a);
+        }
+        first.get_or_insert(a);
+    }
+    first
 }
 
 fn dirs_config() -> PathBuf {

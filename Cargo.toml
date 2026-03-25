@@ -39,6 +39,7 @@ dirs = "6"
 lru = "0.16"
 bytecodec = "0.5"
 stun_codec = "0.4"
+backon = "1.6.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 net-route = { git = "https://github.com/johnyburd/net-route.git" }

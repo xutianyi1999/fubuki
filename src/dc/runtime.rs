@@ -261,6 +261,9 @@ pub async fn run(config_path: &Path) -> Result<()> {
         display.truncate(64);
     }
 
+    // Resolve bootstrap before TUN/routes so a DNS failure does not leave system routes behind.
+    let bootstrap = cfg.bootstrap_addrs().await?;
+
     let vnet = cfg.virtual_net;
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, cfg.listen_udp))
         .await
@@ -300,7 +303,6 @@ pub async fn run(config_path: &Path) -> Result<()> {
         Instant::now(),
     );
 
-    let bootstrap = cfg.bootstrap_addrs().await?;
     directory.seed_neighbors(&bootstrap);
 
     let shared = Arc::new(DcShared {

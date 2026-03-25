@@ -3,8 +3,10 @@
 //! so unrelated datagrams stay in the FBDC path.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use backon::{ExponentialBuilder, Retryable};
 use bytecodec::{DecodeExt, EncodeExt};
 use stun_codec::rfc5389::attributes::{MappedAddress, XorMappedAddress};
 use stun_codec::rfc5389::{methods::BINDING, Attribute};
@@ -49,6 +51,20 @@ pub async fn resolve_stun_server(host_port: &str) -> Option<SocketAddr> {
     let s = host_port.trim();
     let (host, port_s) = s.rsplit_once(':')?;
     let port: u16 = port_s.parse().ok()?;
-    let mut addrs = tokio::net::lookup_host((host, port)).await.ok()?;
-    addrs.next()
+    let host = host.to_string();
+    // Align with previous `exponential-backoff` defaults: 100 ms–10 s, jitter, five lookups.
+    let builder = ExponentialBuilder::new()
+        .with_min_delay(Duration::from_millis(100))
+        .with_max_delay(Duration::from_secs(10))
+        .with_max_times(4)
+        .with_jitter();
+    (|| async {
+        match tokio::net::lookup_host((host.as_str(), port)).await {
+            Ok(mut addrs) => addrs.next().ok_or(()),
+            Err(_) => Err(()),
+        }
+    })
+    .retry(builder)
+    .await
+    .ok()
 }
