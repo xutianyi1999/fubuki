@@ -1,4 +1,5 @@
 /target
+/docker/mesh/out/
 /Cargo.lock
 /fubuki.iml
 /.idea/

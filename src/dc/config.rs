@@ -45,12 +45,19 @@ impl DcConfig {
         Ok(*u.as_bytes())
     }
 
-    pub fn bootstrap_addrs(&self) -> Result<Vec<SocketAddr>> {
+    /// Resolve each bootstrap entry: numeric `SocketAddr` strings parse directly;
+    /// `host:port` hostnames are resolved via DNS (same idea as `stun_servers`).
+    pub async fn bootstrap_addrs(&self) -> Result<Vec<SocketAddr>> {
         let mut out = Vec::with_capacity(self.bootstrap.len());
         for s in &self.bootstrap {
-            let a = s
-                .parse::<SocketAddr>()
-                .with_context(|| format!("bootstrap parse: {s}"))?;
+            let s = s.trim();
+            let a = if let Ok(a) = s.parse::<SocketAddr>() {
+                a
+            } else {
+                resolve_host_port_udp(s)
+                    .await
+                    .with_context(|| format!("bootstrap parse: {s}"))?
+            };
             out.push(a);
         }
         Ok(out)
@@ -66,6 +73,21 @@ impl DcConfig {
         let name = format!("dc-{}-row.json", self.network_id);
         dirs_config().join(name)
     }
+}
+
+async fn resolve_host_port_udp(s: &str) -> Result<SocketAddr> {
+    let (host, port_s) = s
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("expected host:port or a numeric socket address"))?;
+    let port: u16 = port_s
+        .parse()
+        .with_context(|| format!("bootstrap UDP port: {port_s}"))?;
+    let mut addrs = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("bootstrap DNS lookup: {host}"))?;
+    addrs.next().ok_or_else(|| {
+        anyhow!("bootstrap DNS lookup produced no addresses for {host}:{port}")
+    })
 }
 
 fn dirs_config() -> PathBuf {

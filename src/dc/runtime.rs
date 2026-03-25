@@ -300,7 +300,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
         Instant::now(),
     );
 
-    let bootstrap = cfg.bootstrap_addrs()?;
+    let bootstrap = cfg.bootstrap_addrs().await?;
     directory.seed_neighbors(&bootstrap);
 
     let shared = Arc::new(DcShared {
