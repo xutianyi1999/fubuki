@@ -5,7 +5,7 @@
 # Virtual IPs match docker/mesh/generate_mesh.py: node i -> 10.200.1.$((10 + i))
 #
 # Usage:
-#   ./scripts/docker-mesh-test.sh [--no-build] [N]
+#   ./scripts/docker-mesh-test.sh [--no-build] [--stun] [N]
 #   MESH_WAIT_SECS=240 ./scripts/docker-mesh-test.sh   # extend wait for slow hosts
 #
 set -euo pipefail
@@ -53,16 +53,18 @@ cleanup() {
 trap cleanup EXIT
 
 skip_build=false
+use_stun=false
 n=3
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build) skip_build=true; shift ;;
+    --stun) use_stun=true; shift ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]]; then
         n="$1"
         shift
       else
-        die "unknown argument: $1 (usage: $0 [--no-build] [N])"
+        die "unknown argument: $1 (usage: $0 [--no-build] [--stun] [N])"
       fi
       ;;
   esac
@@ -85,8 +87,13 @@ else
   docker build -f "$DOCKERFILE" -t "$IMAGE" .
 fi
 
-echo "mesh-test: generate compose ($n nodes)"
-python3 docker/mesh/generate_mesh.py -n "$n" -o "$OUT" --image "$IMAGE"
+if $use_stun; then
+  echo "mesh-test: generate compose ($n nodes, STUN on)"
+  python3 docker/mesh/generate_mesh.py -n "$n" -o "$OUT" --image "$IMAGE" --stun
+else
+  echo "mesh-test: generate compose ($n nodes)"
+  python3 docker/mesh/generate_mesh.py -n "$n" -o "$OUT" --image "$IMAGE"
+fi
 
 echo "mesh-test: compose up"
 docker compose -f "$COMPOSE" up -d --force-recreate

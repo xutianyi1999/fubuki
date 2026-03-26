@@ -60,6 +60,9 @@ self_update = { version = "0.42", default-features = false, features = ["archive
 [target.'cfg(target_os = "windows")'.build-dependencies]
 winres = "0.1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["mimalloc"]
 

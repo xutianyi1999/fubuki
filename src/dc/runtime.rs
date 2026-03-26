@@ -491,3 +491,215 @@ async fn handle_tun_out(s: &DcShared, sock: &UdpSocket, packet: &[u8]) -> Result
     sock.send_to(&pkt, SocketAddr::V4(target)).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::future::Ready;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use bytecodec::EncodeExt;
+    use parking_lot::Mutex;
+    use stun_codec::rfc5389::attributes::MappedAddress;
+    use stun_codec::rfc5389::{methods::BINDING, Attribute};
+    use stun_codec::{Message, MessageClass, MessageEncoder, TransactionId};
+    use tokio::net::UdpSocket;
+
+    use super::{
+        handle_udp_datagram, inner_for_me, pack_member_announce, try_consume_punch,
+        try_consume_stun_response, DcShared, StunTrack, PUNCH_BYTES, PUNCH_HDR,
+    };
+    use crate::platform::tun::TunDevice;
+
+    use super::super::config::DcConfig;
+    use super::super::crypto::DcKeys;
+    use super::super::directory::Directory;
+    use super::super::msg::{Inner, NeighborSyncBody, ReachEntry};
+
+    #[derive(Default)]
+    struct MockTun {
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl TunDevice for MockTun {
+        type SendFut<'a> = Ready<anyhow::Result<()>>;
+        type RecvFut<'a> = Ready<anyhow::Result<usize>>;
+
+        fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
+            self.sent.lock().push(packet.to_vec());
+            std::future::ready(Ok(()))
+        }
+
+        fn recv_packet<'a>(&'a self, _buff: &'a mut [u8]) -> Self::RecvFut<'a> {
+            std::future::ready(Ok(0))
+        }
+
+        fn set_mtu(&self, _mtu: usize) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn add_addr(&self, _addr: Ipv4Addr, _netmask: Ipv4Addr) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn get_index(&self) -> u32 {
+            0
+        }
+    }
+
+    fn test_cfg_json(virtual_net: &str) -> DcConfig {
+        let j = format!(
+            r#"{{
+                "network_id": "11111111-1111-1111-1111-111111111111",
+                "psk": "unit-test-psk",
+                "virtual_net": "{virtual_net}",
+                "bootstrap": [],
+                "stun_servers": []
+            }}"#
+        );
+        serde_json::from_str(&j).expect("test dc.json")
+    }
+
+    fn test_shared(node_id: [u8; 16], virtual_net: &str) -> Arc<DcShared> {
+        let cfg = test_cfg_json(virtual_net);
+        let net_id = cfg.network_id_bytes().expect("network_id");
+        let keys = DcKeys::derive(cfg.psk.as_bytes(), &net_id).expect("keys");
+        let directory = Directory::new();
+        directory.upsert_self(node_id, "unit".into(), cfg.virtual_net, 1, Instant::now());
+        Arc::new(DcShared {
+            cfg,
+            keys,
+            node_id,
+            display_name: "unit".into(),
+            row_version: 1,
+            send_nonce: std::sync::atomic::AtomicU64::new(1),
+            last_rx: parking_lot::Mutex::new(ahash::HashMap::default()),
+            directory,
+            stun: parking_lot::Mutex::new(StunTrack {
+                inflight: None,
+                last_ok: None,
+                next_server_idx: 0,
+            }),
+        })
+    }
+
+    #[test]
+    fn inner_for_me_broadcast() {
+        let id = [9u8; 16];
+        assert!(inner_for_me(
+            &Inner {
+                dst: None,
+                payload: vec![],
+            },
+            &id
+        ));
+    }
+
+    #[test]
+    fn inner_for_me_unicast_match() {
+        let id = [9u8; 16];
+        assert!(inner_for_me(
+            &Inner {
+                dst: Some(id),
+                payload: vec![],
+            },
+            &id
+        ));
+    }
+
+    #[test]
+    fn inner_for_me_unicast_mismatch() {
+        let id = [9u8; 16];
+        let other = [8u8; 16];
+        assert!(!inner_for_me(
+            &Inner {
+                dst: Some(other),
+                payload: vec![],
+            },
+            &id
+        ));
+    }
+
+    #[test]
+    fn try_consume_punch_updates_directory() {
+        let s = test_shared([1u8; 16], "10.200.1.1/24");
+        let peer = [2u8; 16];
+        let now = Instant::now();
+        let vnet: ipnet::Ipv4Net = "10.200.1.2/32".parse().unwrap();
+        s.directory.merge_neighbor_sync(
+            &NeighborSyncBody {
+                entries: vec![ReachEntry {
+                    node_id: peer,
+                    virtual_ip: vnet.addr().octets(),
+                    virtual_prefix_len: vnet.prefix_len(),
+                    ip: [10, 0, 0, 1],
+                    port: 1111,
+                }],
+            },
+            now,
+        );
+        let mut pkt = [0u8; PUNCH_BYTES];
+        pkt[..PUNCH_HDR.len()].copy_from_slice(PUNCH_HDR);
+        pkt[PUNCH_HDR.len()..].copy_from_slice(&peer);
+        let from = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 50), 2222));
+        assert!(try_consume_punch(&s, &pkt, from, now));
+        assert_eq!(
+            s.directory
+                .lookup_udp_for_dst(vnet.addr(), s.node_id)
+                .unwrap(),
+            SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 50), 2222)
+        );
+    }
+
+    #[test]
+    fn try_consume_stun_sets_reflexive() {
+        let s = test_shared([3u8; 16], "10.200.1.3/24");
+        let tid = [0x5eu8; 12];
+        *s.stun.lock() = StunTrack {
+            inflight: Some((Instant::now(), tid)),
+            last_ok: None,
+            next_server_idx: 0,
+        };
+        let mut msg = Message::<Attribute>::new(
+            MessageClass::SuccessResponse,
+            BINDING,
+            TransactionId::new(tid),
+        );
+        msg.add_attribute(MappedAddress::new(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(198, 51, 100, 9),
+            44000,
+        ))));
+        let bytes = MessageEncoder::new()
+            .encode_into_bytes(msg)
+            .expect("encode stun ok");
+        let now = Instant::now();
+        assert!(try_consume_stun_response(&s, &bytes, now));
+        assert_eq!(
+            s.directory.self_reflexive(s.node_id),
+            Some(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 44000))
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_udp_member_merges_sender_row() {
+        let rx = test_shared([0x11u8; 16], "10.200.1.10/24");
+        let tx = test_shared([0x22u8; 16], "10.200.1.20/24");
+        let pkt = pack_member_announce(&tx).expect("announce");
+        let from = SocketAddrV4::new(Ipv4Addr::new(172, 30, 0, 20), 22400);
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let tun = MockTun::default();
+        handle_udp_datagram(&rx, &sock, &tun, &pkt, SocketAddr::V4(from))
+            .await
+            .expect("handle");
+        let peer_overlay = tx.cfg.virtual_net.addr();
+        assert_eq!(
+            rx.directory.lookup_udp_for_dst(peer_overlay, rx.node_id),
+            Some(from)
+        );
+        assert!(
+            tun.sent.lock().is_empty(),
+            "MEMBER_ANNOUNCE must not write to TUN"
+        );
+    }
+}

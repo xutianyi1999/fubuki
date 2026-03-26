@@ -66,3 +66,66 @@ pub async fn resolve_stun_server(host_port: &str) -> Option<SocketAddr> {
     .await
     .ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+    use bytecodec::{DecodeExt, EncodeExt};
+    use stun_codec::rfc5389::attributes::MappedAddress;
+    use stun_codec::rfc5389::{methods::BINDING, Attribute};
+    use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder, TransactionId};
+
+    use super::{binding_request, resolve_stun_server, try_parse_binding_response};
+
+    fn sample_binding_success(tid: [u8; 12], mapped: SocketAddr) -> Vec<u8> {
+        let mut msg = Message::<Attribute>::new(
+            MessageClass::SuccessResponse,
+            BINDING,
+            TransactionId::new(tid),
+        );
+        msg.add_attribute(MappedAddress::new(mapped));
+        MessageEncoder::new()
+            .encode_into_bytes(msg)
+            .expect("stun encode response")
+    }
+
+    #[test]
+    fn binding_request_encodes() {
+        let tid = [0xabu8; 12];
+        let req = binding_request(tid).expect("binding_request");
+        assert!(req.len() >= 20);
+        let mut dec = MessageDecoder::<Attribute>::new();
+        let msg = dec.decode_from_bytes(&req).expect("decode").expect("frame");
+        assert_eq!(msg.class(), MessageClass::Request);
+        assert_eq!(msg.method(), BINDING);
+        assert_eq!(msg.transaction_id().as_bytes(), &tid);
+    }
+
+    #[test]
+    fn try_parse_binding_success_ipv4() {
+        let tid = [7u8; 12];
+        let mapped = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 2), 43000));
+        let bytes = sample_binding_success(tid, mapped);
+        let got = try_parse_binding_response(&bytes, &tid).expect("parsed");
+        assert_eq!(got.0, Ipv4Addr::new(198, 51, 100, 2));
+        assert_eq!(got.1, 43000);
+    }
+
+    #[test]
+    fn try_parse_wrong_transaction_id() {
+        let tid = [1u8; 12];
+        let wrong = [2u8; 12];
+        let bytes = sample_binding_success(
+            tid,
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9)),
+        );
+        assert!(try_parse_binding_response(&bytes, &wrong).is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_stun_rejects_bad_host_port() {
+        assert!(resolve_stun_server("no-colon").await.is_none());
+        assert!(resolve_stun_server("host:notaport").await.is_none());
+    }
+}

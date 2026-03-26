@@ -25,8 +25,11 @@ Builds the image, starts `N` nodes (default 3), waits for the overlay, runs ICMP
 ./scripts/docker-mesh-test.sh              # full cycle
 ./scripts/docker-mesh-test.sh --no-build   # reuse existing image
 ./scripts/docker-mesh-test.sh --no-build 4 # four nodes
+./scripts/docker-mesh-test.sh --stun        # enable STUN (DNS + binding; see generate_mesh.py)
 MESH_WAIT_SECS=300 ./scripts/docker-mesh-test.sh   # slow CI or laptop
 ```
+
+CI runs the script twice: default mesh, then `--no-build --stun` to cover the STUN path without rebuilding the image.
 
 Equivalent:
 
@@ -39,4 +42,4 @@ Exit code `0` means all pings succeeded; non-zero prints compose log tail and te
 
 ## CI
 
-Workflow [`.github/workflows/docker-mesh.yml`](../../.github/workflows/docker-mesh.yml) runs the same script on `pull_request` and `push`.
+Workflow [`.github/workflows/docker-mesh.yml`](../../.github/workflows/docker-mesh.yml) runs mesh E2E without STUN, then again with `--stun`, on `pull_request` and `push`.

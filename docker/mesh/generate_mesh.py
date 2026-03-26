@@ -4,6 +4,9 @@
 Bootstrap topology: **single seed** — only ``node1`` is listed in ``bootstrap`` (for every
 node except the seed). ``node1`` uses an empty ``bootstrap`` and acts as the lone entry
 point; other peers discover each other via gossip after joining through the seed.
+
+Use ``--stun`` to add ``stun.l.google.com:19302`` so daemons exercise DNS resolution and
+STUN binding (default is an empty ``stun_servers`` list).
 """
 
 from __future__ import annotations
@@ -35,6 +38,11 @@ def main() -> None:
         "--image",
         default="fubuki-mesh:test",
         help="Docker image tag for all nodes",
+    )
+    p.add_argument(
+        "--stun",
+        action="store_true",
+        help="add stun.l.google.com:19302 (DNS + STUN binding path in daemon)",
     )
     args = p.parse_args()
 
@@ -68,6 +76,9 @@ def main() -> None:
         if i != 1:
             bootstrap.append(f"node1:{22400 + 1}")
 
+        stun_servers: list[str] = (
+            ["stun.l.google.com:19302"] if args.stun else []
+        )
         cfg = {
             "network_id": network_id,
             "psk": psk,
@@ -75,7 +86,7 @@ def main() -> None:
             "listen_udp": listen_udp,
             "display_name": display_name,
             "bootstrap": bootstrap,
-            "stun_servers": [],
+            "stun_servers": stun_servers,
             "node_id_path": "/var/lib/fubuki/node.id",
         }
         cfg_path = cfg_dir / f"node-{i}.json"

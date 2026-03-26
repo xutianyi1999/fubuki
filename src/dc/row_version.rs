@@ -90,3 +90,95 @@ fn load_or_bump_inner(cfg: &DcConfig, retried: bool) -> Result<u64> {
 
     Ok(next)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    use super::super::config::DcConfig;
+    use super::load_or_bump;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_state_dir<R>(run: impl FnOnce(&Path) -> R) -> R {
+        let _guard = ENV_LOCK.lock().expect("row_version test env lock");
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let prev = std::env::var_os("FUBUKI_DC_STATE_DIR");
+        std::env::set_var("FUBUKI_DC_STATE_DIR", dir.path());
+        let out = run(dir.path());
+        match &prev {
+            Some(v) => std::env::set_var("FUBUKI_DC_STATE_DIR", v),
+            None => std::env::remove_var("FUBUKI_DC_STATE_DIR"),
+        }
+        out
+    }
+
+    fn cfg_row_test(network_id: &str, display_name: &str, stun_servers: Vec<String>) -> DcConfig {
+        let j = format!(
+            r#"{{
+                "network_id": "{network_id}",
+                "psk": "row-test-psk",
+                "virtual_net": "10.88.1.1/24",
+                "listen_udp": 33100,
+                "display_name": "{display_name}",
+                "bootstrap": [],
+                "stun_servers": {}
+            }}"#,
+            serde_json::to_string(&stun_servers).expect("stun json")
+        );
+        serde_json::from_str(&j).expect("dc config")
+    }
+
+    #[test]
+    fn first_run_writes_version_one() {
+        with_state_dir(|_| {
+            let c = cfg_row_test("33333333-3333-3333-3333-333333333333", "n1", vec![]);
+            assert_eq!(load_or_bump(&c).expect("bump"), 1);
+            assert_eq!(load_or_bump(&c).expect("again"), 1);
+        });
+    }
+
+    #[test]
+    fn display_name_change_bumps_version() {
+        with_state_dir(|_| {
+            let c1 = cfg_row_test("44444444-4444-4444-4444-444444444444", "alice", vec![]);
+            assert_eq!(load_or_bump(&c1).unwrap(), 1);
+            let c2 = cfg_row_test("44444444-4444-4444-4444-444444444444", "bob", vec![]);
+            assert_eq!(load_or_bump(&c2).unwrap(), 2);
+            assert_eq!(load_or_bump(&c2).unwrap(), 2);
+        });
+    }
+
+    #[test]
+    fn stun_server_order_same_fingerprint() {
+        with_state_dir(|_| {
+            let id = "55555555-5555-5555-5555-555555555555";
+            let c1 = cfg_row_test(
+                id,
+                "x",
+                vec!["stun.b.example:3478".into(), "stun.a.example:3478".into()],
+            );
+            let c2 = cfg_row_test(
+                id,
+                "x",
+                vec!["stun.a.example:3478".into(), "stun.b.example:3478".into()],
+            );
+            assert_eq!(load_or_bump(&c1).unwrap(), 1);
+            assert_eq!(load_or_bump(&c2).unwrap(), 1);
+        });
+    }
+
+    #[test]
+    fn corrupt_state_file_recovers_to_version_one() {
+        with_state_dir(|root| {
+            let c = cfg_row_test("66666666-6666-6666-6666-666666666666", "y", vec![]);
+            let path = c.row_version_state_path();
+            assert!(path.starts_with(root));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "not-json {{{\n").unwrap();
+            assert_eq!(load_or_bump(&c).unwrap(), 1);
+            assert_eq!(load_or_bump(&c).unwrap(), 1);
+        });
+    }
+}

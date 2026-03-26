@@ -14,5 +14,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-      - name: Build image and run overlay ICMP checks
+      - name: E2E mesh (no STUN)
         run: ./scripts/docker-mesh-test.sh
+      - name: E2E mesh (STUN + DNS, reuse image)
+        run: ./scripts/docker-mesh-test.sh --no-build --stun
