@@ -39,7 +39,10 @@ fn default_listen_udp() -> u16 {
 }
 
 fn default_stun_servers() -> Vec<String> {
-    vec!["stun.l.google.com:19302".to_string()]
+    vec![
+        "stun.qq.com:3478".to_string(),
+        "stun.t7000.com:3478".to_string(),
+    ]
 }
 
 impl DcConfig {

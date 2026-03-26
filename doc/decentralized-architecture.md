@@ -358,7 +358,7 @@ Ready --(all paths dead)--> Reconnecting -> Ready
     "192.168.1.10:22400",
     "vpn.example.com:22400"
   ],
-  "stun": ["stun:stun.l.google.com:19302"],
+  "stun_servers": ["stun.qq.com:3478", "stun.t7000.com:3478"],
   "relay": { "enable_client": true, "enable_server": false }
 }
 ```

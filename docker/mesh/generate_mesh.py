@@ -5,8 +5,9 @@ Bootstrap topology: **single seed** — only ``node1`` is listed in ``bootstrap`
 node except the seed). ``node1`` uses an empty ``bootstrap`` and acts as the lone entry
 point; other peers discover each other via gossip after joining through the seed.
 
-Use ``--stun`` to add ``stun.l.google.com:19302`` so daemons exercise DNS resolution and
-STUN binding (default is an empty ``stun_servers`` list).
+Use ``--stun`` to add Tencent + Ali public STUN servers (``stun.qq.com:3478``,
+``stun.t7000.com:3478``) so daemons exercise DNS resolution and STUN binding (default is
+an empty ``stun_servers`` list).
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def main() -> None:
     p.add_argument(
         "--stun",
         action="store_true",
-        help="add stun.l.google.com:19302 (DNS + STUN binding path in daemon)",
+        help="add stun.qq.com:3478 and stun.t7000.com:3478 (DNS + STUN binding path)",
     )
     args = p.parse_args()
 
@@ -77,7 +78,7 @@ def main() -> None:
             bootstrap.append(f"node1:{22400 + 1}")
 
         stun_servers: list[str] = (
-            ["stun.l.google.com:19302"] if args.stun else []
+            ["stun.qq.com:3478", "stun.t7000.com:3478"] if args.stun else []
         )
         cfg = {
             "network_id": network_id,
