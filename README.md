@@ -17,9 +17,10 @@ Fubuki is a **decentralized mesh VPN** for **Windows, Linux, and macOS**. Peers 
 ## Documentation
 
 - [`doc/decentralized-architecture.md`](./doc/decentralized-architecture.md) — protocol spec  
-- [`doc/decentralized-mvp.md`](./doc/decentralized-mvp.md) — MVP fields and behavior  
+- [`doc/maturity-roadmap.md`](./doc/maturity-roadmap.md) — engineering maturity plan (Docker mesh → full CI)  
 - [`doc/README.md`](./doc/README.md) — index  
 - [`cfg-example/`](./cfg-example/) — sample `dc.json` files  
+- [`docker/mesh/README.md`](./docker/mesh/README.md) — Docker multi-node E2E (`./scripts/docker-mesh-test.sh`)  
 
 ---
 

@@ -1,5 +1,5 @@
 //! Decentralized mesh (FBDC): PSK, UDP directory gossip, TUN data plane.
-//! See `doc/decentralized-mvp.md`.
+//! See `doc/decentralized-architecture.md`.
 //!
 //! Control-plane gossip sends [`MEMBER_ANNOUNCE`](msg::MEMBER_ANNOUNCE) and optional [`NEIGHBOR_SYNC`](msg::NEIGHBOR_SYNC).
 //! Fan-out uses a bounded [`lru::LruCache`] peer set; off-the-shelf

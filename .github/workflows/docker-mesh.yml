@@ -1,0 +1,18 @@
+name: Docker mesh E2E
+
+on:
+  pull_request:
+  push:
+
+concurrency:
+  group: docker-mesh-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mesh-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build image and run overlay ICMP checks
+        run: ./scripts/docker-mesh-test.sh

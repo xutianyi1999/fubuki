@@ -2,7 +2,7 @@
 
 ### 去中心化配置（`dc.json`）
 
-完整字段说明见 [`doc/decentralized-mvp.md`](../doc/decentralized-mvp.md)。
+完整字段说明见 [`doc/decentralized-architecture.md`](../doc/decentralized-architecture.md)（§14）。
 
 - **`dc-alice.json` / `dc-bob.json`** — 同一 `network_id` 与 `psk`；`bootstrap` 填对端**局域网 IP** 与 UDP 端口。本机联调示例使用 `127.0.0.1` 与不同 `listen_udp`。
 

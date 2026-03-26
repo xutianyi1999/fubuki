@@ -3,6 +3,6 @@
 ## 去中心化
 
 - **[decentralized-architecture.md](./decentralized-architecture.md)** — 全量**实现规格（草案）**：帧格式、消息全集、Gossip、NAT、中继、状态机等。
-- **[decentralized-mvp.md](./decentralized-mvp.md)** — **最小 MVP**：协议子集、验收标准、与 `src/dc/` 的对应关系；在窄网络假设下先跑通虚拟 IP。
+- **[maturity-roadmap.md](./maturity-roadmap.md)** — 工程成熟化路线图（在现有 Docker mesh 集成环境上扩展测试与 CI）。
 
 项目使用说明见仓库根目录 [README.md](../README.md)（及中文版）。

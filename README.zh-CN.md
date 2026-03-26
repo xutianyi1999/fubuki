@@ -17,9 +17,10 @@ Fubuki 是面向 **Windows、Linux、macOS** 的**去中心化网状 VPN**：对
 ## 文档
 
 - [`doc/decentralized-architecture.md`](./doc/decentralized-architecture.md) — 协议规格  
-- [`doc/decentralized-mvp.md`](./doc/decentralized-mvp.md) — MVP 说明  
+- [`doc/maturity-roadmap.md`](./doc/maturity-roadmap.md) — 工程成熟化路线图（Docker mesh 与 CI）  
 - [`doc/README.md`](./doc/README.md) — 索引  
 - [`cfg-example/`](./cfg-example/) — `dc.json` 示例  
+- [`docker/mesh/README.md`](./docker/mesh/README.md) — Docker 多节点端到端测试（`./scripts/docker-mesh-test.sh`）  
 
 ---
 

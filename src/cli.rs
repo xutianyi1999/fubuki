@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 /// Top-level CLI action.
 #[derive(Subcommand)]
 pub enum Command {
-    /// Start mesh VPN (decentralized; see doc/decentralized-mvp.md)
+    /// Start mesh VPN (decentralized; see doc/decentralized-architecture.md)
     #[command(visible_alias = "start")]
     Daemon {
         /// Path to `dc.json` for this peer.

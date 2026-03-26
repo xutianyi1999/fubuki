@@ -9,6 +9,7 @@
 #       After a real build, compose uses --force-recreate so containers pick up the new image.
 #   ./scripts/docker-mesh.sh down           # compose down
 #   ./scripts/docker-mesh.sh logs           # compose logs -f
+#   ./scripts/docker-mesh.sh test [--no-build] [N]   # E2E: build/up/ping/down (see docker-mesh-test.sh)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -81,7 +82,10 @@ case "$cmd" in
     [[ -f "$COMPOSE" ]] || die "no $COMPOSE — run '$0 up' first"
     docker compose -f "$COMPOSE" logs -f
     ;;
+  test)
+    bash "$ROOT/scripts/docker-mesh-test.sh" "$@"
+    ;;
   *)
-    die "usage: $0 build | gen [N] | up [--no-build] [N] | down | logs"
+    die "usage: $0 build | gen [N] | up [--no-build] [N] | down | logs | test [--no-build] [N]"
     ;;
 esac
