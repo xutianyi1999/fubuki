@@ -110,3 +110,65 @@ pub fn decode_neighbor_sync(bytes: &[u8]) -> anyhow::Result<NeighborSyncBody> {
     let (v, _) = bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
     Ok(v)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    fn nid(b: u8) -> [u8; 16] {
+        let mut x = [0u8; 16];
+        x[0] = b;
+        x
+    }
+
+    #[test]
+    fn inner_roundtrip() {
+        let inner = Inner {
+            dst: Some(nid(7)),
+            payload: vec![1, 2, 3],
+        };
+        let bytes = encode_inner(&inner).unwrap();
+        let got = decode_inner(&bytes).unwrap();
+        assert_eq!(got.dst, inner.dst);
+        assert_eq!(got.payload, inner.payload);
+    }
+
+    #[test]
+    fn directory_entry_roundtrip() {
+        let e = DirectoryEntryWire {
+            node_id: nid(1),
+            display_name: "alice".into(),
+            virtual_net: "10.200.1.5/24".parse().unwrap(),
+            version: 99,
+            direct_ip: Some([192, 168, 0, 1]),
+            direct_port: Some(22400),
+        };
+        let bytes = encode_directory_entry(&e).unwrap();
+        let got = decode_directory_entry(&bytes).unwrap();
+        assert_eq!(got.node_id, e.node_id);
+        assert_eq!(got.display_name, e.display_name);
+        assert_eq!(got.virtual_net, e.virtual_net);
+        assert_eq!(got.version, e.version);
+        assert_eq!(got.direct_ip, e.direct_ip);
+        assert_eq!(got.direct_port, e.direct_port);
+    }
+
+    #[test]
+    fn neighbor_sync_roundtrip() {
+        let body = NeighborSyncBody {
+            entries: vec![ReachEntry {
+                node_id: nid(2),
+                virtual_ip: Ipv4Addr::new(10, 200, 1, 12).octets(),
+                virtual_prefix_len: 32,
+                ip: Ipv4Addr::new(172, 30, 0, 3).octets(),
+                port: 22400,
+            }],
+        };
+        let bytes = encode_neighbor_sync(&body).unwrap();
+        let got = decode_neighbor_sync(&bytes).unwrap();
+        assert_eq!(got.entries.len(), 1);
+        assert_eq!(got.entries[0].node_id, body.entries[0].node_id);
+        assert_eq!(got.entries[0].port, 22400);
+    }
+}

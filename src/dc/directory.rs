@@ -70,7 +70,12 @@ impl Directory {
     }
 
     pub fn neighbors_snapshot(&self) -> Vec<SocketAddr> {
-        self.inner.read().neighbors.iter().map(|(a, _)| *a).collect()
+        self.inner
+            .read()
+            .neighbors
+            .iter()
+            .map(|(a, _)| *a)
+            .collect()
     }
 
     pub fn seed_neighbors(&self, addrs: &[SocketAddr]) {
@@ -134,9 +139,7 @@ impl Directory {
         let mut rest: Vec<([u8; 16], Ipv4Net, SocketAddrV4)> = g
             .by_id
             .iter()
-            .filter(|(id, e)| {
-                **id != self_id && (e.direct_udp.is_some() || e.reflexive.is_some())
-            })
+            .filter(|(id, e)| **id != self_id && (e.direct_udp.is_some() || e.reflexive.is_some()))
             .map(|(id, e)| {
                 let sa = e.direct_udp.or(e.reflexive).expect("filtered");
                 (*id, e.virtual_net, sa)
@@ -198,9 +201,10 @@ impl Directory {
             },
         };
 
-        let conflict = g.by_id.iter().any(|(id, e)| {
-            *id != w.node_id && e.virtual_net.addr() == w.virtual_net.addr()
-        });
+        let conflict = g
+            .by_id
+            .iter()
+            .any(|(id, e)| *id != w.node_id && e.virtual_net.addr() == w.virtual_net.addr());
         if conflict {
             warn!(
                 "dc: virtual_addr conflict {} includes {}",
@@ -303,5 +307,175 @@ impl Directory {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::time::Instant;
+
+    use super::super::msg::{DirectoryEntryWire, NeighborSyncBody, ReachEntry};
+    use super::*;
+
+    fn nid(b: u8) -> [u8; 16] {
+        let mut x = [0u8; 16];
+        x[0] = b;
+        x
+    }
+
+    #[test]
+    fn merge_wire_uses_recv_when_no_direct_hint() {
+        let d = Directory::new();
+        let now = Instant::now();
+        let peer = nid(2);
+        let recv = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 22400));
+        d.merge_wire(
+            DirectoryEntryWire {
+                node_id: peer,
+                display_name: "bob".into(),
+                virtual_net: "10.200.1.12/32".parse().unwrap(),
+                version: 1,
+                direct_ip: None,
+                direct_port: None,
+            },
+            recv,
+            now,
+        );
+        let dst = Ipv4Addr::new(10, 200, 1, 12);
+        assert_eq!(
+            d.lookup_udp_for_dst(dst, nid(99)),
+            Some(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 22400))
+        );
+    }
+
+    #[test]
+    fn higher_row_version_updates_underlay() {
+        let d = Directory::new();
+        let now = Instant::now();
+        let peer = nid(3);
+        let r1 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 1000);
+        let r2 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 2), 2000);
+        let vnet: Ipv4Net = "10.200.1.13/32".parse().unwrap();
+        let dst = vnet.addr();
+        d.merge_wire(
+            DirectoryEntryWire {
+                node_id: peer,
+                display_name: "x".into(),
+                virtual_net: vnet,
+                version: 1,
+                direct_ip: None,
+                direct_port: None,
+            },
+            SocketAddr::V4(r1),
+            now,
+        );
+        assert_eq!(d.lookup_udp_for_dst(dst, nid(1)), Some(r1));
+        d.merge_wire(
+            DirectoryEntryWire {
+                node_id: peer,
+                display_name: "x".into(),
+                virtual_net: vnet,
+                version: 5,
+                direct_ip: None,
+                direct_port: None,
+            },
+            SocketAddr::V4(r2),
+            now,
+        );
+        assert_eq!(d.lookup_udp_for_dst(dst, nid(1)), Some(r2));
+    }
+
+    #[test]
+    fn lower_row_version_does_not_revert_underlay() {
+        let d = Directory::new();
+        let now = Instant::now();
+        let peer = nid(4);
+        let r_high = SocketAddrV4::new(Ipv4Addr::new(10, 1, 0, 1), 7000);
+        let r_low = SocketAddrV4::new(Ipv4Addr::new(10, 1, 0, 2), 8000);
+        let vnet: Ipv4Net = "10.200.1.14/32".parse().unwrap();
+        let dst = vnet.addr();
+        d.merge_wire(
+            DirectoryEntryWire {
+                node_id: peer,
+                display_name: "x".into(),
+                virtual_net: vnet,
+                version: 10,
+                direct_ip: None,
+                direct_port: None,
+            },
+            SocketAddr::V4(r_high),
+            now,
+        );
+        d.merge_wire(
+            DirectoryEntryWire {
+                node_id: peer,
+                display_name: "x".into(),
+                virtual_net: vnet,
+                version: 2,
+                direct_ip: None,
+                direct_port: None,
+            },
+            SocketAddr::V4(r_low),
+            now,
+        );
+        assert_eq!(d.lookup_udp_for_dst(dst, nid(1)), Some(r_high));
+    }
+
+    #[test]
+    fn neighbor_sync_does_not_override_observed_direct_udp() {
+        let d = Directory::new();
+        let now = Instant::now();
+        let peer = nid(5);
+        let observed = SocketAddrV4::new(Ipv4Addr::new(172, 30, 0, 2), 22400);
+        let gossip = SocketAddrV4::new(Ipv4Addr::new(172, 30, 0, 99), 22400);
+        let vnet: Ipv4Net = "10.200.1.15/32".parse().unwrap();
+        d.merge_wire(
+            DirectoryEntryWire {
+                node_id: peer,
+                display_name: "p".into(),
+                virtual_net: vnet,
+                version: 3,
+                direct_ip: None,
+                direct_port: None,
+            },
+            SocketAddr::V4(observed),
+            now,
+        );
+        d.merge_neighbor_sync(
+            &NeighborSyncBody {
+                entries: vec![ReachEntry {
+                    node_id: peer,
+                    virtual_ip: vnet.addr().octets(),
+                    virtual_prefix_len: vnet.prefix_len(),
+                    ip: gossip.ip().octets(),
+                    port: gossip.port(),
+                }],
+            },
+            now,
+        );
+        assert_eq!(d.lookup_udp_for_dst(vnet.addr(), nid(1)), Some(observed));
+    }
+
+    #[test]
+    fn neighbor_sync_fills_direct_when_unknown() {
+        let d = Directory::new();
+        let now = Instant::now();
+        let peer = nid(6);
+        let sa = SocketAddrV4::new(Ipv4Addr::new(172, 30, 0, 7), 22401);
+        let vnet: Ipv4Net = "10.200.1.16/32".parse().unwrap();
+        d.merge_neighbor_sync(
+            &NeighborSyncBody {
+                entries: vec![ReachEntry {
+                    node_id: peer,
+                    virtual_ip: vnet.addr().octets(),
+                    virtual_prefix_len: vnet.prefix_len(),
+                    ip: sa.ip().octets(),
+                    port: sa.port(),
+                }],
+            },
+            now,
+        );
+        assert_eq!(d.lookup_udp_for_dst(vnet.addr(), nid(1)), Some(sa));
     }
 }

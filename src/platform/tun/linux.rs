@@ -26,15 +26,23 @@ unsafe impl Sync for Linuxtun {}
 pub fn create() -> Result<Linuxtun> {
     let mut config = tun::Configuration::default();
 
-    config.platform(|config| {
-        config.packet_information(false);
-        config.napi(std::env::var("FUBUKI_USE_IFF_NAPI").is_ok());
-        config.vnet_hdr(std::env::var("FUBUKI_USE_IFF_VNET_HDR").is_ok());
-    }).up();
+    config
+        .platform(|config| {
+            config.packet_information(false);
+            config.napi(std::env::var("FUBUKI_USE_IFF_NAPI").is_ok());
+            config.vnet_hdr(std::env::var("FUBUKI_USE_IFF_VNET_HDR").is_ok());
+        })
+        .up();
 
     let device = tun::create_as_async(&config)?;
     let device_name = device.get_ref().name()?;
-    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| anyhow!("Failed to get network interface for device '{}'. Error: {}", device_name, e))?;
+    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| {
+        anyhow!(
+            "Failed to get network interface for device '{}'. Error: {}",
+            device_name,
+            e
+        )
+    })?;
 
     Ok(Linuxtun {
         ips: Mutex::new(HashSet::new()),
@@ -68,14 +76,19 @@ impl TunDevice for Linuxtun {
                         Ok(v) => v,
                         Err(e) => {
                             warn!("Failed to parse IP packet after a TUN send error: {}", e);
-                            return Ok(())
+                            return Ok(());
                         }
                     };
 
-                    warn!("tun: send packet to tun warn: {}; packet {}->{}", e, src, dst);
+                    warn!(
+                        "tun: send packet to tun warn: {}; packet {}->{}",
+                        e, src, dst
+                    );
                     Ok(())
                 }
-                res => res.map(|_| ()).map_err(|e| anyhow!("Failed to send packet to TUN device. Error: {}", e))
+                res => res
+                    .map(|_| ())
+                    .map_err(|e| anyhow!("Failed to send packet to TUN device. Error: {}", e)),
             }
         }
     }
@@ -104,13 +117,23 @@ impl TunDevice for Linuxtun {
 
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to add IP address {}/{} to TUN interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to add IP address {}/{} to TUN interface '{}'. Error: {}",
+                    addr,
+                    netmask,
+                    self.inter.name().expect("Failed to get interface name"),
+                    e
+                )
+            })?;
 
         guard.insert(addr);
         Ok(())
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().expect("Failed to get interface index for Linux TUN adapter.")
+        self.inter
+            .index()
+            .expect("Failed to get interface index for Linux TUN adapter.")
     }
 }

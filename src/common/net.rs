@@ -17,7 +17,10 @@ pub fn get_ip_dst_addr(packet: &[u8]) -> Result<Ipv4Addr> {
 
 fn parse_ipv4_addrs(packet: &[u8]) -> Result<(Ipv4Addr, Ipv4Addr)> {
     if packet.len() < IPV4_HDR_MIN {
-        return Err(anyhow!("packet too short for IPv4 header: {} bytes", packet.len()));
+        return Err(anyhow!(
+            "packet too short for IPv4 header: {} bytes",
+            packet.len()
+        ));
     }
     let vihl = packet[0];
     let version = vihl >> 4;

@@ -41,8 +41,8 @@ impl SystemRouteHandle {
         for x in routes {
             #[cfg(target_os = "macos")]
             {
-                use std::process::Stdio;
                 use anyhow::anyhow;
+                use std::process::Stdio;
                 use tokio::process::Command;
 
                 let gateway = x.gateway.ok_or_else(|| anyhow!("Cannot add route: gateway is required but not provided for destination '{}'.", x.destination))?;
@@ -83,10 +83,10 @@ impl SystemRouteHandle {
 
         for a in &self.routes {
             for b in &list {
-                if a.destination == b.destination &&
-                    a.prefix == b.prefix &&
-                    a.gateway == b.gateway &&
-                    a.ifindex == b.ifindex
+                if a.destination == b.destination
+                    && a.prefix == b.prefix
+                    && a.gateway == b.gateway
+                    && a.ifindex == b.ifindex
                 {
                     self.handle.delete(a).await?;
                     debug!("delete route: {:?}", a);

@@ -84,9 +84,9 @@ fn load_or_bump_inner(cfg: &DcConfig, retried: bool) -> Result<u64> {
             fingerprint: fp,
         };
         let text = serde_json::to_string_pretty(&state).context("serialize row state")?;
-        fs::write(&path, format!("{text}\n")).with_context(|| format!("write {}", path.display()))?;
+        fs::write(&path, format!("{text}\n"))
+            .with_context(|| format!("write {}", path.display()))?;
     }
 
     Ok(next)
 }
-

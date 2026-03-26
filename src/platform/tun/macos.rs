@@ -31,7 +31,13 @@ pub fn create() -> Result<Macostun> {
     let device = tun::create_as_async(&config)?;
     let device_name = device.get_ref().name()?;
 
-    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| anyhow!("Failed to get interface for device name '{}'. Error: {}", device_name, e))?;
+    let inter = netconfig::Interface::try_from_name(&device_name).map_err(|e| {
+        anyhow!(
+            "Failed to get interface for device name '{}'. Error: {}",
+            device_name,
+            e
+        )
+    })?;
 
     Ok(Macostun {
         ips: Mutex::new(HashSet::new()),
@@ -41,8 +47,8 @@ pub fn create() -> Result<Macostun> {
 }
 
 impl TunDevice for Macostun {
-    type SendFut<'a> = impl Future<Output=Result<()>> + 'a;
-    type RecvFut<'a> = impl Future<Output=Result<usize>> + 'a;
+    type SendFut<'a> = impl Future<Output = Result<()>> + 'a;
+    type RecvFut<'a> = impl Future<Output = Result<usize>> + 'a;
 
     fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
         let fd = unsafe { &*self.fd.get() };
@@ -81,9 +87,14 @@ impl TunDevice for Macostun {
             return Ok(());
         }
 
-        self.inter
-            .add_address(IpNet::V4(cidr))
-            .map_err(|e| anyhow!("Failed to add address {} to interface '{}'. Error: {}", cidr, self.inter.name().expect("Failed to get interface name"), e))?;
+        self.inter.add_address(IpNet::V4(cidr)).map_err(|e| {
+            anyhow!(
+                "Failed to add address {} to interface '{}'. Error: {}",
+                cidr,
+                self.inter.name().expect("Failed to get interface name"),
+                e
+            )
+        })?;
 
         let status = Command::new("route")
             .args([
@@ -100,7 +111,11 @@ impl TunDevice for Macostun {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("Failed to add route for {} via {}. Command failed.", cidr, addr));
+            return Err(anyhow!(
+                "Failed to add route for {} via {}. Command failed.",
+                cidr,
+                addr
+            ));
         }
 
         guard.insert(addr);
@@ -108,6 +123,8 @@ impl TunDevice for Macostun {
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().expect("Failed to get interface index for MacOS TUN adapter.")
+        self.inter
+            .index()
+            .expect("Failed to get interface index for MacOS TUN adapter.")
     }
 }

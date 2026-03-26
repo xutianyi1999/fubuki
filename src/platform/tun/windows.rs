@@ -33,7 +33,8 @@ const ADAPTER_GUID: &str = "{248B1B2B-94FA-0E20-150F-5C2D2FB4FBF9}";
 const ADAPTER_BUFF_SIZE: u32 = 0x100000;
 
 fn get_interface(luid: LUID) -> Result<Interface> {
-    Interface::try_from_luid(luid).map_err(|e| anyhow!("Failed to get interface for LUID: {}. Error: {}", luid, e))
+    Interface::try_from_luid(luid)
+        .map_err(|e| anyhow!("Failed to get interface for LUID: {}. Error: {}", luid, e))
 }
 
 pub fn create() -> Result<Wintun> {
@@ -48,7 +49,8 @@ pub fn create() -> Result<Wintun> {
     let interface = get_interface(adapter.get_adapter_luid())?;
 
     // todo self reference
-    let session: WintunStream<'static> = unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
+    let session: WintunStream<'static> =
+        unsafe { std::mem::transmute(adapter.start_session(ADAPTER_BUFF_SIZE)?) };
 
     Ok(Wintun {
         ips: Mutex::new(HashSet::new()),
@@ -68,7 +70,11 @@ impl TunDevice for Wintun {
         loop {
             match self.session.write_packet(packet) {
                 Err(e) if e.raw_os_error() == Some(ERROR_BUFFER_OVERFLOW) => continue,
-                res => return std::future::ready(res.map_err(|e| anyhow!("Failed to write packet to Wintun session. Error: {}", e))),
+                res => {
+                    return std::future::ready(res.map_err(|e| {
+                        anyhow!("Failed to write packet to Wintun session. Error: {}", e)
+                    }))
+                }
             }
         }
     }
@@ -95,7 +101,11 @@ impl TunDevice for Wintun {
             .status;
 
         if !status.success() {
-            return Err(anyhow!("Failed to set MTU for TUN device '{}' to {}. Command failed.", ADAPTER_NAME, mtu));
+            return Err(anyhow!(
+                "Failed to set MTU for TUN device '{}' to {}. Command failed.",
+                ADAPTER_NAME,
+                mtu
+            ));
         }
         Ok(())
     }
@@ -109,13 +119,23 @@ impl TunDevice for Wintun {
 
         self.inter
             .add_address(IpNet::V4(Ipv4Net::with_netmask(addr, netmask)?))
-            .map_err(|e| anyhow!("Failed to add address {}/{} to interface '{}'. Error: {}", addr, netmask, self.inter.name().expect("Failed to get interface name"), e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Failed to add address {}/{} to interface '{}'. Error: {}",
+                    addr,
+                    netmask,
+                    self.inter.name().expect("Failed to get interface name"),
+                    e
+                )
+            })?;
 
         guard.insert(addr);
         Ok(())
     }
 
     fn get_index(&self) -> u32 {
-        self.inter.index().expect("Failed to get interface index for Wintun adapter.")
+        self.inter
+            .index()
+            .expect("Failed to get interface index for Wintun adapter.")
     }
 }

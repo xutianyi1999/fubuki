@@ -111,9 +111,8 @@ async fn lookup_host_bootstrap(host: &str, port: u16) -> Result<SocketAddr> {
 
     let outcome = (|| async {
         match tokio::net::lookup_host((host_owned.as_str(), port)).await {
-            Ok(addrs) => pick_socket_addr(addrs).ok_or_else(|| {
-                format!("no addresses returned for {host}:{port}")
-            }),
+            Ok(addrs) => pick_socket_addr(addrs)
+                .ok_or_else(|| format!("no addresses returned for {host}:{port}")),
             Err(e) => Err(e.to_string()),
         }
     })
@@ -153,9 +152,7 @@ async fn lookup_host_bootstrap(host: &str, port: u16) -> Result<SocketAddr> {
     }
 }
 
-fn pick_socket_addr(
-    addrs: impl Iterator<Item = SocketAddr>,
-) -> Option<SocketAddr> {
+fn pick_socket_addr(addrs: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
     let mut first = None;
     for a in addrs {
         if matches!(a, SocketAddr::V4(_)) {

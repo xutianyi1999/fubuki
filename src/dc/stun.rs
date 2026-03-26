@@ -14,7 +14,8 @@ use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder, Transact
 
 /// Encode a STUN Binding request (transaction id must match the in-flight probe).
 pub fn binding_request(tid: [u8; 12]) -> Result<Vec<u8>> {
-    let message = Message::<Attribute>::new(MessageClass::Request, BINDING, TransactionId::new(tid));
+    let message =
+        Message::<Attribute>::new(MessageClass::Request, BINDING, TransactionId::new(tid));
     let mut encoder = MessageEncoder::new();
     encoder
         .encode_into_bytes(message)
@@ -24,10 +25,7 @@ pub fn binding_request(tid: [u8; 12]) -> Result<Vec<u8>> {
 /// If `buf` is a Binding success response for `expected_tid`, return XOR-MAPPED / MAPPED IPv4.
 pub fn try_parse_binding_response(buf: &[u8], expected_tid: &[u8; 12]) -> Option<(Ipv4Addr, u16)> {
     let mut decoder = MessageDecoder::<Attribute>::new();
-    let msg = decoder
-        .decode_from_bytes(buf)
-        .ok()
-        .and_then(|r| r.ok())?;
+    let msg = decoder.decode_from_bytes(buf).ok().and_then(|r| r.ok())?;
     if msg.transaction_id().as_bytes() != expected_tid {
         return None;
     }

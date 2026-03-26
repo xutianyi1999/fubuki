@@ -4,12 +4,7 @@ pub const MAGIC: [u8; 4] = *b"FBDC";
 pub const PROTO_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 34;
 
-pub fn encode(
-    msg_type: u16,
-    sender: &[u8; 16],
-    nonce: u64,
-    ciphertext: &[u8],
-) -> Vec<u8> {
+pub fn encode(msg_type: u16, sender: &[u8; 16], nonce: u64, ciphertext: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(HEADER_LEN + ciphertext.len());
     v.extend_from_slice(&MAGIC);
     v.extend_from_slice(&PROTO_VERSION.to_be_bytes());
@@ -61,4 +56,42 @@ pub fn decode(buf: &[u8]) -> Option<ParsedFrame<'_>> {
         nonce,
         ciphertext,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let sender = *b"abcdefghijklmnop";
+        let ct = [0xab, 0xcd];
+        let buf = encode(42, &sender, 0x1122_3344_5566_7788, &ct);
+        let p = decode(&buf).expect("decode");
+        assert_eq!(p.msg_type, 42);
+        assert_eq!(p.sender, sender);
+        assert_eq!(p.nonce, 0x1122_3344_5566_7788);
+        assert_eq!(p.ciphertext, ct.as_slice());
+    }
+
+    #[test]
+    fn decode_rejects_bad_magic() {
+        let mut buf = encode(1, &[9u8; 16], 0, &[]);
+        buf[0] = b'X';
+        assert!(decode(&buf).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_wrong_proto() {
+        let mut buf = encode(1, &[9u8; 16], 0, &[]);
+        buf[4..6].copy_from_slice(&999u16.to_be_bytes());
+        assert!(decode(&buf).is_none());
+    }
+
+    #[test]
+    fn decode_rejects_truncated() {
+        assert!(decode(&[]).is_none());
+        let buf = encode(1, &[9u8; 16], 0, &[1, 2, 3]);
+        assert!(decode(&buf[..buf.len() - 1]).is_none());
+    }
 }

@@ -15,7 +15,12 @@ pub enum Command {
     /// Update fubuki to the latest GitHub release
     Update {
         /// GitHub user or organization that owns the repository.
-        #[arg(short = 'o', long, default_value = "xutianyi1999", value_name = "OWNER")]
+        #[arg(
+            short = 'o',
+            long,
+            default_value = "xutianyi1999",
+            value_name = "OWNER"
+        )]
         repo_owner: String,
         /// GitHub repository name (without `.git`).
         #[arg(short = 'r', long, default_value = "fubuki", value_name = "REPO")]
@@ -30,7 +35,7 @@ pub enum Command {
     version,
     about = "Mesh VPN over TUN (decentralized, Windows / Linux / macOS)",
     author,
-    next_line_help = true,
+    next_line_help = true
 )]
 pub struct Args {
     /// Subcommand to run (`daemon` or `update`).

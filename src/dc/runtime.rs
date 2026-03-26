@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
 use ahash::HashMap;
+use anyhow::{anyhow, Context, Result};
 use parking_lot::Mutex;
 use tokio::net::UdpSocket;
 use tokio::signal;
@@ -19,9 +19,9 @@ use super::crypto::{build_aad, decrypt, encrypt, DcKeys};
 use super::directory::Directory;
 use super::frame;
 use super::msg::{
-    decode_directory_entry, decode_inner, decode_neighbor_sync,
-    encode_directory_entry, encode_inner, encode_neighbor_sync,
-    DirectoryEntryWire, Inner, DATA_IP, MEMBER_ANNOUNCE, NEIGHBOR_SYNC,
+    decode_directory_entry, decode_inner, decode_neighbor_sync, encode_directory_entry,
+    encode_inner, encode_neighbor_sync, DirectoryEntryWire, Inner, DATA_IP, MEMBER_ANNOUNCE,
+    NEIGHBOR_SYNC,
 };
 use super::row_version;
 use super::stun;
@@ -266,9 +266,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
     );
 
     let mut display = if cfg.display_name.trim().is_empty() {
-        gethostname::gethostname()
-            .to_string_lossy()
-            .into_owned()
+        gethostname::gethostname().to_string_lossy().into_owned()
     } else {
         cfg.display_name.clone()
     };
@@ -287,8 +285,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
 
     let tun = crate::platform::tun::create().context("dc: TUN create")?;
     let netmask = vnet.netmask();
-    tun
-        .add_addr(vnet.addr(), netmask)
+    tun.add_addr(vnet.addr(), netmask)
         .context("dc: tun add_addr")?;
     tun.set_mtu(TUN_MTU).context("dc: tun mtu")?;
     let tun_index = tun.get_index();
@@ -306,13 +303,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
     sys.add(std::slice::from_ref(&route)).await?;
 
     let directory = Directory::new();
-    directory.upsert_self(
-        node_id,
-        display.clone(),
-        vnet,
-        row_version,
-        Instant::now(),
-    );
+    directory.upsert_self(node_id, display.clone(), vnet, row_version, Instant::now());
 
     directory.seed_neighbors(&bootstrap);
 

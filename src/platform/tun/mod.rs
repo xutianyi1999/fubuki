@@ -32,8 +32,14 @@ pub trait TunDevice {
 }
 
 impl<T: TunDevice> TunDevice for Arc<T> {
-    type SendFut<'a> = T::SendFut<'a> where Self: 'a;
-    type RecvFut<'a> = T::RecvFut<'a> where Self: 'a;
+    type SendFut<'a>
+        = T::SendFut<'a>
+    where
+        Self: 'a;
+    type RecvFut<'a>
+        = T::RecvFut<'a>
+    where
+        Self: 'a;
 
     fn send_packet<'a>(&'a self, packet: &'a [u8]) -> Self::SendFut<'a> {
         (**self).send_packet(packet)

@@ -44,7 +44,13 @@ pub fn aead_nonce(outer_nonce: u64, msg_type: u16) -> Nonce {
     Nonce::from(n)
 }
 
-pub fn build_aad(magic: &[u8; 4], proto_version: u16, msg_type: u16, sender: &[u8; 16], nonce: u64) -> [u8; 32] {
+pub fn build_aad(
+    magic: &[u8; 4],
+    proto_version: u16,
+    msg_type: u16,
+    sender: &[u8; 16],
+    nonce: u64,
+) -> [u8; 32] {
     let mut a = [0u8; 32];
     a[0..4].copy_from_slice(magic);
     a[4..6].copy_from_slice(&proto_version.to_be_bytes());
@@ -92,4 +98,78 @@ pub fn decrypt(
             },
         )
         .map_err(|_| anyhow!("chacha decrypt"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dc::frame::{MAGIC, PROTO_VERSION};
+
+    #[test]
+    fn derive_keys_stable() {
+        let psk = b"unit-test-psk";
+        let net = [0x42u8; 16];
+        let a = DcKeys::derive(psk, &net).unwrap();
+        let b = DcKeys::derive(psk, &net).unwrap();
+        assert_eq!(a.k_control, b.k_control);
+        assert_ne!(a.k_control, a.k_data);
+    }
+
+    #[test]
+    fn derive_differs_by_network() {
+        let psk = b"same";
+        let a = DcKeys::derive(psk, &[1u8; 16]).unwrap();
+        let b = DcKeys::derive(psk, &[2u8; 16]).unwrap();
+        assert_ne!(a.k_control, b.k_control);
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let keys = DcKeys::derive(b"p", &[0u8; 16]).unwrap();
+        let sender = [7u8; 16];
+        let nonce = 0xdead_beef_u64;
+        let msg_type = 4u16;
+        let aad = build_aad(&MAGIC, PROTO_VERSION, msg_type, &sender, nonce);
+        let plain = b"hello fbdc";
+        let ct = encrypt(&keys.k_control, &aad, nonce, msg_type, plain).unwrap();
+        let out = decrypt(&keys.k_control, &aad, nonce, msg_type, &ct).unwrap();
+        assert_eq!(out, plain);
+    }
+
+    #[test]
+    fn decrypt_wrong_key_fails() {
+        let k1 = DcKeys::derive(b"a", &[0u8; 16]).unwrap();
+        let k2 = DcKeys::derive(b"b", &[0u8; 16]).unwrap();
+        let sender = [0u8; 16];
+        let nonce = 1u64;
+        let msg_type = 4u16;
+        let aad = build_aad(&MAGIC, PROTO_VERSION, msg_type, &sender, nonce);
+        let ct = encrypt(&k1.k_control, &aad, nonce, msg_type, b"x").unwrap();
+        assert!(decrypt(&k2.k_control, &aad, nonce, msg_type, &ct).is_err());
+    }
+
+    #[test]
+    fn decrypt_tampered_fails() {
+        let keys = DcKeys::derive(b"p", &[0u8; 16]).unwrap();
+        let sender = [0u8; 16];
+        let nonce = 2u64;
+        let msg_type = 4u16;
+        let aad = build_aad(&MAGIC, PROTO_VERSION, msg_type, &sender, nonce);
+        let mut ct = encrypt(&keys.k_control, &aad, nonce, msg_type, b"payload").unwrap();
+        if let Some(last) = ct.last_mut() {
+            *last ^= 0xff;
+        }
+        assert!(decrypt(&keys.k_control, &aad, nonce, msg_type, &ct).is_err());
+    }
+
+    #[test]
+    fn decrypt_wrong_msg_type_fails() {
+        let keys = DcKeys::derive(b"p", &[0u8; 16]).unwrap();
+        let sender = [0u8; 16];
+        let nonce = 3u64;
+        let aad_enc = build_aad(&MAGIC, PROTO_VERSION, 4, &sender, nonce);
+        let ct = encrypt(&keys.k_control, &aad_enc, nonce, 4, b"x").unwrap();
+        let aad_dec = build_aad(&MAGIC, PROTO_VERSION, 8, &sender, nonce);
+        assert!(decrypt(&keys.k_control, &aad_dec, nonce, 8, &ct).is_err());
+    }
 }
