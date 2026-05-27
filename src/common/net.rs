@@ -1251,11 +1251,14 @@ pub mod protocol {
                 const WSAENETUNREACH: i32 = 10051;
                 // No buffer space available.
                 const WSAENOBUFS: i32 = 10055;
+                // Message too long (exceeded path MTU).
+                const WSAEMSGSIZE: i32 = 10040;
 
                 let err = e.raw_os_error();
 
                 if err == Some(WSAENETUNREACH) ||
-                    err == Some(WSAENOBUFS)
+                    err == Some(WSAENOBUFS) ||
+                    err == Some(WSAEMSGSIZE)
                 {
                     return UdpSocketErr::SuppressError(e);
                 }
