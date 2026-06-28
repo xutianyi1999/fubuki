@@ -5,9 +5,8 @@ mod udp;
 mod tcp;
 
 mod api;
-mod info_tui;
 
-pub(crate) use types::{GroupHandle, GroupInfo};
+pub use types::{GroupHandle, GroupInfo};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,7 +17,6 @@ use tokio::sync::{mpsc, watch, Notify};
 
 use crate::common::cipher::Cipher;
 use crate::server::api::api_start;
-use crate::server::info_tui::App;
 use crate::server::pool::{AddressPool, NoncePool};
 use crate::ServerConfigFinalize;
 
@@ -143,10 +141,4 @@ where
     Ok(())
 }
 
-pub async fn info(api_addr: &str) -> Result<()> {
-    let mut info_app = App::new(api_addr.to_string());
-    let mut terminal = ratatui::init();
-    let res = info_app.run(&mut terminal).await;
-    ratatui::restore();
-    res
-}
+

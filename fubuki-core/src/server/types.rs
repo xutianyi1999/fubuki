@@ -31,11 +31,11 @@ pub(crate) struct NodeHandle {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct NodeInfo {
-    pub(crate) node: Node,
-    pub(crate) udp_status: UdpStatus,
-    pub(crate) udp_heartbeat_cache: HeartbeatInfo,
-    pub(crate) tcp_heartbeat_cache: HeartbeatInfo,
+pub struct NodeInfo {
+    pub node: Node,
+    pub udp_status: UdpStatus,
+    pub udp_heartbeat_cache: HeartbeatInfo,
+    pub tcp_heartbeat_cache: HeartbeatInfo,
 }
 
 impl From<&NodeHandle> for NodeInfo {
@@ -54,7 +54,7 @@ pub(crate) struct Bridge {
     pub(crate) watch_rx: watch::Receiver<Arc<HashMap<VirtualAddr, Node>>>,
 }
 
-pub(crate) struct GroupHandle {
+pub struct GroupHandle {
     pub(crate) name: String,
     pub(crate) listen_addr: SocketAddr,
     pub(crate) address_range: Ipv4Net,
@@ -129,11 +129,11 @@ impl GroupHandle {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct GroupInfo {
-    pub(crate) name: String,
-    pub(crate) listen_addr: SocketAddr,
-    pub(crate) address_range: Ipv4Net,
-    pub(crate) node_map: HashMap<VirtualAddr, NodeInfo>,
+pub struct GroupInfo {
+    pub name: String,
+    pub listen_addr: SocketAddr,
+    pub address_range: Ipv4Net,
+    pub node_map: HashMap<VirtualAddr, NodeInfo>,
 }
 
 impl From<&GroupHandle> for GroupInfo {

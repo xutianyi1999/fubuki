@@ -1,6 +1,5 @@
-use crate::common::{format_elapsed, format_loss_percent, utc_to_str};
-use crate::node::info_tui::Page::SelectedGroup;
-use crate::node::InterfaceInfo;
+use fubuki_core::common::{format_elapsed, format_loss_percent, utc_to_str};
+use fubuki_core::GroupInfo;
 use anyhow::anyhow;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use futures_util::StreamExt;
@@ -31,8 +30,7 @@ enum Page {
     SelectedGroup {
         select: usize
     },
-    Interface,
-    PeerNode {
+    Node {
         select: usize
     }
 }
@@ -41,7 +39,7 @@ pub struct App {
     group_index: usize,
     page: Page,
     exit: bool,
-    interfaces_info: Vec<InterfaceInfo>,
+    groups_info: Vec<GroupInfo>,
     event_stream: EventStream,
     api_addr: String,
 }
@@ -52,7 +50,7 @@ impl App {
             group_index: 0,
             page: Page::Groups,
             exit: false,
-            interfaces_info: Vec::new(),
+            groups_info: Vec::new(),
             event_stream: EventStream::new(),
             api_addr
         }
@@ -62,9 +60,9 @@ impl App {
         frame.render_widget(Block::default().style(Style::new().bg(BG)), frame.area());
         let area = frame.area().inner(Margin { vertical: 1, horizontal: 2 });
 
-        if self.interfaces_info.is_empty() {
+        if self.groups_info.is_empty() {
             let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
-            let title = Paragraph::new(" Fubuki Node ")
+            let title = Paragraph::new(" Fubuki Server ")
                 .style(TITLE)
                 .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
             frame.render_widget(title, layout[0]);
@@ -78,28 +76,24 @@ impl App {
         match self.page {
             Page::Groups => {
                 let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
-                let title = Paragraph::new(" Fubuki Node  │  ↑/↓ select  Enter open  q quit ")
+                let title = Paragraph::new(" Fubuki Server  │  ↑/↓ select  Enter open  q quit ")
                     .style(TITLE)
                     .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
 
-                let header = Row::new(vec!["Group", "Node", "Local IP", "Peers"])
+                let header = Row::new(vec!["Group", "Listen address", "Address range", "Nodes"])
                     .style(HEADER)
                     .bottom_margin(1);
-                let rows: Vec<Row> = self.interfaces_info
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, i)| {
-                        let cells = vec![
-                            Cell::from(i.group_name.as_deref().unwrap_or("—")),
-                            Cell::from(i.node_name.as_str()),
-                            Cell::from(i.addr.to_string()),
-                            Cell::from(i.node_map.len().to_string()),
-                        ];
-                        Row::new(cells).style(if idx == self.group_index { HIGHLIGHT } else { TEXT })
-                    })
-                    .collect();
-                let widths = [Constraint::Min(12), Constraint::Min(10), Constraint::Min(14), Constraint::Length(6)];
+                let rows: Vec<Row> = self.groups_info.iter().enumerate().map(|(idx, g)| {
+                    let cells = vec![
+                        Cell::from(g.name.as_str()),
+                        Cell::from(g.listen_addr.to_string()),
+                        Cell::from(g.address_range.to_string()),
+                        Cell::from(g.node_map.len().to_string()),
+                    ];
+                    Row::new(cells).style(if idx == self.group_index { HIGHLIGHT } else { TEXT })
+                }).collect();
+                let widths = [Constraint::Min(10), Constraint::Min(20), Constraint::Min(16), Constraint::Length(6)];
                 let table = Table::new(rows, widths)
                     .header(header)
                     .column_spacing(2)
@@ -107,79 +101,43 @@ impl App {
                 frame.render_widget(table, layout[1]);
             }
             Page::SelectedGroup { select } => {
-                let interface = &self.interfaces_info[self.group_index];
-                let mut nodes = interface.node_map.values().collect::<Vec<_>>();
+                let group = &self.groups_info[self.group_index];
+                let mut nodes = group.node_map.values().collect::<Vec<_>>();
                 nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
 
-                let layout = Layout::vertical([Constraint::Length(3), Constraint::Length(5), Constraint::Fill(1)]).split(area);
-                let title = Paragraph::new(" Fubuki Node  │  ↑/↓ select  Enter open  Esc back  q quit ")
+                let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
+                let title = Paragraph::new(" Fubuki Server  │  ↑/↓ select  Enter open  Esc back  q quit ")
                     .style(TITLE)
                     .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
 
-                let header = Row::new(vec!["Group", "Node", "Local IP"]).style(HEADER).bottom_margin(1);
-                let interface_row = Row::new(vec![
-                    Cell::from(interface.group_name.as_deref().unwrap_or("—")),
-                    Cell::from(interface.node_name.as_str()),
-                    Cell::from(interface.addr.to_string()),
-                ]).style(if select == 0 { HIGHLIGHT } else { TEXT });
-                let block = Block::bordered().border_type(BorderType::Double).title(" Interface (row 0) ").border_style(BORDER);
-                let t = Table::new([interface_row], [Constraint::Min(12), Constraint::Min(10), Constraint::Fill(1)]).header(header).column_spacing(2).block(block);
-                frame.render_widget(t, layout[1]);
-
-                let header2 = Row::new(vec!["Name", "Virtual IP", "Registered"]).style(HEADER).bottom_margin(1);
+                let header = Row::new(vec!["Name", "Virtual IP", "Registered"])
+                    .style(HEADER)
+                    .bottom_margin(1);
                 let peer_rows: Vec<Row> = nodes.iter().enumerate().map(|(idx, p)| {
                     let reg = utc_to_str(p.node.register_time).unwrap_or_else(|_| "—".to_string());
-                    let style = if idx + 1 == select { HIGHLIGHT } else { TEXT };
+                    let style = if idx == select { HIGHLIGHT } else { TEXT };
                     Row::new(vec![
                         Cell::from(p.node.name.as_str()),
                         Cell::from(p.node.virtual_addr.to_string()),
                         Cell::from(reg),
                     ]).style(style)
                 }).collect();
-                let widths2 = [Constraint::Min(10), Constraint::Min(14), Constraint::Min(20)];
-                let t2 = Table::new(peer_rows, widths2)
-                    .header(header2)
+                let widths = [Constraint::Min(10), Constraint::Min(14), Constraint::Min(20)];
+                let t = Table::new(peer_rows, widths)
+                    .header(header)
                     .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Double).title(" Peers ").border_style(BORDER));
-                frame.render_widget(t2, layout[2]);
-            }
-            Page::Interface => {
-                let info = &self.interfaces_info[self.group_index];
-                let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
-                let title = Paragraph::new(" Fubuki Node  │  Esc back  q quit ")
-                    .style(TITLE)
-                    .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
-                frame.render_widget(title, layout[0]);
-
-                let kvs = vec![
-                    Row::new(vec![Cell::from("Index").style(MUTED), Cell::from(info.index.to_string())]).style(TEXT),
-                    Row::new(vec![Cell::from("Name").style(MUTED), Cell::from(info.node_name.as_str())]).style(TEXT),
-                    Row::new(vec![Cell::from("Group").style(MUTED), Cell::from(info.group_name.as_deref().unwrap_or("—"))]).style(TEXT),
-                    Row::new(vec![Cell::from("Local IP").style(MUTED), Cell::from(info.addr.to_string())]).style(TEXT),
-                    Row::new(vec![Cell::from("CIDR").style(MUTED), Cell::from(info.cidr.to_string())]).style(TEXT),
-                    Row::new(vec![Cell::from("Server address").style(MUTED), Cell::from(info.server_addr.as_str())]).style(TEXT),
-                    Row::new(vec![Cell::from("Mode").style(MUTED), Cell::from(format!("{:?}", info.mode))]).style(TEXT),
-                    Row::new(vec![Cell::from("Connected").style(MUTED), Cell::from(if info.server_is_connected { "Yes" } else { "No" })]).style(TEXT),
-                    Row::new(vec![Cell::from("UDP status").style(MUTED), Cell::from(info.server_udp_status.to_string())]).style(TEXT),
-                    Row::new(vec![Cell::from("UDP latency").style(MUTED), Cell::from(format_elapsed(info.server_udp_hc.elapsed.as_ref()))]).style(TEXT),
-                    Row::new(vec![Cell::from("UDP loss").style(MUTED), Cell::from(format_loss_percent(info.server_udp_hc.packet_loss_count, info.server_udp_hc.send_count))]).style(TEXT),
-                    Row::new(vec![Cell::from("TCP latency").style(MUTED), Cell::from(format_elapsed(info.server_tcp_hc.elapsed.as_ref()))]).style(TEXT),
-                    Row::new(vec![Cell::from("TCP loss").style(MUTED), Cell::from(format_loss_percent(info.server_tcp_hc.packet_loss_count, info.server_tcp_hc.send_count))]).style(TEXT),
-                ];
-                let t = Table::new(kvs, [Constraint::Length(16), Constraint::Fill(1)])
-                    .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Double).title(" Interface ").border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).title(" Nodes ").border_style(BORDER));
                 frame.render_widget(t, layout[1]);
             }
-            Page::PeerNode { select } => {
-                let interface = &self.interfaces_info[self.group_index];
-                let mut nodes = interface.node_map.values().collect::<Vec<_>>();
+            Page::Node { select } => {
+                let group = &self.groups_info[self.group_index];
+                let mut nodes = group.node_map.values().collect::<Vec<_>>();
                 nodes.sort_unstable_by_key(|n| n.node.virtual_addr);
                 let node = nodes[select];
 
                 let layout = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
-                let title = Paragraph::new(" Fubuki Node  │  Esc back  q quit ")
+                let title = Paragraph::new(" Fubuki Server  │  Esc back  q quit ")
                     .style(TITLE)
                     .block(Block::bordered().border_type(BorderType::Double).borders(ratatui::widgets::Borders::BOTTOM).border_style(BORDER));
                 frame.render_widget(title, layout[0]);
@@ -199,12 +157,14 @@ impl App {
                     Row::new(vec![Cell::from("Allowed IPs").style(MUTED), Cell::from(allowed_ips)]).style(TEXT),
                     Row::new(vec![Cell::from("Registered").style(MUTED), Cell::from(reg)]).style(TEXT),
                     Row::new(vec![Cell::from("UDP status").style(MUTED), Cell::from(node.udp_status.to_string())]).style(TEXT),
-                    Row::new(vec![Cell::from("Latency").style(MUTED), Cell::from(format_elapsed(node.hc.elapsed.as_ref()))]).style(TEXT),
-                    Row::new(vec![Cell::from("Loss").style(MUTED), Cell::from(format_loss_percent(node.hc.packet_loss_count, node.hc.send_count))]).style(TEXT),
+                    Row::new(vec![Cell::from("UDP latency").style(MUTED), Cell::from(format_elapsed(node.udp_heartbeat_cache.elapsed.as_ref()))]).style(TEXT),
+                    Row::new(vec![Cell::from("UDP loss").style(MUTED), Cell::from(format_loss_percent(node.udp_heartbeat_cache.packet_loss_count, node.udp_heartbeat_cache.send_count))]).style(TEXT),
+                    Row::new(vec![Cell::from("TCP latency").style(MUTED), Cell::from(format_elapsed(node.tcp_heartbeat_cache.elapsed.as_ref()))]).style(TEXT),
+                    Row::new(vec![Cell::from("TCP loss").style(MUTED), Cell::from(format_loss_percent(node.tcp_heartbeat_cache.packet_loss_count, node.tcp_heartbeat_cache.send_count))]).style(TEXT),
                 ];
                 let t = Table::new(kvs, [Constraint::Length(14), Constraint::Fill(1)])
                     .column_spacing(2)
-                    .block(Block::bordered().border_type(BorderType::Double).title(" Peer ").border_style(BORDER));
+                    .block(Block::bordered().border_type(BorderType::Double).title(" Node ").border_style(BORDER));
                 frame.render_widget(t, layout[1]);
             }
         }
@@ -228,7 +188,7 @@ impl App {
                         self.group_index = self.group_index.saturating_sub(1);
                     } ,
                     KeyCode::Down | KeyCode::Char('j') => {
-                        self.group_index = std::cmp::min(self.group_index + 1, self.interfaces_info.len() - 1);
+                        self.group_index = std::cmp::min(self.group_index + 1, self.groups_info.len() - 1);
                     },
                     KeyCode::Enter => {
                         self.page = Page::SelectedGroup {
@@ -245,27 +205,17 @@ impl App {
                         *select = select.saturating_sub(1);
                     } ,
                     KeyCode::Down | KeyCode::Char('j') => {
-                        *select = std::cmp::min(*select + 1, (self.interfaces_info[self.group_index].node_map.len() - 1) + 1);
+                        *select = std::cmp::min(*select + 1, self.groups_info[self.group_index].node_map.len() - 1);
                     },
                     KeyCode::Enter => {
-                        if *select == 0 {
-                            self.page = Page::Interface;
-                        } else {
-                            self.page = Page::PeerNode { select : *select - 1};
-                        }
+                        self.page = Page::Node { select: *select}
                     }
                     _ => {}
                 }
             }
-            Page::Interface => {
+            Page::Node { select } => {
                 match key_event.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.page = Page::SelectedGroup { select: 0 },
-                    _ => {}
-                }
-            }
-            Page::PeerNode { select } => {
-                match key_event.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.page = Page::SelectedGroup { select: *select + 1 },
+                    KeyCode::Esc | KeyCode::Char('q') => self.page = Page::SelectedGroup { select: *select },
                     _ => {}
                 }
             }
@@ -295,27 +245,25 @@ impl App {
             return Err(anyhow!("http response code: {}, message: {}", parts.status.as_u16(), msg));
         }
 
-        let mut interfaces_info: Vec<InterfaceInfo> = serde_json::from_slice(bytes.deref())?;
-        interfaces_info.sort_unstable_by_key(|v| v.index);
-        self.interfaces_info = interfaces_info;
+        let groups: Vec<GroupInfo> = serde_json::from_slice(bytes.deref())?;
+        self.groups_info = groups;
         Ok(())
     }
 
     fn prevent_idx_out_of_bounds(&mut self) {
-        if self.interfaces_info.is_empty() {
+        if self.groups_info.is_empty() {
             return;
         }
-        self.group_index = std::cmp::min(self.group_index, self.interfaces_info.len() - 1);
-        let node_count = self.interfaces_info[self.group_index].node_map.len();
+        self.group_index = std::cmp::min(self.group_index, self.groups_info.len() - 1);
+        let node_count = self.groups_info[self.group_index].node_map.len();
         match &mut self.page {
             Page::Groups => {}
             Page::SelectedGroup { select } => {
-                *select = std::cmp::min(*select, node_count);
+                *select = std::cmp::min(*select, node_count.saturating_sub(1));
             }
-            Page::Interface => {}
-            Page::PeerNode { select } => {
+            Page::Node { select } => {
                 if *select >= node_count {
-                    self.page = SelectedGroup { select: node_count };
+                    self.page = Page::SelectedGroup { select: node_count.saturating_sub(1) };
                 }
             }
         }
@@ -342,4 +290,12 @@ impl App {
 
         Ok(())
     }
+}
+
+pub async fn info(api_addr: &str) -> anyhow::Result<()> {
+    let mut info_app = App::new(api_addr.to_string());
+    let mut terminal = ratatui::init();
+    let res = info_app.run(&mut terminal).await;
+    ratatui::restore();
+    res
 }

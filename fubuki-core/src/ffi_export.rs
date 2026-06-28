@@ -10,9 +10,11 @@ use anyhow::{anyhow, Result, Context};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use crate::node::{generic_interfaces_info, Interface};
-use crate::{Key, logger_init, node, NodeConfig, NodeConfigFinalize};
+use crate::{Key, node, NodeConfig, NodeConfigFinalize};
 use crate::common::allocator::{alloc, Bytes};
 use crate::tun::TunDevice;
+
+use crate::logger_init;
 
 const FUBUKI_START_OPTIONS_VERSION1: u32 = 1;
 const FUBUKI_START_OPTIONS_VERSION2: u32 = 2;

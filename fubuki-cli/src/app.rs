@@ -1,33 +1,90 @@
-use std::ffi::c_void;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 
-use anyhow::{anyhow, Context as AnyhowContext, Result};
-use flume;
-use log::LevelFilter;
+use anyhow::{Context, Result};
+use log::{info, LevelFilter};
 use serde::de;
 use tokio::runtime::Runtime;
 
+use fubuki_core::{Key, NodeConfig, NodeConfigFinalize, ServerConfig, ServerConfigFinalize, SHOULD_RESTART};
+use fubuki_core::node;
+use fubuki_core::server;
+use fubuki_core::tun;
+
 use crate::cli::{Args, NodeCmd, ServerCmd};
-use crate::common::allocator::Bytes;
-use crate::node::{Direction, Interface};
-use crate::{common, node, server, tun, Key, NodeConfig, NodeConfigFinalize, ServerConfig, ServerConfigFinalize, SHOULD_RESTART};
+use crate::node_info_tui;
+use crate::server_info_tui;
 
-pub struct Context<K> {
-    pub interfaces: Option<Arc<OnceLock<Vec<Arc<Interface<K>>>>>>,
-    pub send_packet_chan: Option<flume::Sender<(Direction, Bytes)>>,
+fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
+    let file = std::fs::File::open(path).with_context(|| {
+        format!(
+            "Failed to open configuration file: '{}'. Ensure the path is correct and the file is accessible.",
+            path.display()
+        )
+    })?;
+
+    serde_json::from_reader(file).context(format!(
+        "Failed to parse configuration file '{}'. Check for syntax errors or invalid values.",
+        path.display()
+    ))
 }
 
-#[repr(C)]
-pub struct ExternalContext {
-    pub ctx: *const c_void,
-    pub interfaces_info_fn: *const c_void,
-    pub packet_send_fn: *const c_void,
+fn logger_init() -> Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        use std::str::FromStr;
+        android_logger::init_once(
+            android_logger::Config::default().with_max_level(LevelFilter::from_str(
+                std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+            )?),
+        );
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        use std::str::FromStr;
+        use log4rs::append::console::ConsoleAppender;
+        use log4rs::config::{Appender, Root};
+        use log4rs::encode::pattern::PatternEncoder;
+
+        fn init() -> Result<()> {
+            let log_level = LevelFilter::from_str(
+                std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+            )?;
+
+            let pattern = if log_level >= LevelFilter::Debug {
+                "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {f}:{L} - {m}{n}"
+            } else {
+                "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}"
+            };
+
+            let stdout = ConsoleAppender::builder()
+                .encoder(Box::new(PatternEncoder::new(pattern)))
+                .build();
+
+            let config = log4rs::Config::builder()
+                .appender(Appender::builder().build("stdout", Box::new(stdout)))
+                .build(
+                    Root::builder()
+                        .appender("stdout")
+                        .build(log_level),
+                )?;
+
+            log4rs::init_config(config)?;
+            Ok(())
+        }
+
+        static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
+        LOGGER_INIT.call_once(|| {
+            init().expect("Critical error: Logger initialization failed. Please check log configuration.");
+        });
+        Ok(())
+    }
 }
 
-pub(crate) fn restart() -> ! {
+fn restart() -> ! {
     let exe = std::env::current_exe().expect("failed to get current executable path");
     let args: Vec<_> = std::env::args_os().skip(1).collect();
 
@@ -73,79 +130,13 @@ async fn send_restart(api_addr: &str) -> Result<()> {
 
     let resp = sender.send_request(req).await?;
     if resp.status() != 200 {
-        return Err(anyhow!(
+        return Err(anyhow::anyhow!(
             "restart request failed with status: {}",
             resp.status()
         ));
     }
 
     info!("Restart signal sent successfully");
-    Ok(())
-}
-
-fn load_config<T: de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let file = std::fs::File::open(path).with_context(|| {
-        format!(
-            "Failed to open configuration file: '{}'. Ensure the path is correct and the file is accessible.",
-            path.display()
-        )
-    })?;
-
-    serde_json::from_reader(file).context(format!(
-        "Failed to parse configuration file '{}'. Check for syntax errors or invalid values.",
-        path.display()
-    ))
-}
-
-#[cfg(target_os = "android")]
-pub(crate) fn logger_init() -> Result<()> {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(LevelFilter::from_str(
-            std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
-        )?),
-    );
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "android"))]
-pub(crate) fn logger_init() -> Result<()> {
-    fn init() -> Result<()> {
-        use log4rs::append::console::ConsoleAppender;
-        use log4rs::config::{Appender, Root};
-        use log4rs::encode::pattern::PatternEncoder;
-
-        let log_level = LevelFilter::from_str(
-            std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
-        )?;
-
-        let pattern = if log_level >= LevelFilter::Debug {
-            "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {f}:{L} - {m}{n}"
-        } else {
-            "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}"
-        };
-
-        let stdout = ConsoleAppender::builder()
-            .encoder(Box::new(PatternEncoder::new(pattern)))
-            .build();
-
-        let config = log4rs::Config::builder()
-            .appender(Appender::builder().build("stdout", Box::new(stdout)))
-            .build(
-                Root::builder()
-                    .appender("stdout")
-                    .build(log_level),
-            )?;
-
-        log4rs::init_config(config)?;
-        Ok(())
-    }
-
-    static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
-
-    LOGGER_INIT.call_once(|| {
-        init().expect("Critical error: Logger initialization failed. Please check log configuration.");
-    });
     Ok(())
 }
 
@@ -172,7 +163,7 @@ pub fn launch(args: Args) -> Result<()> {
                         .enable_all()
                         .build()?;
 
-                    rt.block_on(server::info(&api))?;
+                    rt.block_on(server_info_tui::info(&api))?;
                 }
                 ServerCmd::Restart { api } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
@@ -187,8 +178,7 @@ pub fn launch(args: Args) -> Result<()> {
             match cmd {
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 NodeCmd::Daemon { config_path } => {
-                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-                    common::privilege::require_elevated_for_node()?;
+                    fubuki_core::common::privilege::require_elevated_for_node()?;
 
                     let config: NodeConfig = load_config(&config_path)?;
                     let c: NodeConfigFinalize<Key> = NodeConfigFinalize::try_from(config)?;
@@ -210,7 +200,7 @@ pub fn launch(args: Args) -> Result<()> {
                         .enable_all()
                         .build()?;
 
-                    rt.block_on(node::info(&api))?;
+                    rt.block_on(node_info_tui::info(&api))?;
                 }
                 NodeCmd::Restart { api } => {
                     let rt = tokio::runtime::Builder::new_current_thread()
@@ -221,7 +211,7 @@ pub fn launch(args: Args) -> Result<()> {
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
                 _ => {
-                    return Err(anyhow!(
+                    return Err(anyhow::anyhow!(
                         "Fubuki is not supported on the current platform. This build only supports Windows, Linux, and macOS."
                     ));
                 }

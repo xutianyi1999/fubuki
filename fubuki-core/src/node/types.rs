@@ -137,18 +137,18 @@ pub struct Interface<K> {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InterfaceInfo {
-    pub(crate) index: usize,
-    pub(crate) node_name: String,
-    pub(crate) group_name: Option<String>,
-    pub(crate) addr: VirtualAddr,
-    pub(crate) cidr: Ipv4Net,
-    pub(crate) mode: ProtocolMode,
-    pub(crate) node_map: HashMap<VirtualAddr, ExtendedNodeInfo>,
-    pub(crate) server_addr: String,
-    pub(crate) server_udp_hc: HeartbeatInfo,
-    pub(crate) server_udp_status: UdpStatus,
-    pub(crate) server_tcp_hc: HeartbeatInfo,
-    pub(crate) server_is_connected: bool,
+    pub index: usize,
+    pub node_name: String,
+    pub group_name: Option<String>,
+    pub addr: VirtualAddr,
+    pub cidr: Ipv4Net,
+    pub mode: ProtocolMode,
+    pub node_map: HashMap<VirtualAddr, ExtendedNodeInfo>,
+    pub server_addr: String,
+    pub server_udp_hc: HeartbeatInfo,
+    pub server_udp_status: UdpStatus,
+    pub server_tcp_hc: HeartbeatInfo,
+    pub server_is_connected: bool,
 }
 
 impl <K> From<&Interface<K>> for InterfaceInfo {
@@ -202,10 +202,10 @@ impl From<Node> for ExtendedNode {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct ExtendedNodeInfo {
-    pub(crate) node: Node,
-    pub(crate) udp_status: UdpStatus,
-    pub(crate) hc: HeartbeatInfo,
+pub struct ExtendedNodeInfo {
+    pub node: Node,
+    pub udp_status: UdpStatus,
+    pub hc: HeartbeatInfo,
 }
 
 impl From<&ExtendedNode> for ExtendedNodeInfo {

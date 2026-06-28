@@ -1687,10 +1687,3 @@ pub async fn start<K, T>(
     Ok(())
 }
 
-pub async fn info(api_addr: &str) -> Result<()> {
-    let mut info_app = super::info_tui::App::new(api_addr.to_string());
-    let mut terminal = ratatui::init();
-    let res = info_app.run(&mut terminal).await;
-    ratatui::restore();
-    res
-}

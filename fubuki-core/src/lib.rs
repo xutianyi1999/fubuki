@@ -21,13 +21,12 @@ use crate::common::net::get_interface_addr;
 use crate::common::net::protocol::{NetProtocol, ProtocolMode, VirtualAddr, SERVER_VIRTUAL_ADDR};
 
 #[macro_use]
-mod common;
-mod app;
-mod cli;
-mod node;
-mod server;
-mod tun;
-mod kcp_bridge;
+pub mod common;
+pub mod context;
+pub mod node;
+pub mod server;
+pub mod tun;
+pub mod kcp_bridge;
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod nat;
@@ -39,19 +38,18 @@ mod routing_table;
 #[cfg(feature = "ffi-export")]
 mod ffi_export;
 
-type Key = CipherEnum;
+pub type Key = CipherEnum;
 
-pub(crate) static SHOULD_RESTART: AtomicBool = AtomicBool::new(false);
+pub static SHOULD_RESTART: AtomicBool = AtomicBool::new(false);
 
-pub use app::{launch, Context, ExternalContext};
-
-#[cfg(feature = "ffi-export")]
-pub(crate) use app::logger_init;
-pub use cli::Args;
+pub use context::{Context, ExternalContext};
+pub use node::{Direction, Interface, InterfaceInfo};
+pub use server::GroupInfo;
+pub use tun::TunDevice;
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct Group {
+pub struct Group {
     name: String,
     listen_addr: SocketAddr,
     key: Option<String>,
@@ -63,7 +61,7 @@ struct Group {
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct ServerConfig {
+pub struct ServerConfig {
     channel_limit: Option<usize>,
     api_addr: Option<SocketAddr>,
     tcp_heartbeat_interval_secs: Option<u64>,
@@ -75,26 +73,26 @@ struct ServerConfig {
 }
 
 #[derive(Clone)]
-struct GroupFinalize<K> {
-    name: String,
-    listen_addr: SocketAddr,
-    key: K,
-    address_range: Ipv4Net,
-    flow_control_rules: Vec<(Ipv4Net, u64)>,
-    allow_udp_relay: bool,
-    allow_tcp_relay: bool
+pub struct GroupFinalize<K> {
+    pub name: String,
+    pub listen_addr: SocketAddr,
+    pub key: K,
+    pub address_range: Ipv4Net,
+    pub flow_control_rules: Vec<(Ipv4Net, u64)>,
+    pub allow_udp_relay: bool,
+    pub allow_tcp_relay: bool
 }
 
 #[derive(Clone)]
-struct ServerConfigFinalize<K> {
-    channel_limit: usize,
-    api_addr: SocketAddr,
-    tcp_heartbeat_interval: Duration,
-    tcp_heartbeat_continuous_loss: u64,
-    udp_heartbeat_interval: Duration,
-    udp_heartbeat_continuous_loss: u64,
-    udp_heartbeat_continuous_recv: u64,
-    groups: Vec<GroupFinalize<K>>,
+pub struct ServerConfigFinalize<K> {
+    pub channel_limit: usize,
+    pub api_addr: SocketAddr,
+    pub tcp_heartbeat_interval: Duration,
+    pub tcp_heartbeat_continuous_loss: u64,
+    pub udp_heartbeat_interval: Duration,
+    pub udp_heartbeat_continuous_loss: u64,
+    pub udp_heartbeat_continuous_recv: u64,
+    pub groups: Vec<GroupFinalize<K>>,
 }
 
 impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
@@ -158,14 +156,14 @@ impl TryFrom<ServerConfig> for ServerConfigFinalize<CipherEnum> {
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct TunAddr {
-    ip: VirtualAddr,
-    netmask: Ipv4Addr,
+pub struct TunAddr {
+    pub ip: VirtualAddr,
+    pub netmask: Ipv4Addr,
 }
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct TargetGroup {
+pub struct TargetGroup {
     node_name: Option<String>,
     server_addr: String,
     tun_addr: Option<TunAddr>,
@@ -182,7 +180,7 @@ struct TargetGroup {
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-struct NodeConfig {
+pub struct NodeConfig {
     mtu: Option<usize>,
     channel_limit: Option<usize>,
     api_addr: Option<SocketAddr>,
@@ -206,7 +204,7 @@ struct NodeConfig {
 }
 
 #[derive(Deserialize, Clone)]
-struct NodeConfigFeature {
+pub struct NodeConfigFeature {
     disable_hosts_operation: Option<bool>,
     disable_signal_handling: Option<bool>,
     disable_route_operation: Option<bool>,
@@ -214,52 +212,52 @@ struct NodeConfigFeature {
 }
 
 #[derive(Clone)]
-struct TargetGroupFinalize<K> {
-    node_name: String,
-    server_addr: String,
-    tun_addr: Option<TunAddr>,
-    key: K,
-    mode: ProtocolMode,
-    specify_mode: HashMap<VirtualAddr, ProtocolMode>,
-    lan_ip_addr: Option<IpAddr>,
-    node_binding: Option<SocketAddr>,
-    allowed_ips: Vec<Ipv4Net>,
-    ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
-    auto_route_selection: bool,
-    use_kcp_session: bool,
+pub struct TargetGroupFinalize<K> {
+    pub node_name: String,
+    pub server_addr: String,
+    pub tun_addr: Option<TunAddr>,
+    pub key: K,
+    pub mode: ProtocolMode,
+    pub specify_mode: HashMap<VirtualAddr, ProtocolMode>,
+    pub lan_ip_addr: Option<IpAddr>,
+    pub node_binding: Option<SocketAddr>,
+    pub allowed_ips: Vec<Ipv4Net>,
+    pub ips: HashMap<VirtualAddr, Vec<Ipv4Net>>,
+    pub auto_route_selection: bool,
+    pub use_kcp_session: bool,
 }
 
 #[derive(Clone)]
-struct NodeConfigFinalize<K> {
-    mtu: usize,
-    channel_limit: usize,
-    api_addr: SocketAddr,
-    tcp_heartbeat_interval: Duration,
-    udp_heartbeat_interval: Duration,
-    tcp_heartbeat_continuous_loss: u64,
-    udp_heartbeat_continuous_loss: u64,
-    udp_heartbeat_continuous_recv: u64,
-    reconnect_interval: Duration,
-    udp_socket_recv_buffer_size: Option<usize>,
-    udp_socket_send_buffer_size: Option<usize>,
-    external_routing_table: bool,
-    allow_packet_forward: bool,
-    allow_packet_not_in_rules_send_to_kernel: bool,
-    enable_hook: bool,
-    socket_bind_device: Option<String>,
+pub struct NodeConfigFinalize<K> {
+    pub mtu: usize,
+    pub channel_limit: usize,
+    pub api_addr: SocketAddr,
+    pub tcp_heartbeat_interval: Duration,
+    pub udp_heartbeat_interval: Duration,
+    pub tcp_heartbeat_continuous_loss: u64,
+    pub udp_heartbeat_continuous_loss: u64,
+    pub udp_heartbeat_continuous_recv: u64,
+    pub reconnect_interval: Duration,
+    pub udp_socket_recv_buffer_size: Option<usize>,
+    pub udp_socket_send_buffer_size: Option<usize>,
+    pub external_routing_table: bool,
+    pub allow_packet_forward: bool,
+    pub allow_packet_not_in_rules_send_to_kernel: bool,
+    pub enable_hook: bool,
+    pub socket_bind_device: Option<String>,
     #[cfg(feature = "cross-nat")]
-    cross_nat: bool,
-    groups: Vec<TargetGroupFinalize<K>>,
-    features: NodeConfigFeatureFinalize,
+    pub cross_nat: bool,
+    pub groups: Vec<TargetGroupFinalize<K>>,
+    pub features: NodeConfigFeatureFinalize,
 }
 
 #[derive(Clone)]
-struct NodeConfigFeatureFinalize {
+pub struct NodeConfigFeatureFinalize {
     #[allow(unused)]
-    disable_hosts_operation: bool,
-    disable_signal_handling: bool,
-    disable_route_operation: bool,
-    disable_api_server: bool,
+    pub disable_hosts_operation: bool,
+    pub disable_signal_handling: bool,
+    pub disable_route_operation: bool,
+    pub disable_api_server: bool,
 }
 
 impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
@@ -358,10 +356,8 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             mtu: config.mtu.unwrap_or({
                 if use_udp {
                     if use_ipv6 {
-                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 40byte IPV6 HEADER - 8byte UDP HEADER - 4byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
                         1424
                     } else {
-                        // 1500 - 8byte 802.3 SNAP - 4byte 802.1Q VLAN - 8byte PPPOE - 20byte IPV4 HEADER - 8byte UDP HEADER - 4byte UDP MSG HEADER - 4byte UDP MSG RELAY IP ADDRESS
                         1444
                     }
                 } else {
@@ -430,5 +426,62 @@ impl TryFrom<NodeConfig> for NodeConfigFinalize<CipherEnum> {
             },
         };
         Ok(config_finalize)
+    }
+}
+
+#[cfg(feature = "ffi-export")]
+pub(crate) fn logger_init() -> Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        use std::str::FromStr;
+        use log::LevelFilter;
+        android_logger::init_once(
+            android_logger::Config::default().with_max_level(LevelFilter::from_str(
+                std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+            )?),
+        );
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        use std::str::FromStr;
+        use log::LevelFilter;
+        use log4rs::append::console::ConsoleAppender;
+        use log4rs::config::{Appender, Root};
+        use log4rs::encode::pattern::PatternEncoder;
+
+        fn init() -> Result<()> {
+            let log_level = LevelFilter::from_str(
+                std::env::var("FUBUKI_LOG").as_deref().unwrap_or("INFO"),
+            )?;
+
+            let pattern = if log_level >= LevelFilter::Debug {
+                "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {f}:{L} - {m}{n}"
+            } else {
+                "[{d(%Y-%m-%d %H:%M:%S)}] {h({l})} {t} - {m}{n}"
+            };
+
+            let stdout = ConsoleAppender::builder()
+                .encoder(Box::new(PatternEncoder::new(pattern)))
+                .build();
+
+            let config = log4rs::Config::builder()
+                .appender(Appender::builder().build("stdout", Box::new(stdout)))
+                .build(
+                    Root::builder()
+                        .appender("stdout")
+                        .build(log_level),
+                )?;
+
+            log4rs::init_config(config)?;
+            Ok(())
+        }
+
+        static LOGGER_INIT: std::sync::Once = std::sync::Once::new();
+        LOGGER_INIT.call_once(|| {
+            init().expect("Critical error: Logger initialization failed. Please check log configuration.");
+        });
+        Ok(())
     }
 }
