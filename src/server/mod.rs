@@ -9,102 +9,118 @@ mod info_tui;
 
 pub(crate) use types::{GroupHandle, GroupInfo};
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::{watch, Notify};
+use tokio::sync::{mpsc, watch, Notify};
 
 use crate::common::cipher::Cipher;
 use crate::server::api::api_start;
 use crate::server::info_tui::App;
+use crate::server::pool::{AddressPool, NoncePool};
 use crate::ServerConfigFinalize;
+
+pub(crate) struct AddrGroupEntry<K: Cipher + 'static> {
+    pub(crate) group: &'static crate::GroupFinalize<K>,
+    pub(crate) handle: Arc<GroupHandle>,
+    pub(crate) nonce_pool: Arc<NoncePool>,
+    pub(crate) address_pool: Arc<AddressPool>,
+}
+
+pub(crate) type KcpChannel = mpsc::Sender<(tokio::io::DuplexStream, std::net::SocketAddr, usize)>;
 
 pub async fn start<K>(config: ServerConfigFinalize<K>) -> Result<()>
 where
     K: Cipher + Clone + Send + Sync + 'static,
 {
     let config = &*Box::leak(Box::new(config));
-    let mut futures = Vec::with_capacity(config.groups.len());
     let mut group_handles = Vec::with_capacity(config.groups.len());
+    let mut addr_group_entries: HashMap<std::net::SocketAddr, Vec<AddrGroupEntry<K>>> = HashMap::new();
 
     for group in &config.groups {
         let gh = Arc::new(GroupHandle::new(config.channel_limit, group));
         group_handles.push(gh.clone());
+        addr_group_entries
+            .entry(group.listen_addr)
+            .or_default()
+            .push(AddrGroupEntry {
+                group,
+                handle: gh,
+                nonce_pool: Arc::new(NoncePool::new()),
+                address_pool: Arc::new(AddressPool::new(group.address_range).unwrap()),
+            });
+        info!("AddressPool for group '{}' initialized with range {}.", group.name, group.address_range);
+    }
 
-        let fut = async {
-            let listen_addr = group.listen_addr;
+    let mut futures = Vec::with_capacity(addr_group_entries.len());
 
+    for (listen_addr, entries) in addr_group_entries {
+        let entries: &'static [AddrGroupEntry<K>] = Box::leak(entries.into_boxed_slice());
+        let group_names: Vec<String> = entries.iter().map(|e| e.group.name.clone()).collect();
+
+        let fut = async move {
             let udp_socket = UdpSocket::bind(listen_addr)
                 .await
-                .with_context(|| format!("Failed to bind UDP socket for group '{}' to address '{}'. Ensure the address is available and permissions are correct.", group.name, listen_addr))?;
-
+                .with_context(|| format!("Failed to bind UDP socket for address '{}'. Ensure the address is available and permissions are correct.", listen_addr))?;
             let udp_socket = Arc::new(udp_socket);
-
-            info!("UDP socket for group {} is listening on {}", group.name, listen_addr);
+            info!("UDP socket is listening on {}", listen_addr);
 
             let tcp_listener = TcpListener::bind(listen_addr)
                 .await
-                .with_context(|| format!("Failed to bind TCP listener for group '{}' to address '{}'. Ensure the address is available and permissions are correct.", group.name, listen_addr))?;
-
-            info!("TCP listener for group {} is listening on {}", group.name, listen_addr);
+                .with_context(|| format!("Failed to bind TCP listener for address '{}'. Ensure the address is available and permissions are correct.", listen_addr))?;
+            info!("TCP listener is listening on {}", listen_addr);
 
             let (_notify, notified) = watch::channel(());
-            let gh1 = gh.clone();
+            let (kcp_tx, kcp_rx) = mpsc::channel(1024);
 
-            let (kcp_acceptor_channel_tx, kcp_acceptor_channel_rx) =
-                tokio::sync::mpsc::channel(1024);
-
-            let udp_handle = async {
+            let udp_sock = udp_socket.clone();
+            let notif_udp = notified.clone();
+            let udp_handle = async move {
                 let fut = udp::udp_handler(
-                    group,
-                    udp_socket.clone(),
-                    gh1,
+                    entries,
+                    udp_sock,
                     config.udp_heartbeat_interval,
                     config.udp_heartbeat_continuous_loss,
                     config.udp_heartbeat_continuous_recv,
-                    notified.clone(),
-                    kcp_acceptor_channel_tx,
+                    notif_udp,
+                    kcp_tx,
                 );
-
                 fut.await
-                    .context(format!("UDP handler for group '{}' encountered an error.", group.name))
+                    .context(format!("UDP handler for address '{}' encountered an error.", listen_addr))
             };
 
-            let tcp_handle = async {
-                let mut notified = notified.clone();
+            let mut notif_tcp = notified;
+            let tcp_handle = async move {
+                let handler_notified = notif_tcp.clone();
 
                 let fut = tcp::tcp_handler(
                     tcp_listener,
-                    udp_socket.clone(),
+                    udp_socket,
                     config,
-                    group,
-                    gh,
-                    notified.clone(),
-                    kcp_acceptor_channel_rx,
+                    entries,
+                    handler_notified,
+                    kcp_rx,
                 );
 
                 tokio::spawn(async move {
                     tokio::select! {
                         res = fut => res,
-                        _ = notified.changed() => Err(anyhow::anyhow!("abort task"))
+                        _ = notif_tcp.changed() => Err(anyhow::anyhow!("abort task"))
                     }
                 })
                 .await?
-                .context(format!(
-                    "TCP handler for group '{}' encountered an error.",
-                    group.name
-                ))
+                .context(format!("TCP handler for address '{}' encountered an error.", listen_addr))
             };
 
             tokio::try_join!(udp_handle, tcp_handle).map(|_| ())
         };
 
-        futures.push(async {
-            info!("Starting server for group {}...", group.name);
-
+        futures.push(async move {
+            info!("Starting server for address {} (groups: {})...", listen_addr, group_names.join(", "));
             if let Err(e) = fut.await {
-                error!("Server for group {} failed: {:?}", group.name, e)
+                error!("Server for address {} failed: {:?}", listen_addr, e)
             }
         });
     }
